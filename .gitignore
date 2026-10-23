@@ -1,0 +1,9 @@
+.build/
+build/
+.local.env
+Tests/private/
+*.png
+!docs/screenshots/*.png
+# Working notes, kept on this Mac only
+CHECKLIST.md
+design/
