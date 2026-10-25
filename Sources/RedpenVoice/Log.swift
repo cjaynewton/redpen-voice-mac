@@ -2,6 +2,11 @@ import Foundation
 
 /// State changes in ~/Library/Logs/RedpenVoice.log: timings, app names, counts and errors. Never the words you said.
 enum Log {
+    /// A whole number for a log line that can never crash: infinite or NaN (a timing that never started) gives -1.
+    /// A log line once crashed dictation this way (Oct 25 01:09, Whisper's first-word time).
+    static func int(_ x: Double) -> Int { x.isFinite ? Int(max(-1e12, min(1e12, x))) : -1 }
+    static func ms(_ seconds: Double) -> Int { int(seconds * 1000) }
+
     static let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/RedpenVoice.log")
     static let cap = 1_000_000
     nonisolated(unsafe) static var written = 0

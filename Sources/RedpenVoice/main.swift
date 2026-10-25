@@ -607,7 +607,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var raw = ""
             let f0 = Date()
             do { raw = try await s.finish() } catch { Log.note("finish failed: \(error.localizedDescription)") }
-            let engineMs = Int(Date().timeIntervalSince(f0) * 1000)
+            let engineMs = Log.ms(Date().timeIntervalSince(f0))
             let t0 = Date()
             raw = self.names.apply(raw)
             var cleaned: String? = nil
@@ -650,7 +650,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if !text.isEmpty { self.history.append(Entry(raw: raw, cleaned: cleaned, seconds: seconds, app: app, inserted: inserted)) }
             self.writing -= 1
             self.resumeMedia()
-            Log.note("dictation \(Int(seconds))s, \(raw.split(separator: " ").count) words, write \(Int(Date().timeIntervalSince(t0) * 1000))ms, engine \(engineMs)ms, key up to done \(Int(Date().timeIntervalSince(releasedAt) * 1000))ms, into \(app), inserted \(inserted)")
+            Log.note("dictation \(Log.int(seconds))s, \(raw.split(separator: " ").count) words, write \(Log.ms(Date().timeIntervalSince(t0)))ms, engine \(engineMs)ms, key up to done \(Log.ms(Date().timeIntervalSince(releasedAt)))ms, into \(app), inserted \(inserted)")
             self.refreshMenu()
             if self.quitting { NSApp.reply(toApplicationShouldTerminate: true) }
         }

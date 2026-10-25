@@ -63,8 +63,8 @@ final class Transcriber {
         // Where the time goes, so slowness can be told apart: waiting in line, the encoder (fixed cost per 30 s
         // window), the decoder, and fallbacks (Whisper decoding again at a higher temperature).
         if let t = results.first?.timings {
-            let ms = { (x: TimeInterval) in Int(x * 1000) }
-            Log.note("engine job: \(String(format: "%.1f", seconds))s audio, in line \(ms(started.timeIntervalSince(queued)))ms, whisper \(ms(lastJob))ms (encode \(ms(t.encoding))ms x\(Int(t.totalEncodingRuns)), decode \(ms(t.decodingLoop))ms, fallbacks \(Int(t.totalDecodingFallbacks)), first word \(ms(t.firstTokenTime - t.pipelineStart))ms)")
+            let ms = Log.ms
+            Log.note("engine job: \(String(format: "%.1f", seconds))s audio, in line \(ms(started.timeIntervalSince(queued)))ms, whisper \(ms(lastJob))ms (encode \(ms(t.encoding))ms x\(Log.int(t.totalEncodingRuns)), decode \(ms(t.decodingLoop))ms, fallbacks \(Log.int(t.totalDecodingFallbacks)), first word \(ms(t.firstTokenTime - t.pipelineStart))ms)")
         }
         let text = Silence.clean(joined(results), peak: peak)
         // Whisper skips a stretch it judges to be silence. A short, quiet sentence can be skipped whole (3 of 1,100
@@ -138,7 +138,7 @@ final class Transcriber {
                 try await m.loadModels(models)
                 parakeet = m
                 FileManager.default.createFile(atPath: Self.parakeetMarker.path, contents: nil)
-                Log.note("engine: parakeet loaded in \(Int(Date().timeIntervalSince(t)))s")
+                Log.note("engine: parakeet loaded in \(Log.int(Date().timeIntervalSince(t)))s")
             }
             format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)
             set(.ready)
@@ -154,7 +154,7 @@ final class Transcriber {
         var state = TdtDecoderState.make(decoderLayers: await p.decoderLayerCount)
         let t = Date()
         let r = try await p.transcribe(audio, decoderState: &state)
-        Log.note("engine job: \(String(format: "%.1f", Double(audio.count) / 16000))s audio, parakeet \(Int(Date().timeIntervalSince(t) * 1000))ms")
+        Log.note("engine job: \(String(format: "%.1f", Double(audio.count) / 16000))s audio, parakeet \(Log.ms(Date().timeIntervalSince(t)))ms")
         return Silence.clean(r.text, peak: peak)
     }
 
@@ -187,7 +187,7 @@ final class Transcriber {
         let t = Date()
         whisper = try await WhisperKit(WhisperKitConfig(model: Self.whisperModel, modelFolder: Self.whisperFolder.path,
                                                        verbose: false, logLevel: .error, prewarm: true, load: true, download: false))
-        Log.note("engine: whisper loaded in \(Int(Date().timeIntervalSince(t)))s")
+        Log.note("engine: whisper loaded in \(Log.int(Date().timeIntervalSince(t)))s")
     }
 
     var audioFormat: AVAudioFormat? { format }
@@ -372,7 +372,7 @@ final class Transcriber {
                 nap?.cancel(); guess?.cancel()
                 let f0 = Date()
                 await loop?.value  // a piece being written finishes first, so the order holds
-                let loopWait = Int(Date().timeIntervalSince(f0) * 1000)
+                let loopWait = Log.ms(Date().timeIntervalSince(f0))
                 let t0 = Date()
                 let audio = lock.withLock { samples }
                 let tail: String
@@ -390,7 +390,7 @@ final class Transcriber {
                 }
                 if !tail.isEmpty { pieces.append(tail) }
                 onPiece = nil
-                Log.note("engine finish: waited \(loopWait)ms for the stream, ending \(Int(Date().timeIntervalSince(t0) * 1000))ms, \(pieces.count) pieces")
+                Log.note("engine finish: waited \(loopWait)ms for the stream, ending \(Log.ms(Date().timeIntervalSince(t0)))ms, \(pieces.count) pieces")
                 return pieces.joined(separator: " ")
             }
             let a = analyzer
@@ -452,16 +452,16 @@ final class Transcriber {
         }
         let t = Date()
         let text = try await s.finish()
-        return (Int(Date().timeIntervalSince(t) * 1000), text)
+        return (Log.ms(Date().timeIntervalSince(t)), text)
     }
 
     /// Speed test: one clip, five times warm, then again after `idle` seconds doing nothing. Timings go to the log.
     func speedTest(_ url: URL, idle: Double) async throws {
         guard let whisper else { return }
         let audio = try AudioProcessor.loadAudioAsFloatArray(fromPath: url.path)
-        for i in 1...5 { let t = Date(); _ = try await Self.whisperText(whisper, audio); print("warm \(i): \(Int(Date().timeIntervalSince(t) * 1000)) ms") }
+        for i in 1...5 { let t = Date(); _ = try await Self.whisperText(whisper, audio); print("warm \(i): \(Log.ms(Date().timeIntervalSince(t))) ms") }
         try await Task.sleep(for: .seconds(idle))
-        for i in 1...2 { let t = Date(); _ = try await Self.whisperText(whisper, audio); print("after \(Int(idle)) s idle \(i): \(Int(Date().timeIntervalSince(t) * 1000)) ms") }
+        for i in 1...2 { let t = Date(); _ = try await Self.whisperText(whisper, audio); print("after \(Int(idle)) s idle \(i): \(Log.ms(Date().timeIntervalSince(t))) ms") }
     }
 
     /// One file, written whole (as before streaming) and streamed, with the time each takes. For the streaming test.
