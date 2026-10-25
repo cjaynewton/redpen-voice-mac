@@ -324,10 +324,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             w.show()
         }
         // One copy at a time: a second one (opened by hand while the watchdog reopens it) goes quietly.
-        let mine = Bundle.main.bundleIdentifier ?? ""
-        if NSRunningApplication.runningApplications(withBundleIdentifier: mine).contains(where: { $0.processIdentifier != getpid() }) {
-            Log.note("another copy is running, this one quits"); Watchdog.markCleanQuit(); exit(0)
-        }
+        // The loser leaves no quit note: the note is per copy, and the running copy's watchdog must still guard it.
+        if !Watchdog.takeLock() { Log.note("another copy is running, this one quits"); exit(0) }
         Watchdog.start()
         restarted = CommandLine.arguments.contains("--restarted")
         Updates.shared.start()
@@ -457,7 +455,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Whisper writes each stretch at a pause while you talk, so only the last few seconds are left at the end.
         livePieces = 0; liveTyped = 0; liveShown = ""; liveStopped = false; liveLeftover = ""
         // A dictation still finishing keeps its drafts as typed: the new one's words come after them.
-        finishingDrafting?.checksStopped = true
+        finishingDrafting?.checksStopped = true; finishingDrafting?.draftsStopped = true
         drafting = nil
         if config.engine == "whisper", s.drafter != nil, config.mode != "rewrite" {
             drafting = Drafting(owner: s)
@@ -591,6 +589,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var typedAny: Bool { runs.contains { !$0.text.isEmpty } }
     }
     private var drafting: Drafting?
+    /// True when every talk key is a modifier (Fn, Option, Command, Control): its presses never show up as key
+    /// presses, so any hardware key press is you typing.
+    private var talkKeyIsModifier: Bool { keys.keys.allSatisfy { HoldKey.modifiers[$0.code] != nil } }
 
     private func clean(_ t: String) -> String {
         let n = names.apply(t)
@@ -600,16 +601,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Still Voice's own typing at the end of the same box: no key or click from you since this dictation began
     /// (read from the keyboard and mouse hardware, so it holds even while Voice is busy typing), same app, same box.
     private func draftSafe(_ d: Drafting) -> Bool {
-        guard Self.userQuietSince(d.startedAt), userActedAt < d.startedAt, let b = d.box,
+        guard Self.userQuietSince(d.startedAt, keys: talkKeyIsModifier), userActedAt < d.startedAt, let b = d.box,
               NSWorkspace.shared.frontmostApplication?.processIdentifier == b.pid,
               let (now, _) = Insert.focusedElement(), CFEqual(now, b.element) else { return false }
         return true
     }
 
     /// No key or click from the hardware since `t` (Voice's own typing is posted, not hardware, so it doesn't count).
-    nonisolated static func userQuietSince(_ t: Date) -> Bool {
+    /// `keys`: count hardware key presses too. Off when the talk key is an ordinary key (its own repeats would count).
+    nonisolated static func userQuietSince(_ t: Date, keys: Bool = true) -> Bool {
         let since = Date().timeIntervalSince(t)
-        for e in [CGEventType.keyDown, .leftMouseDown, .rightMouseDown] where CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: e) < since {
+        let kinds: [CGEventType] = keys ? [.keyDown, .leftMouseDown, .rightMouseDown] : [.leftMouseDown, .rightMouseDown]
+        for e in kinds where CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: e) < since {
             return false
         }
         return true
@@ -628,13 +631,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if d.box == nil {
             // The first words fix where this dictation goes: a text box with a plain cursor (no selected words, which
             // typing would replace), or nowhere until you let go.
-            guard Insert.focus().kind == .text, let (el, pid) = Insert.focusedElement(), Insert.selectionLength(el) ?? 0 == 0 else {
+            guard Insert.focus().kind == .text, let (el, pid) = Insert.focusedElement(), Insert.selectionLength(el) == 0 else {
                 d.draftsStopped = true; liveShown = out; hud.caption(liveShown); return
             }
             d.box = (pid, el)
         }
         guard draftSafe(d) else { d.draftsStopped = true; liveShown = out; hud.caption(liveShown); Log.note("draft: you moved or typed, drafts stopped"); return }
-        if Insert.text(out, joining: delivery) {
+        let started = d.startedAt, keysCount = talkKeyIsModifier
+        if Insert.text(out, joining: delivery, while: { AppDelegate.userQuietSince(started, keys: keysCount) }) {
             d.runs.append(.init(drafts: i..<i + 1, text: String(repeating: " ", count: Insert.typedPadding) + out, checked: false))
             if d.firstLag == nil { d.firstLag = Date().timeIntervalSince(s.timeOf(s.speechOnset)) }
         } else {
@@ -669,10 +673,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         d.changed += 1; d.words += n
         guard draftSafe(d) else { d.checksStopped = true; Log.note("draft: you moved or typed, the draft stays"); return }
         let later = d.runs[(idx.upperBound + 1)...].map(\.text).joined()
-        let started = d.startedAt
-        let quiet: () -> Bool = { AppDelegate.userQuietSince(started) }
+        let started = d.startedAt, keysCount = talkKeyIsModifier
+        let quiet: () -> Bool = { AppDelegate.userQuietSince(started, keys: keysCount) }
         let deleted = Insert.backspace((typed + later).count, while: quiet)
-        guard deleted == (typed + later).count, Insert.type(fixed + later, while: quiet) else {
+        guard deleted == (typed + later).count, (fixed + later).isEmpty || Insert.type(fixed + later, while: quiet) else {
             d.checksStopped = true; Insert.forgetLast()
             Log.note("draft: stopped partway (you typed or clicked); history has the checked text")
             return
@@ -692,6 +696,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             replace(d, runs: first...(d.runs.count - 1), drafts: lower..<max(lower + 1, s.draftCount), with: tail)
         } else if !d.checksStopped, !tail.isEmpty, draftSafe(d) {
             _ = Insert.text(tail, joining: delivery)  // words after the last draft
+        }
+        // A name split across two checks ("claw" | "code") is only fixed in the whole text: if the box still differs
+        // from the whole cleaned text, one last replacement makes it exactly that.
+        if !d.checksStopped, !d.runs.isEmpty {
+            let typed = d.runs.map(\.text).joined()
+            let lead = typed.first == " " ? " " : ""
+            let whole = lead + clean(s.written.joined(separator: " ")).trimmingCharacters(in: .whitespaces)
+            if typed != whole, !whole.trimmingCharacters(in: .whitespaces).isEmpty {
+                replace(d, runs: 0...(d.runs.count - 1), drafts: d.runs[0].drafts.lowerBound..<max(d.runs[0].drafts.lowerBound + 1, s.draftCount), with: whole)
+            }
         }
         let kept = d.checksStopped || d.draftsStopped
         if kept { hud.flash("Part went in as a quick draft. ⌃⌥V pastes the checked version.", for: 3) } else { hud.hide() }

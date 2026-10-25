@@ -8,7 +8,7 @@ import VoiceCore
 /// cursor back; when an app says yes and does nothing, the text is typed instead, as key events.
 enum Insert {
     /// `joining`: the dictation this text belongs to, when it is typed in pieces, so Take back removes all of it.
-    static func text(_ text: String, joining: Int? = nil) -> Bool {
+    static func text(_ text: String, joining: Int? = nil, while still: () -> Bool = { true }) -> Bool {
         typedSome = false; typedCount = 0; typedPadding = 0
         guard !text.isEmpty else { return true }  // nothing to type; replacing the selection with "" would delete it
         dictation = joining
@@ -19,7 +19,7 @@ enum Insert {
         guard hasFocus, let focusedRef, CFGetTypeID(focusedRef) == AXUIElementGetTypeID() else {
             Log.note("insert: no focused element, typing")
             let p = leadingSpace(text); typedPadding = p.utf16.count - text.utf16.count
-            return type(p)
+            return type(p, while: still)
         }
         let el = focusedRef as! AXUIElement
         wakeElectron(el)
@@ -34,7 +34,7 @@ enum Insert {
         }
         // Focus can move between the check and here: never type into a page or a video.
         guard focus().kind != .notText else { Log.note("insert: focus left the text box, not typed"); return false }
-        let ok = type(padded)
+        let ok = type(padded, while: still)
         if ok { remember(padded) }
         return ok
     }

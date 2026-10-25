@@ -76,6 +76,8 @@ if pgrep -x RedpenVoice >/dev/null; then
     sleep 1
   done
   # A rebuild is a normal quit: leave the note so the crash watchdog doesn't reopen the old copy.
-  touch "$HOME/Library/Application Support/Redpen Voice/clean-quit"
+  for p in $(pgrep -f "$HOME/Applications/Redpen Voice.app/Contents/MacOS/RedpenVoice" ); do
+    touch "$HOME/Library/Application Support/Redpen Voice/clean-quit-$p"
+  done
   pkill -f "$HOME/Applications/Redpen Voice.app/Contents/MacOS/RedpenVoice"; sleep 1; open ~/Applications/"Redpen Voice.app"; echo "Restarted"
 fi
