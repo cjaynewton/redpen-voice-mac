@@ -212,7 +212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard session != nil else {
             // Words still being written are dropped on quit; the video they paused is put back.
-            if pausedMedia { pausedMedia = false; Media.pressPlayPause(); Log.note("media: resumed on quit") }
+            if pausedMedia, config.resumeMedia ?? true { pausedMedia = false; Media.pressPlayPause(); Log.note("media: resumed on quit") }
             return .terminateNow
         }
         Log.note("quit asked mid-dictation, finishing first")
@@ -223,6 +223,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var quitting = false
     /// Dictations whose words are still being written. The pause is held until the last one is done.
     private var writing = 0
+    /// The press whose recording the mic is feeding. Only that press may stop it.
+    private var micOwner = 0
 
     private var engineWord: String {
         switch engine.state {
@@ -281,20 +283,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let thisPress = press
         // A press that starts while the last one's pause is still held (its words still being written) takes the
         // pause over, so the video comes back once, after this press, and is never paused or started twice.
-        let players = config.pauseMedia && !pausedMedia ? Media.playingApps() : []
+        // The video is left alone until this is a real press: a quick tap (the first of a double tap, or a stray
+        // tap) is over before 0.3 s and never presses anything, so taps can't flip a video on and off.
         if pausedMedia {
             Log.note("media: still paused from the last press")
-        } else if !players.isEmpty {
-            SoundTap.loudness(of: players.map(\.object), for: 0.25) { peak in
-                DispatchQueue.main.async { [weak self] in
-                    guard let self, self.press == thisPress, self.session != nil, !self.pausedMedia else { return }
-                    let playing = MediaGate.isPlaying(peak: peak)
-                    if playing { self.pausedMedia = true; Media.pressPlayPause() }
-                    Log.note("media: apps [\(players.map(\.name).joined(separator: ", "))], loudness \(peak.map { String(format: "%.4f", $0) } ?? "no tap"), paused \(playing)")
+        } else if config.pauseMedia {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let self, self.press == thisPress, self.session != nil, !self.pausedMedia else { return }
+                let players = Media.playingApps()
+                guard !players.isEmpty else { Log.note("media: no app playing"); return }
+                SoundTap.loudness(of: players.map(\.object), for: 0.25) { peak in
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, self.press == thisPress, self.session != nil, !self.pausedMedia else { return }
+                        let playing = MediaGate.isPlaying(peak: peak)
+                        if playing { self.pausedMedia = true; Media.pressPlayPause() }
+                        Log.note("media: apps [\(players.map(\.name).joined(separator: ", "))], loudness \(peak.map { String(format: "%.4f", $0) } ?? "no tap"), paused \(playing)")
+                    }
                 }
             }
-        } else {
-            Log.note("media: no app playing")
         }
         settleWork?.cancel(); settleWork = settle
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: settle)
@@ -313,6 +319,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         s.start(module: module, vocabulary: names.vocabulary)
         recorder.begin(onBuffer: { buf in s.push(buf) },
                        onLevel: { [weak self] v in DispatchQueue.main.async { self?.hud.level(v) } })
+        micOwner = thisPress
         Log.note("recording from \(recorder.inputName)")
         busy = false
     }
@@ -339,6 +346,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func resumeMedia() {
         guard MediaGate.shouldResume(paused: pausedMedia, recordingAgain: session != nil || writing > 0) else { return }
         pausedMedia = false
+        // "Play again when I stop talking" off: pause only, so nothing ever starts by itself.
+        guard config.resumeMedia ?? true else { Log.note("media: left paused, play again is off"); return }
         // Quitting: no time to listen, the app is about to go.
         if quitting { Media.pressPlayPause(); Log.note("media: resumed on quit"); return }
         let players = Media.playingApps()
@@ -371,13 +380,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hud.writing()
         if config.sounds { NSSound(named: "Tink")?.play() }
         let app = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
+        let owner = press
         writing += 1
         Task { [weak self] in
             guard let self else { return }
             // Half a second more after the key comes up: the last syllable is usually still in the air.
             try? await Task.sleep(for: .milliseconds(500))
-            Log.note("audio: \(self.recorder.pushedFrames) frames (\(String(format: "%.1f", Double(self.recorder.pushedFrames) / 16000))s), peak \(String(format: "%.3f", self.recorder.peak))")
-            self.recorder.end()
+            // A new press that started in that half second owns the mic now. Stopping it here cut its recording off.
+            if self.micOwner == owner {
+                Log.note("audio: \(self.recorder.pushedFrames) frames (\(String(format: "%.1f", Double(self.recorder.pushedFrames) / 16000))s), peak \(String(format: "%.3f", self.recorder.peak))")
+                self.recorder.end()
+            } else {
+                Log.note("audio: a new press started, its recording kept going")
+            }
             var raw = ""
             do { raw = try await s.finish() } catch { Log.note("finish failed: \(error.localizedDescription)") }
             let t0 = Date()

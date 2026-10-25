@@ -23,6 +23,9 @@ struct Config: Codable {
     var talkKeyChoice: String { talkKey ?? (fnKey == rightOptionKey ? "fnOrOption" : fnKey ? "fn" : "rightOption") }
     /// Press the Mac's play/pause key when recording starts, only if something is playing, and again when it ends.
     var pauseMedia = true
+    /// Press play again when you stop talking. Off means pause only: a video never starts by itself, and you press
+    /// play when you want it. Older config files lack it, so it is optional and on when missing.
+    var resumeMedia: Bool?
     /// "dictation" (Apple's dictation model, tuned for talking to a text field), "transcription" (Apple's general
     /// model) or "whisper" (OpenAI's Whisper, downloaded once and run on this Mac).
     var engine = "dictation"

@@ -365,6 +365,11 @@ struct SettingsView: View {
             Divider().overlay(Ink.line)
             row("Pause music and video while I talk") { Toggle("", isOn: $model.config.pauseMedia).labelsHidden().toggleStyle(.switch).tint(Ink.red) }
             Divider().overlay(Ink.line)
+            row("Play again when I stop talking", "Off: your video stays paused until you press play, so nothing starts by itself.") {
+                Toggle("", isOn: Binding(get: { model.config.resumeMedia ?? true }, set: { model.config.resumeMedia = $0 }))
+                    .labelsHidden().toggleStyle(.switch).tint(Ink.red).disabled(!model.config.pauseMedia)
+            }
+            Divider().overlay(Ink.line)
             row("Level bar", "The bar near the bottom of the screen while you talk.") {
                 Picker("", selection: Binding(get: { model.config.levelLook },
                                               set: { v in model.config.showLevel = v != "off"; if v != "off" { model.config.levelStyle = v } })) {
