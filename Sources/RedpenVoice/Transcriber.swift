@@ -37,15 +37,23 @@ final class Transcriber {
         if let prompt, !prompt.isEmpty, let tokens = whisper.tokenizer?.encode(text: " " + prompt.trimmingCharacters(in: .whitespaces)) {
             options.promptTokens = tokens
         }
-        // The Mac's AI chip now and then refuses a job when another app is using it ("ANE op async execution
-        // failed"); one more try a moment later almost always works.
+        // One job at a time: two dictations close together (a double tap right after talking) asked Whisper at once
+        // and both crawled (41 s on a busy Mac, Oct 25). They now wait in line.
+        await gate.acquire()
+        let started = Date()
         let results: [TranscriptionResult]
-        do { results = try await whisper.transcribe(audioArray: audio, decodeOptions: options) }
-        catch {
-            Log.note("engine: whisper failed once, trying again")
-            try await Task.sleep(for: .milliseconds(150))
-            results = try await whisper.transcribe(audioArray: audio, decodeOptions: options)
-        }
+        do {
+            // The Mac's AI chip now and then refuses a job when another app is using it ("ANE op async execution
+            // failed"); one more try a moment later almost always works.
+            do { results = try await whisper.transcribe(audioArray: audio, decodeOptions: options) }
+            catch {
+                Log.note("engine: whisper failed once, trying again")
+                try await Task.sleep(for: .milliseconds(150))
+                results = try await whisper.transcribe(audioArray: audio, decodeOptions: options)
+            }
+        } catch { await gate.release(); throw error }
+        lastJob = Date().timeIntervalSince(started)
+        await gate.release()
         let text = Silence.clean(joined(results), peak: peak)
         // Whisper skips a stretch it judges to be silence. A short, quiet sentence can be skipped whole (3 of 1,100
         // WildSpeech clips), so when nothing came back but the audio has real sound, ask again without that skip.
@@ -55,7 +63,12 @@ final class Transcriber {
         retry.logProbThreshold = nil
         retry.firstTokenLogProbThreshold = nil
         Log.note("engine: whisper heard nothing in sound, asked again")
-        return Silence.clean(joined(try await whisper.transcribe(audioArray: audio, decodeOptions: retry)), peak: peak)
+        await gate.acquire()
+        do {
+            let again = try await whisper.transcribe(audioArray: audio, decodeOptions: retry)
+            await gate.release()
+            return Silence.clean(joined(again), peak: peak)
+        } catch { await gate.release(); throw error }
     }
 
     private func module(_ config: Config) -> any SpeechModule {
@@ -162,6 +175,23 @@ final class Transcriber {
         return (pieces.joined(separator: " "), pieces, wait)
     }
 
+    /// Whisper's queue: one job at a time, first come first served.
+    actor Gate {
+        private var busy = false
+        private var waiting: [CheckedContinuation<Void, Never>] = []
+        func acquire() async {
+            if !busy { busy = true; return }
+            await withCheckedContinuation { waiting.append($0) }
+        }
+        func release() {
+            if waiting.isEmpty { busy = false } else { waiting.removeFirst().resume() }
+        }
+    }
+    static let gate = Gate()
+    /// How long the last Whisper job took. Over two seconds means the Mac is busy, and the head start is skipped so
+    /// it doesn't add work that may be thrown away.
+    nonisolated(unsafe) static var lastJob = 0.0
+
     /// Hints first, then the end of the last piece (so a sentence cut at a pause carries on in the same style).
     static func prompt(_ hints: String, _ previous: String?) -> String {
         let tail = previous.map { String($0.suffix(160)) } ?? ""
@@ -205,7 +235,7 @@ final class Transcriber {
                         // Quiet for a moment with new words since the last piece: write them now, ahead of release.
                         // Once per quiet spell: again only after you have said more.
                         let saidMore = early.map { Chunker.hasSpeech(audio, from: $0.end, reference: cut) } ?? true
-                        if saidMore, audio.count - cut > Chunker.rate / 2, Chunker.endsQuiet(audio, from: cut) {
+                        if saidMore, Transcriber.lastJob < 2, audio.count - cut > Chunker.rate / 2, Chunker.endsQuiet(audio, from: cut) {
                             let text = (try? await Transcriber.whisperText(whisper, Array(audio[cut...]), prompt: Transcriber.prompt(hints, carry ? pieces.last : nil))) ?? ""
                             early = (audio.count, text)
                         }

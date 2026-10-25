@@ -216,6 +216,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { await engine.prepare(config) }
         keys.keys = HoldKey.keys(for: config.talkKeyChoice); keys.doubleTap = config.doubleTap ?? true
         fixWatch.onLearn = { [weak self] f in self?.learn(f) }
+        keys.onHandsFree = { [weak self] in self?.handsFreeOn() }
         keys.onDown = { [weak self] in self?.begin() }
         keys.onUp = { [weak self] in self?.end() }
         keys.onCancel = { [weak self] in self?.cancel() }
@@ -369,6 +370,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Fn was a shortcut, not talking: drop the audio, put the music back, no words written.
     private func cancel() {
         guard let s = session else { return }
+        wasHandsFree = false
         session = nil
         settleWork?.cancel()
         recorder.end()
@@ -434,6 +436,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if session == nil { hud.flash("Learned: \(f.fixed)", ok: true, for: 2.5) }
         Log.note("learned a word from your fixes")
     }
+
+    /// The second tap: the bar shows straight away and says hands-free, so you can see it's still listening with no
+    /// key held. It stays until you tap again.
+    private func handsFreeOn() {
+        guard session != nil else { return }
+        settleWork?.cancel()
+        hud.style = config.levelLook == "off" ? "pen" : config.levelLook; hud.micName = recorder.inputName
+        hud.show("", level: true)
+        hud.caption("Hands-free · tap \(keys.keys.first?.name ?? "the key") to stop")
+        wasHandsFree = true
+    }
+    private var wasHandsFree = false
 
     /// Words that finished while your cursor wasn't in a text box. They go in when you click into one.
     private var waitingText: String?
@@ -528,6 +542,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let typedLive = liveTyped  // pieces already typed while you talked; only the rest goes in now
         writing += 1
         let releasedAt = Date()
+        let handsFree = wasHandsFree
+        wasHandsFree = false
         Task { [weak self] in
             guard let self else { return }
             // More audio after the key comes up, for a last syllable still in the air: half a second, or a tenth
@@ -571,7 +587,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     inserted = rest.isEmpty ? true : Insert.text(rest, joining: typedLive > 0 ? gen : nil)
                     if inserted, !newer { self.fixWatch.watch(text) }
                     if !newer {
-                        if inserted { self.hud.hide() } else { self.hud.flash("Couldn't type it here. Press ⌃⌥V to paste", for: 2.5) }
+                        if inserted { if handsFree { self.hud.flash("Hands-free done", ok: true) } else { self.hud.hide() } }
+                        else { self.hud.flash("Couldn't type it here. Press ⌃⌥V to paste", for: 2.5) }
                     }
                     Log.note("insert: focus \(focus.role), \(focus.kind.rawValue)")
                 }

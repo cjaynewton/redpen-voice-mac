@@ -16,6 +16,11 @@ final class HoldKey {
     var onDown: () -> Void = {}
     var onUp: () -> Void = {}
     var onCancel: () -> Void = {}
+    /// Hands-free just started (second tap), so the bar can say so.
+    var onHandsFree: () -> Void = {}
+    /// A tap is a press shorter than this; the second must come within `tapGap` of the first. Generous enough for an
+    /// unhurried double tap (Cedric's first tap ran just over the old 0.3 s on Oct 25).
+    static let tapLength = 0.4, tapGap = 0.5
     private var monitors: [Any] = []
     private var held: Set<Int> = []
     private var active = false
@@ -104,16 +109,16 @@ final class HoldKey {
             guard !active else { return }
             spoiled = false
             active = true
-            secondTap = doubleTap && lastTap.map { Date().timeIntervalSince($0) < 0.4 } == true
+            secondTap = doubleTap && lastTap.map { Date().timeIntervalSince($0) < Self.tapGap } == true
             pressedAt = Date()
             onDown()
         } else if held.isEmpty {
             if swallowUp { swallowUp = false; return }
             guard active else { return }
             if spoiled { active = false; onCancel(); return }
-            if doubleTap, Date().timeIntervalSince(pressedAt) < 0.3 {
+            if doubleTap, Date().timeIntervalSince(pressedAt) < Self.tapLength {
                 // A quick tap: the second one keeps listening, the first is dropped quietly and waits for a second.
-                if secondTap { latched = true; secondTap = false; lastTap = nil; Log.note("hold key: hands-free on"); return }
+                if secondTap { latched = true; secondTap = false; lastTap = nil; Log.note("hold key: hands-free on"); onHandsFree(); return }
                 active = false; lastTap = Date(); onCancel(); return
             }
             active = false
