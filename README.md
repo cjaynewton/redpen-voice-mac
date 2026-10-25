@@ -22,7 +22,6 @@ Everything runs on your Mac. Your voice is never sent anywhere.
 - **Two engines.** Whisper (OpenAI's model, a one-time 626 MB download, run on your Mac) or the Mac's built-in engine (already there, words appear a little sooner).
 - **Words it gets wrong.** A plain list, one per line: `claw code = Claude Code` fixes what it hears, a single name tells it to listen for that name.
 - **Learns your names.** Fix a name by hand after a dictation ("so well" to "Sowell") and the second time you make the same fix, it goes into your list. Only names and terms are learned, never everyday words, and the list stays a plain file you can edit.
-- **Names on screen.** When you start talking, the names in the box you're typing in and the window title are given to Whisper as spelling hints. They are read once and kept nowhere.
 - **Learns how you talk.** Like a driving app that learns how you drive, it learns your pace and how long you pause, and uses that to decide where a thought ends. Only the numbers are kept.
 - **Lands where your cursor is.** The words go wherever your cursor is when they're ready. If it's on a web page or a video instead of a text box, nothing is typed there (on a video page, letters are shortcuts): the words wait for you to click into a box.
 - **Nothing lost.** Every dictation is kept in a history file on your Mac. Press Control-Option-V to paste the last one again.

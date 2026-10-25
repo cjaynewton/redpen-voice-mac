@@ -29,7 +29,8 @@ struct Config: Codable {
     /// Words appear as you talk (Whisper): typed into the box when talking hands-free, shown in the bar while you
     /// hold the key. On when missing.
     var liveWords: Bool?
-    /// Names near the cursor (the box you're in, the window title) given to Whisper as spelling hints. On when missing.
+    /// Names from the list and near the cursor given to Whisper as spelling hints. Off when missing: each hint word
+    /// costs time before Whisper starts (about 3 s for a 355-character list on an M1 Max).
     var screenHints: Bool?
     /// "dictation" (Apple's dictation model, tuned for talking to a text field), "transcription" (Apple's general
     /// model), "whisper" (OpenAI's Whisper, downloaded once and run on this Mac) or "parakeet" (NVIDIA's Parakeet v2,

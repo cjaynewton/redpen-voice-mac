@@ -388,7 +388,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Whisper writes each stretch at a pause while you talk, so only the last few seconds are left at the end.
         livePieces = 0; liveTyped = 0; liveShown = ""; liveStopped = false; liveLeftover = ""
         if config.engine == "whisper" {
-            s.hints = Hints.line(names: names.spellings, screen: (config.screenHints ?? true) ? screenWords() : [])
+            // Off unless switched on: Whisper reads a hint word by word before it starts, and his 355-character names
+            // list added about 3 s to every dictation (2.0 s to 5.2 s on the same clip, Oct 25). The names list still
+            // fixes the words after Whisper writes them.
+            s.hints = (config.screenHints ?? false) ? Hints.line(names: names.spellings, screen: screenWords()) : ""
             s.onPiece = { [weak self, weak s] piece in DispatchQueue.main.async { if let s { self?.piece(piece, from: s) } } }
             s.stream(Chunker(pauseSeconds: talk.pauseSeconds))
         }

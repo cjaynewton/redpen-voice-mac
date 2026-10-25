@@ -471,9 +471,10 @@ final class Transcriber {
     func speedTest(_ url: URL, idle: Double) async throws {
         guard let whisper else { return }
         let audio = try AudioProcessor.loadAudioAsFloatArray(fromPath: url.path)
-        for i in 1...5 { let t = Date(); _ = try await Self.whisperText(whisper, audio); print("warm \(i): \(Log.ms(Date().timeIntervalSince(t))) ms") }
+        let prompt = ProcessInfo.processInfo.environment["VOICE_HINTS"]
+        for i in 1...5 { let t = Date(); _ = try await Self.whisperText(whisper, audio, prompt: prompt); print("warm \(i): \(Log.ms(Date().timeIntervalSince(t))) ms") }
         try await Task.sleep(for: .seconds(idle))
-        for i in 1...2 { let t = Date(); _ = try await Self.whisperText(whisper, audio); print("after \(Int(idle)) s idle \(i): \(Log.ms(Date().timeIntervalSince(t))) ms") }
+        for i in 1...2 { let t = Date(); _ = try await Self.whisperText(whisper, audio, prompt: prompt); print("after \(Int(idle)) s idle \(i): \(Log.ms(Date().timeIntervalSince(t))) ms") }
     }
 
     /// One file, written whole (as before streaming) and streamed, with the time each takes. For the streaming test.
