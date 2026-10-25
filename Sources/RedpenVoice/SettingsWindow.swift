@@ -365,6 +365,11 @@ struct SettingsView: View {
             Divider().overlay(Ink.line)
             row("Pause music and video while I talk") { Toggle("", isOn: $model.config.pauseMedia).labelsHidden().toggleStyle(.switch).tint(Ink.red) }
             Divider().overlay(Ink.line)
+            row("Words appear as I talk", "Hands-free: typed into the box as you go. Holding the key: shown in the bar. Whisper only.") {
+                Toggle("", isOn: Binding(get: { model.config.liveWords ?? true }, set: { model.config.liveWords = $0 }))
+                    .labelsHidden().toggleStyle(.switch).tint(Ink.red)
+            }
+            Divider().overlay(Ink.line)
             row("Play again when I stop talking", "Off: your video stays paused until you press play, so nothing starts by itself.") {
                 Toggle("", isOn: Binding(get: { model.config.resumeMedia ?? true }, set: { model.config.resumeMedia = $0 }))
                     .labelsHidden().toggleStyle(.switch).tint(Ink.red).disabled(!model.config.pauseMedia)

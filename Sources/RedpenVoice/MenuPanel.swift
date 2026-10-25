@@ -8,6 +8,8 @@ struct MenuState {
     var engine = "Mac built-in"
     var mic = ""
     var keyLine = ""
+    /// How you talk, once learned, or how far along the learning is.
+    var talk = ""
     var todayWords = 0, todayWPM = 0, todaySaved = 0
     var totalWords = 0, totalSaved = 0
     var mode = "raw"
@@ -64,6 +66,9 @@ struct MenuPanel: View {
             }
             Text("\(s.todayWords.formatted()) words today, \(s.todaySaved) min saved")
                 .font(.system(size: 12.5)).foregroundStyle(Ink.dim)
+            if !s.talk.isEmpty {
+                Text(s.talk).font(.system(size: 12)).foregroundStyle(Ink.dim).fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 

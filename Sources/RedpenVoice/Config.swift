@@ -26,6 +26,11 @@ struct Config: Codable {
     /// Press play again when you stop talking. Off means pause only: a video never starts by itself, and you press
     /// play when you want it. Older config files lack it, so it is optional and on when missing.
     var resumeMedia: Bool?
+    /// Words appear as you talk (Whisper): typed into the box when talking hands-free, shown in the bar while you
+    /// hold the key. On when missing.
+    var liveWords: Bool?
+    /// Names near the cursor (the box you're in, the window title) given to Whisper as spelling hints. On when missing.
+    var screenHints: Bool?
     /// "dictation" (Apple's dictation model, tuned for talking to a text field), "transcription" (Apple's general
     /// model) or "whisper" (OpenAI's Whisper, downloaded once and run on this Mac).
     var engine = "dictation"

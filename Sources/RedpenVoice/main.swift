@@ -65,6 +65,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.settings?.model.engineState = s
             if s == .ready { self?.warmMic() }
         }
+        // `--stream-test files.txt out.jsonl [pauseSeconds]` writes each file whole and streamed (cut at pauses as a
+        // live dictation would be), one JSON line each, with the wait after release. Whisper only.
+        if let i = CommandLine.arguments.firstIndex(of: "--stream-test"), i + 2 < CommandLine.arguments.count {
+            let list = (try? String(contentsOfFile: CommandLine.arguments[i + 1], encoding: .utf8))?.split(separator: "\n").map(String.init) ?? []
+            let outPath = CommandLine.arguments[i + 2]
+            let pause = i + 3 < CommandLine.arguments.count ? Double(CommandLine.arguments[i + 3]) ?? 0.5 : 0.5
+            var config = config
+            config.engine = "whisper"
+            FileManager.default.createFile(atPath: outPath, contents: nil)
+            Task { [config, engine] in
+                await engine.prepare(config)
+                guard let h = FileHandle(forWritingAtPath: outPath) else { print("cannot write \(outPath)"); exit(1) }
+                for path in list where !path.isEmpty {
+                    do {
+                        let env = ProcessInfo.processInfo.environment
+                        let row = try await engine.streamTest(URL(fileURLWithPath: path), chunker: Chunker(pauseSeconds: pause),
+                                                              hints: env["VOICE_HINTS"] ?? "", carry: env["VOICE_CARRY"] == "1")
+                        if let d = try? JSONSerialization.data(withJSONObject: row) { h.write(d); h.write(Data("\n".utf8)) }
+                        print("\((path as NSString).lastPathComponent) done"); fflush(stdout)
+                    } catch { print("\(path): \(error)") }
+                }
+                try? h.close()
+                exit(0)
+            }
+            return
+        }
         // `--transcribe file.wav` runs the engine over a file and prints the text: the engine checked without a mic.
         // `--transcribe-list files.txt out.jsonl` runs the engine over many files, one JSON line each, and skips
         // files already in the output so a stopped run picks up where it left off. Used for the accuracy benchmark.
@@ -188,6 +214,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         SFSpeechRecognizer.requestAuthorization { s in Log.note("speech permission: \(s.rawValue)") }
         Task { await engine.prepare(config) }
         keys.keys = HoldKey.keys(for: config.talkKeyChoice); keys.doubleTap = config.doubleTap ?? true
+        fixWatch.onLearn = { [weak self] f in self?.learn(f) }
         keys.onDown = { [weak self] in self?.begin() }
         keys.onUp = { [weak self] in self?.end() }
         keys.onCancel = { [weak self] in self?.cancel() }
@@ -271,6 +298,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { hud.flash("Allow the microphone"); return }
         remicIfDefaultMoved(reason: "input moved before this press")
         if waitingText != nil { stopWaiting(); hud.hide(); Log.note("insert: new press, the waiting words stay for paste") }
+        fixWatch.finish()
         delivery += 1
         busy = true
         // The bar waits a quarter second, so an Fn shortcut never flickers it.
@@ -320,6 +348,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // The engine is listening before the pre-roll arrives, so nothing waits in a queue.
         s.start(module: module, vocabulary: names.vocabulary)
+        // Whisper writes each stretch at a pause while you talk, so only the last few seconds are left at the end.
+        livePieces = 0; liveTyped = 0; liveShown = ""; Insert.continuing = false
+        if config.engine == "whisper" {
+            s.hints = Hints.line(names: names.spellings, screen: (config.screenHints ?? true) ? screenWords() : [])
+            s.onPiece = { [weak self] piece in DispatchQueue.main.async { self?.piece(piece, from: s) } }
+            s.stream(Chunker(pauseSeconds: talk.pauseSeconds))
+        }
         recorder.begin(onBuffer: { buf in s.push(buf) },
                        onLevel: { [weak self] v in DispatchQueue.main.async { self?.hud.level(v) } })
         micOwner = thisPress
@@ -337,6 +372,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hud.hide()
         resumeMedia()
         Log.note("cancelled: another key while holding")
+    }
+
+    /// Pieces of the current dictation written so far, how many of them are already typed into the box, and the text
+    /// shown in the bar.
+    /// How you talk, learned from your dictations: numbers only, in talk.json beside your settings.
+    private static let talkURL = Config.dir.appendingPathComponent("talk.json")
+    private var talk = TalkProfile.load(AppDelegate.talkURL)
+    private var livePieces = 0
+    /// Learns names you fix by hand after a dictation.
+    private let fixWatch = FixWatch()
+    private var liveTyped = 0
+    private var liveShown = ""
+
+    /// A stretch Whisper finished while you are still talking. Hands-free, it is typed into the box now (in order,
+    /// only into a text box, never in rewrite mode, which needs the whole dictation). Holding the key, Fn or Option
+    /// is down and would turn typed letters into shortcuts, so it is shown in the bar and goes in when you let go.
+    private func piece(_ text: String, from s: Transcriber.Session) {
+        guard session === s else { return }
+        livePieces += 1
+        liveShown += (liveShown.isEmpty ? "" : " ") + text
+        guard config.liveWords ?? true else { return }
+        if keys.handsFree, config.mode != "rewrite", liveTyped == livePieces - 1, waitingText == nil,
+           Insert.focus().kind != .notText {
+            let out = config.mode == "noUms" ? Fillers.strip(names.apply(text)) : names.apply(text)
+            if Insert.text(out) { liveTyped += 1; Insert.continuing = true; Log.note("live: piece \(livePieces) typed") }
+            else { Log.note("live: piece \(livePieces) not typed, the rest goes in at the end") }
+        } else {
+            hud.caption(liveShown)
+        }
+    }
+
+    /// Name-like words near the cursor: the box you're in and the window's title. Read once, kept nowhere.
+    private func screenWords() -> [String] {
+        guard let (el, pid) = Insert.focusedElement() else { return [] }
+        var text = Insert.value(el) ?? ""
+        var w: CFTypeRef?, t: CFTypeRef?
+        if AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXFocusedWindowAttribute as CFString, &w) == .success, let w,
+           AXUIElementCopyAttributeValue(w as! AXUIElement, kAXTitleAttribute as CFString, &t) == .success, let title = t as? String {
+            text = title + "\n" + text
+        }
+        return Hints.fromScreen(text)
+    }
+
+    /// A name fixed the same way twice: it goes into the word list, where you can read it and delete the line.
+    private func learn(_ f: Corrections.Fix) {
+        var list = Config.loadNames()
+        if !list.isEmpty, !list.hasSuffix("\n") { list += "\n" }
+        list += "\(f.heard) = \(f.fixed)\n"
+        try? list.write(to: Config.namesURL, atomically: true, encoding: .utf8)
+        if session == nil { hud.flash("Learned: \(f.fixed)", ok: true, for: 2.5) }
+        Log.note("learned a word from your fixes")
     }
 
     /// Words that finished while your cursor wasn't in a text box. They go in when you click into one.
@@ -429,6 +515,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let app = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
         let owner = press
         let gen = delivery
+        let typedLive = liveTyped  // pieces already typed while you talked; only the rest goes in now
         writing += 1
         Task { [weak self] in
             guard let self else { return }
@@ -449,6 +536,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if self.config.mode == "rewrite", !raw.isEmpty { cleaned = await Cleanup.run(raw) }
             if self.config.mode == "noUms", !raw.isEmpty { let s = Fillers.strip(raw); if s != raw { cleaned = s } }
             let text = cleaned ?? raw
+            // What still has to go in: everything, or only the pieces not already typed while you talked.
+            var rest = text
+            if typedLive > 0 {
+                let r = self.names.apply(s.written.dropFirst(typedLive).joined(separator: " "))
+                rest = self.config.mode == "noUms" ? Fillers.strip(r) : r
+            }
             var inserted = false
             if text.isEmpty, self.delivery != gen { Log.note("no words, a new press began") }
             else if text.isEmpty { self.hud.flash(self.recorder.peak < 0.005 ? "No sound from \(self.recorder.inputName)" : "Didn't catch that", for: 2.5) }
@@ -459,16 +552,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let newer = self.delivery != gen  // you pressed again while these words were being written
                 if focus.kind == .notText {
                     if newer { Log.note("insert: cursor not in a text box (\(focus.role)) and a new press began, kept for paste") }
-                    else { Log.note("insert: cursor not in a text box (\(focus.role)), waiting for a click"); self.holdForClick(text) }
+                    else if !rest.isEmpty { Log.note("insert: cursor not in a text box (\(focus.role)), waiting for a click"); self.holdForClick(rest) }
                 } else {
-                    inserted = Insert.text(text)
+                    inserted = rest.isEmpty ? true : Insert.text(rest)
+                    if inserted, !newer { self.fixWatch.watch(text) }
                     if !newer {
                         if inserted { self.hud.hide() } else { self.hud.flash("Couldn't type it here. Press ⌃⌥V to paste", for: 2.5) }
                     }
                     Log.note("insert: focus \(focus.role), \(focus.kind.rawValue)")
                 }
             }
-            self.history.append(Entry(raw: raw, cleaned: cleaned, seconds: seconds, app: app, inserted: inserted))
+            if typedLive > 0 { Log.note("live: \(typedLive) of \(s.written.count) pieces typed while talking") }
+            if !raw.isEmpty, self.config.engine == "whisper" {
+                self.talk.add(s.recorded, words: raw.split(separator: " ").count)
+                self.talk.save(AppDelegate.talkURL)
+            }
+            Insert.continuing = false
+            // A press that caught no words (a stray tap, a shortcut) leaves no history entry: 163 of 553 were empty.
+            if !text.isEmpty { self.history.append(Entry(raw: raw, cleaned: cleaned, seconds: seconds, app: app, inserted: inserted)) }
             self.writing -= 1
             self.resumeMedia()
             Log.note("dictation \(Int(seconds))s, \(raw.split(separator: " ").count) words, write \(Int(Date().timeIntervalSince(t0) * 1000))ms, into \(app), inserted \(inserted)")
@@ -534,6 +635,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         m.engine = config.engine == "whisper" ? "Whisper" : "Mac built-in"
         m.mic = recorder.inputName
+        m.talk = talk.summary ?? (talk.dictations > 0 ? "Learning how you talk: \(min(talk.dictations, TalkProfile.learnAfter)) of \(TalkProfile.learnAfter) dictations" : "")
         m.keyLine = "Hold \(keyNames) to talk." + ((config.doubleTap ?? true) ? " Tap twice to keep talking." : "")
         let all = history.all()
         let today = Score.today(all), total = Score(all)

@@ -27,15 +27,21 @@ final class Transcriber {
                         chunkingStrategy: seconds > 29 ? .vad : nil)
     }
 
-    private static func whisperText(_ whisper: WhisperKit, _ audio: [Float]) async throws -> String {
+    /// `prompt`: words Whisper should expect (names from your list and the screen, the words just before), passed as
+    /// Whisper's own "previous text" so it spells them the same way. Never typed out.
+    static func whisperText(_ whisper: WhisperKit, _ audio: [Float], prompt: String? = nil) async throws -> String {
         guard !audio.isEmpty else { return "" }
         let seconds = Double(audio.count) / 16000
         let peak = audio.map { abs($0) }.max() ?? 0
-        let text = Silence.clean(joined(try await whisper.transcribe(audioArray: audio, decodeOptions: whisperOptions(seconds: seconds))), peak: peak)
+        var options = whisperOptions(seconds: seconds)
+        if let prompt, !prompt.isEmpty, let tokens = whisper.tokenizer?.encode(text: " " + prompt.trimmingCharacters(in: .whitespaces)) {
+            options.promptTokens = tokens
+        }
+        let text = Silence.clean(joined(try await whisper.transcribe(audioArray: audio, decodeOptions: options)), peak: peak)
         // Whisper skips a stretch it judges to be silence. A short, quiet sentence can be skipped whole (3 of 1,100
         // WildSpeech clips), so when nothing came back but the audio has real sound, ask again without that skip.
         guard text.isEmpty, peak > Silence.quietPeak else { return text }
-        var retry = whisperOptions(seconds: seconds)
+        var retry = options
         retry.noSpeechThreshold = nil
         retry.logProbThreshold = nil
         retry.firstTokenLogProbThreshold = nil
@@ -125,8 +131,36 @@ final class Transcriber {
         state = s; DispatchQueue.main.async { self.onState(s) }
     }
 
+    /// Streaming as a test: the same cuts a live dictation makes, run over a file as if it were being recorded.
+    /// Returns the text, the pieces, and how long the last piece took, which is the wait after you let go.
+    static func simulateStream(_ whisper: WhisperKit, _ audio: [Float], chunker: Chunker, hints: String = "", carry: Bool = false) async throws -> (text: String, pieces: [String], tail: Double) {
+        var cut = 0, pieces: [String] = []
+        var heard = 0
+        let step = Int(0.4 * Double(Chunker.rate))
+        while heard < audio.count {
+            heard = min(audio.count, heard + step)
+            let visible = Array(audio[0..<heard])
+            if let c = chunker.cut(visible, from: cut) {
+                let t = try await whisperText(whisper, Array(audio[cut..<c]), prompt: Self.prompt(hints, carry ? pieces.last : nil))
+                if !t.isEmpty { pieces.append(t) }
+                cut = c
+            }
+        }
+        let t0 = Date()
+        let tail = try await whisperText(whisper, Array(audio[cut...]), prompt: Self.prompt(hints, carry ? pieces.last : nil))
+        let wait = Date().timeIntervalSince(t0)
+        if !tail.isEmpty { pieces.append(tail) }
+        return (pieces.joined(separator: " "), pieces, wait)
+    }
+
+    /// Hints first, then the end of the last piece (so a sentence cut at a pause carries on in the same style).
+    static func prompt(_ hints: String, _ previous: String?) -> String {
+        let tail = previous.map { String($0.suffix(160)) } ?? ""
+        return [hints, tail].filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
     /// One dictation: audio in while the key is held, text out after release.
-    final class Session {
+    final class Session: @unchecked Sendable {
         private let input: AsyncStream<AnalyzerInput>
         private let feed: AsyncStream<AnalyzerInput>.Continuation
         private var analyzer: SpeechAnalyzer?
@@ -135,6 +169,39 @@ final class Transcriber {
         private let whisper: WhisperKit?
         private var samples: [Float] = []
         private let lock = NSLock()
+        /// Whisper writes each finished stretch while you are still talking (cut at a pause), so only the last few
+        /// seconds are left when you let go. `onPiece` hears each one as it is written.
+        var onPiece: ((String) -> Void)?
+        private var loop: Task<Void, Never>?
+        private var cut = 0
+        private var pieces: [String] = []
+        private var stopped = false
+        /// Words to expect (names), set when the dictation starts.
+        var hints = ""
+        /// Pass the last piece along as context for the next. Kept only if the test says it helps.
+        var carry = false
+
+        /// Starts writing pieces as they finish. Whisper only.
+        func stream(_ chunker: Chunker) {
+            guard let whisper else { return }
+            loop = Task.detached(priority: .userInitiated) { [self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(400))
+                    let (audio, done) = lock.withLock { (samples, stopped) }
+                    if done { break }
+                    guard let c = chunker.cut(audio, from: cut) else { continue }
+                    let piece = Array(audio[cut..<c])
+                    cut = c
+                    let text = (try? await Transcriber.whisperText(whisper, piece, prompt: Transcriber.prompt(hints, carry ? pieces.last : nil))) ?? ""
+                    if !text.isEmpty { pieces.append(text); onPiece?(text) }
+                }
+            }
+        }
+
+        /// The pieces already written while you talked, in order.
+        var written: [String] { pieces }
+        /// This dictation's audio (Whisper only), for learning how you talk.
+        var recorded: [Float] { lock.withLock { samples } }
 
         init(whisper: WhisperKit? = nil) {
             self.whisper = whisper
@@ -185,8 +252,12 @@ final class Transcriber {
         func finish() async throws -> String {
             feed.finish()
             if let whisper {
+                lock.withLock { stopped = true }
+                await loop?.value  // a piece being written finishes first, so the order holds
                 let audio = lock.withLock { samples }
-                return try await Transcriber.whisperText(whisper, audio)
+                let tail = try await Transcriber.whisperText(whisper, Array(audio[min(cut, audio.count)...]), prompt: Transcriber.prompt(hints, carry ? pieces.last : nil))
+                if !tail.isEmpty { pieces.append(tail) }
+                return pieces.joined(separator: " ")
             }
             let a = analyzer
             let c = collect
@@ -208,6 +279,8 @@ final class Transcriber {
         }
 
         func cancel() {
+            lock.withLock { stopped = true }
+            loop?.cancel()
             feed.finish()
             collect?.cancel()
             Task { [analyzer] in await analyzer?.cancelAndFinishNow() }
@@ -221,6 +294,19 @@ final class Transcriber {
 
     private static func joined(_ results: [TranscriptionResult]) -> String {
         results.map(\.text).joined(separator: " ").replacingOccurrences(of: "  ", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// One file, written whole (as before streaming) and streamed, with the time each takes. For the streaming test.
+    func streamTest(_ url: URL, chunker: Chunker, hints: String = "", carry: Bool = false) async throws -> [String: Any] {
+        guard let whisper else { throw NSError(domain: "RedpenVoice", code: 4, userInfo: [NSLocalizedDescriptionKey: "Whisper is not loaded"]) }
+        let audio = try AudioProcessor.loadAudioAsFloatArray(fromPath: url.path)
+        var t0 = Date()
+        let whole = try await Self.whisperText(whisper, audio)
+        let wholeSecs = Date().timeIntervalSince(t0)
+        t0 = Date()
+        let s = try await Self.simulateStream(whisper, audio, chunker: chunker, hints: hints, carry: carry)
+        return ["file": url.lastPathComponent, "seconds": Double(audio.count) / 16000, "hyp_whole": whole, "whole_secs": wholeSecs,
+                "hyp": s.text, "pieces": s.pieces.count, "tail_secs": s.tail, "stream_secs": Date().timeIntervalSince(t0)]
     }
 
     /// Runs the engine over an audio file and returns the text. For checking the engine without a microphone.

@@ -24,6 +24,8 @@ final class HoldKey {
     private var lastTap: Date?
     private var secondTap = false
     private var latched = false
+    /// Talking hands-free: no key is held, so typed words can't pick up Fn or Option.
+    var handsFree: Bool { latched }
     private var swallowUp = false
 
     static let fn = Key(code: kVK_Function, name: "Fn")

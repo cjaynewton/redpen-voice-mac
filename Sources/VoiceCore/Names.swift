@@ -20,6 +20,8 @@ public struct Names: Equatable {
     /// The words the engine should listen for. Both halves of every entry, so the engine has a chance to
     /// get the real name first and the replacement is only a net.
     public var vocabulary: [String] { Array(Set(entries.flatMap { [$0.heard, $0.meant] })).sorted() }
+    /// Only the right spellings, for Whisper's hint: telling it the misheard form would teach it the wrong one.
+    public var spellings: [String] { var seen = Set<String>(); return entries.map(\.meant).filter { seen.insert($0.lowercased()).inserted } }
 
     public func apply(_ text: String) -> String {
         var out = text

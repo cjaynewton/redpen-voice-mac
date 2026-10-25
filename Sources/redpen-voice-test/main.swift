@@ -64,6 +64,47 @@ check("media.resume.alreadyplaying", !MediaGate.shouldResume(paused: true, playi
 check("media.alerts", !MediaGate.isMedia("systemsoundserverd") && !MediaGate.isMedia("corespeechd") && !MediaGate.isMedia("Monologue"))
 check("media.players", MediaGate.isMedia("Google Chrome Helper (Aperitif)") && MediaGate.isMedia("Music") && !MediaGate.isMedia("Boom 3D"))
 func fk(_ r: String?, ed: Bool = false, set: Bool = false, web: Bool = false) -> FocusKind { FocusGate.kind(role: r, editableAncestor: ed, valueSettable: set, inBrowser: web) }
+// Streaming cuts: only in a pause, never inside a word.
+func tone(_ secs: Double) -> [Float] { (0..<Int(secs * 16000)).map { Float(sin(Double($0) * 0.05)) * 0.3 } }
+func hush(_ secs: Double) -> [Float] { Array(repeating: 0.0005, count: Int(secs * 16000)) }
+let ch = Chunker()
+check("chunk.tooSoon", ch.cut(tone(2) + hush(1), from: 0) == nil)
+let talk = tone(5) + hush(0.8) + tone(2)
+if let c = ch.cut(talk, from: 0) { check("chunk.inPause", c > 5 * 16000 && c < Int(5.8 * 16000)) } else { check("chunk.inPause", false) }
+check("chunk.shortGap", ch.cut(tone(5) + hush(0.2) + tone(2), from: 0) == nil)
+let longTalk = tone(26)
+if let c = ch.cut(longTalk, from: 0) { check("chunk.forced", c >= 4 * 16000 && c <= 25 * 16000) } else { check("chunk.forced", false) }
+check("chunk.fromLastCut", ch.cut(talk + tone(1), from: 6 * 16000) == nil)
+// How you talk: speech time and the pauses between stretches of speech.
+var tp = TalkProfile()
+tp.add(tone(2) + hush(0.3) + tone(2) + hush(1.0) + tone(1), words: 12)
+check("talk.counted", tp.dictations == 1 && tp.words == 12 && abs(tp.speaking - 5) < 0.2)
+check("talk.gaps", tp.gaps.reduce(0, +) == 2)
+check("talk.default", tp.pauseSeconds == 0.5 && tp.wordsPerMinute == nil && tp.summary == nil)
+var slow = TalkProfile()
+for _ in 0..<25 { slow.add(tone(3) + hush(0.7) + tone(3) + hush(0.75) + tone(3) + hush(0.7) + tone(3), words: 25) }
+check("talk.learnsSlowPauses", slow.pauseSeconds >= 0.7 && slow.pauseSeconds <= 1.0)
+check("talk.wpm", slow.wordsPerMinute.map { $0 > 100 && $0 < 150 } == true)
+var fast = TalkProfile()
+for _ in 0..<25 { fast.add(tone(3) + hush(0.2) + tone(3) + hush(0.25) + tone(3) + hush(0.2) + tone(3), words: 40) }
+check("talk.floor", fast.pauseSeconds == 0.4)
+// Learning fixes: small word swaps only, learned the second time.
+check("fix.name", Corrections.find(typed: "I was reading so well last night", now: "I was reading Sowell last night") == [Corrections.Fix(heard: "so well", fixed: "Sowell")])
+check("fix.twoWords", Corrections.find(typed: "open claw code and run it", now: "Hey, open Claude Code and run it. Thanks") == [Corrections.Fix(heard: "claw code", fixed: "Claude Code")])
+check("fix.caseOnly", Corrections.find(typed: "send it to monica today", now: "send it to Monica today.").isEmpty)
+check("fix.rewrite", Corrections.find(typed: "can you look at the file and tell me", now: "please review the attached document thoroughly").isEmpty)
+check("fix.untouched", Corrections.find(typed: "this stays the same", now: "this stays the same and more words after").isEmpty)
+var learned = Learned()
+let f = Corrections.Fix(heard: "so well", fixed: "Sowell")
+check("learn.once", learned.see(f) == false)
+check("learn.twice", learned.see(f) == true && learned.see(f) == false)
+// Hints from the screen: names and code-like words, not ordinary words or sentence starts.
+let screen = Hints.fromScreen("Ask Cedric about the plan. Then open Claude Code and check fb36e2f in redpen_voice/main.swift. The weather is nice.")
+check("hints.names", screen.contains("Cedric") && screen.contains("Claude") && screen.contains("Code") && screen.contains("fb36e2f"))
+check("hints.code", screen.contains("redpen_voice/main.swift"))
+check("hints.notOrdinary", !screen.contains("Then") && !screen.contains("The") && !screen.contains("weather") && !screen.contains("Ask"))
+check("hints.line", Hints.line(names: ["Sowell", "Claude Code"], screen: ["sowell", "T3"]) == "Sowell, Claude Code, T3")
+check("names.spellings", Names(text: "claw code = Claude Code\nSowell").spellings == ["Claude Code", "Sowell"])
 check("focus.textbox", fk("AXTextArea") == .text)
 check("focus.contenteditable", fk("AXGroup", ed: true, web: true) == .text)
 check("focus.webpage", fk("AXWebArea", web: true) == .notText)

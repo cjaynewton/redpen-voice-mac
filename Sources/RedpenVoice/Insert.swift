@@ -50,14 +50,38 @@ enum Insert {
         return (kind, role ?? "?")
     }
 
+    /// The focused element and its app, for watching a box after the words went in.
+    static func focusedElement() -> (AXUIElement, pid_t)? {
+        let sys = AXUIElementCreateSystemWide()
+        var f: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(sys, kAXFocusedUIElementAttribute as CFString, &f) == .success, let f,
+              CFGetTypeID(f) == AXUIElementGetTypeID() else { return nil }
+        let el = f as! AXUIElement
+        var pid: pid_t = 0
+        AXUIElementGetPid(el, &pid)
+        return (el, pid)
+    }
+
+    /// A box's whole text, or nil when the app won't say.
+    static func value(_ el: AXUIElement) -> String? {
+        var v: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(el, kAXValueAttribute as CFString, &v) == .success else { return nil }
+        return v as? String
+    }
+
     // MARK: Taking back the last dictation
 
     /// What the last dictation put in, where, and when. Cleared once you type anything yourself.
     private(set) static var last: (text: String, pid: pid_t, at: Date)?
     static var typedSince = false
 
+    /// Set while one dictation is typed in pieces (hands-free, as you talk): Take back removes all of it.
+    static var continuing = false
+
     private static func remember(_ text: String) {
-        last = (text, NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0, Date())
+        let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+        if continuing, let l = last, l.pid == pid, !typedSince { last = (l.text + text, pid, Date()) }
+        else { last = (text, pid, Date()) }
         typedSince = false
     }
 

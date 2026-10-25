@@ -20,6 +20,8 @@ final class HUD {
     private var hideAt: DispatchWorkItem?
     private var tick: Timer?
     private var started = Date()
+    /// The newest words written while you talk, shown beside the line.
+    private var captionText = ""
 
     init() {
         panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 240, height: 44), styleMask: [.borderless, .nonactivatingPanel],
@@ -54,7 +56,7 @@ final class HUD {
         if !level { meter.reset(style: "pen"); meter.flat = true }
         label.stringValue = text
         label.isHidden = text.isEmpty
-        if level { started = Date(); meter.reset(style: style); meter.writing = false }
+        if level { started = Date(); meter.reset(style: style); meter.writing = false; captionText = "" }
         layout(text: text, level: level)
         place()
         panel.orderFrontRegardless()
@@ -75,6 +77,16 @@ final class HUD {
     }
 
     func level(_ v: Float) { meter.push(v) }
+
+    /// Shows the end of what has been written so far while you are still talking.
+    func caption(_ text: String) {
+        captionText = text.count > 46 ? "…" + text.suffix(45) : text
+        guard panel.isVisible, !meter.writing, !meter.silent else { return }
+        label.stringValue = captionText
+        label.isHidden = captionText.isEmpty
+        layout(text: captionText, level: true)
+        place()
+    }
 
     func flash(_ text: String, ok: Bool = false, for seconds: Double = 1.2) {
         show(text, level: false, ok: ok)
@@ -100,8 +112,8 @@ final class HUD {
         let silent = meter.silentFor > 1.5 && !micName.isEmpty
         if silent != meter.silent {
             meter.silent = silent
-            label.stringValue = silent ? "No sound from \(micName)" : ""
-            label.isHidden = !silent
+            label.stringValue = silent ? "No sound from \(micName)" : captionText
+            label.isHidden = label.stringValue.isEmpty
             layout(text: label.stringValue, level: true)
             place()
         }
