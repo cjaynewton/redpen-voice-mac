@@ -89,6 +89,8 @@ final class HoldKey {
     }
 
     private func key(_ e: NSEvent) {
+        // Words Voice types itself while you hold the key are not "another key": they would cancel the dictation.
+        if e.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) == Int64(getpid()) { return }
         let code = Int(e.keyCode)
         if isTalkKey(code), Self.modifiers[code] == nil {
             guard !e.isARepeat else { return }
@@ -109,6 +111,8 @@ final class HoldKey {
         if held.isEmpty, !active, !latched { owner = nil }
     }
     private var owner: Int?
+    /// The key running the dictation now, by name, so the hands-free bar names the one that stops it.
+    var ownerName: String? { owner.flatMap { o in keys.first { $0.code == o }?.name } }
 
     private func changed(_ down: Bool) {
         if down {

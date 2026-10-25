@@ -386,7 +386,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The engine is listening before the pre-roll arrives, so nothing waits in a queue.
         s.start(module: module, vocabulary: names.vocabulary)
         // Whisper writes each stretch at a pause while you talk, so only the last few seconds are left at the end.
-        livePieces = 0; liveTyped = 0; liveShown = ""; liveStopped = false
+        livePieces = 0; liveTyped = 0; liveShown = ""; liveStopped = false; liveLeftover = ""
         if config.engine == "whisper" {
             s.hints = Hints.line(names: names.spellings, screen: (config.screenHints ?? true) ? screenWords() : [])
             s.onPiece = { [weak self, weak s] piece in DispatchQueue.main.async { if let s { self?.piece(piece, from: s) } } }
@@ -423,6 +423,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var liveTyped = 0
     private var liveShown = ""
     private var liveStopped = false
+    private var liveLeftover = ""
 
     /// A stretch Whisper finished while you are still talking. Hands-free, it is typed into the box now (in order,
     /// only into a text box, never in rewrite mode, which needs the whole dictation). Holding the key, Fn or Option
@@ -442,7 +443,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if out.trimmingCharacters(in: .whitespaces).isEmpty { liveTyped += 1; return }
             if Insert.text(out, joining: delivery) { liveTyped += 1; Log.note("live: piece \(livePieces) typed, \(keys.handsFree ? "hands-free" : "holding the key")") }
             else if Insert.typedSome {
-                // Part of it went in before the box changed: never type it again; the whole dictation is in history.
+                // Part of it went in before the box changed: keep exactly what didn't, for the end, never retype the rest.
+                let typed = Insert.typedCount - (Insert.typedPadding)
+                let ns = out as NSString
+                liveLeftover = typed < ns.length ? ns.substring(from: max(0, typed)) : ""
                 liveTyped += 1; liveStopped = true; Log.note("live: piece \(livePieces) typed in part, live typing stopped")
             } else { liveStopped = true; Log.note("live: piece \(livePieces) not typed, the rest goes in at the end") }
         } else {
@@ -479,7 +483,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settleWork?.cancel()
         hud.style = config.levelLook == "off" ? "pen" : config.levelLook; hud.micName = recorder.inputName
         hud.show("", level: true)
-        hud.caption("Hands-free · tap \(keys.keys.first?.name ?? "the key") to stop")
+        hud.caption("Hands-free · tap \(keys.ownerName ?? keys.keys.first?.name ?? "the key") to stop")
         wasHandsFree = true
     }
     private var wasHandsFree = false
@@ -588,6 +592,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let owner = press
         let gen = delivery
         let typedLive = liveTyped  // pieces already typed while you talked; only the rest goes in now
+        let leftover = liveLeftover
         writing += 1
         let releasedAt = Date()
         let handsFree = wasHandsFree
@@ -618,7 +623,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var rest = text
             if typedLive > 0 {
                 let r = self.names.apply(s.written.dropFirst(typedLive).joined(separator: " "))
-                rest = self.config.mode == "noUms" ? Fillers.strip(r) : r
+                let more = self.config.mode == "noUms" ? Fillers.strip(r) : r
+                rest = [leftover, more].filter { !$0.isEmpty }.joined(separator: leftover.hasSuffix(" ") ? "" : " ")
             }
             var inserted = false
             if text.isEmpty, self.delivery != gen { Log.note("no words, a new press began") }
@@ -642,6 +648,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             if typedLive > 0 { Log.note("live: \(typedLive) of \(s.written.count) pieces typed while talking") }
+            if s.endingLost { self.hud.flash("The last few words didn't come through. Say them again.", for: 3.5) }
             if !raw.isEmpty, self.config.engine == "whisper" || self.config.engine == "parakeet" {
                 self.talk.add(s.recorded, words: raw.split(separator: " ").count)
                 self.talk.save(AppDelegate.talkURL)

@@ -45,7 +45,7 @@ final class Transcriber {
         // One job at a time: two dictations close together (a double tap right after talking) asked Whisper at once
         // and both crawled (41 s on a busy Mac, Oct 25). They now wait in line.
         let queued = Date()
-        await gate.acquire()
+        try await gate.acquire()
         let started = Date()
         let results: [TranscriptionResult]
         do {
@@ -75,7 +75,7 @@ final class Transcriber {
         retry.logProbThreshold = nil
         retry.firstTokenLogProbThreshold = nil
         Log.note("engine: whisper heard nothing in sound, asked again")
-        await gate.acquire()
+        try await gate.acquire()
         do {
             let again = try await whisper.transcribe(audioArray: audio, decodeOptions: retry)
             await gate.release()
@@ -220,15 +220,23 @@ final class Transcriber {
     }
 
     /// Whisper's queue: one job at a time, first come first served.
+    /// A cancelled job (a guess thrown away when you let go) leaves the line at once instead of holding up the ending.
     actor Gate {
         private var busy = false
-        private var waiting: [CheckedContinuation<Void, Never>] = []
-        func acquire() async {
+        private var waiting: [(id: UUID, turn: CheckedContinuation<Bool, Never>)] = []
+        func acquire() async throws {
             if !busy { busy = true; return }
-            await withCheckedContinuation { waiting.append($0) }
+            let id = UUID()
+            let got = await withTaskCancellationHandler {
+                await withCheckedContinuation { c in waiting.append((id, c)) }
+            } onCancel: { Task { await self.drop(id) } }
+            if !got { throw CancellationError() }
+        }
+        private func drop(_ id: UUID) {
+            if let i = waiting.firstIndex(where: { $0.id == id }) { waiting.remove(at: i).turn.resume(returning: false) }
         }
         func release() {
-            if waiting.isEmpty { busy = false } else { waiting.removeFirst().resume() }
+            if waiting.isEmpty { busy = false } else { waiting.removeFirst().turn.resume(returning: true) }
         }
     }
     static let gate = Gate()
@@ -261,6 +269,8 @@ final class Transcriber {
         private var stopped = false
         /// Words to expect (names), set when the dictation starts.
         var hints = ""
+        /// True when the last part could not be written (the engine failed on it); what came before is kept.
+        private(set) var endingLost = false
         /// Pass the last piece along as context for the next. Kept only if the test says it helps.
         var carry = false
         /// A head start: when you go quiet while still holding the key, what you said since the last piece is written
@@ -276,7 +286,8 @@ final class Transcriber {
                 while true {
                     // A nap the ending can cut short: letting go never waits out the rest of it.
                     let nap = Task { try await Task.sleep(for: .milliseconds(400)) }
-                    lock.withLock { napping = nap }
+                    // Published only if not already stopped, in one step, so letting go can never miss it.
+                    if !lock.withLock({ if stopped { return false }; napping = nap; return true }) { nap.cancel() }
                     _ = try? await nap.value
                     let (audio, done) = lock.withLock { napping = nil; return (samples, stopped) }
                     if done { break }
@@ -288,7 +299,7 @@ final class Transcriber {
                         if saidMore, Transcriber.lastJob < 2, audio.count - cut > Chunker.rate / 2, Chunker.endsQuiet(audio, from: cut) {
                             let from = cut, prompt = Transcriber.prompt(hints, carry ? pieces.last : nil)
                             let guess = Task { try await Transcriber.whisperText(whisper, Array(audio[from...]), prompt: prompt) }
-                            lock.withLock { guessing = guess }
+                            if !lock.withLock({ if stopped { return false }; guessing = guess; return true }) { guess.cancel() }
                             let text = try? await guess.value
                             lock.withLock { guessing = nil }
                             if let text, !guess.isCancelled { early = (audio.count, text) }
@@ -382,10 +393,11 @@ final class Transcriber {
                 } else {
                     do { tail = try await Transcriber.whisperText(whisper, Array(audio[min(cut, audio.count)...]), prompt: Transcriber.prompt(hints, carry ? pieces.last : nil)) }
                     catch {
-                        // Keep what was already written; only the ending is lost.
+                        // Keep what was already written and say the ending is missing, so it is never lost quietly.
                         Log.note("engine: the ending failed, \(pieces.count) pieces kept")
                         if pieces.isEmpty { throw error }
                         tail = ""
+                        endingLost = true
                     }
                 }
                 if !tail.isEmpty { pieces.append(tail) }

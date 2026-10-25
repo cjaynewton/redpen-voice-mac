@@ -9,7 +9,7 @@ import VoiceCore
 enum Insert {
     /// `joining`: the dictation this text belongs to, when it is typed in pieces, so Take back removes all of it.
     static func text(_ text: String, joining: Int? = nil) -> Bool {
-        typedSome = false
+        typedSome = false; typedCount = 0; typedPadding = 0
         guard !text.isEmpty else { return true }  // nothing to type; replacing the selection with "" would delete it
         dictation = joining
         defer { dictation = nil }
@@ -18,11 +18,13 @@ enum Insert {
         let hasFocus = AXUIElementCopyAttributeValue(sys, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success
         guard hasFocus, let focusedRef, CFGetTypeID(focusedRef) == AXUIElementGetTypeID() else {
             Log.note("insert: no focused element, typing")
-            return type(leadingSpace(text))
+            let p = leadingSpace(text); typedPadding = p.utf16.count - text.utf16.count
+            return type(p)
         }
         let el = focusedRef as! AXUIElement
         wakeElectron(el)
         let padded = spaced(text, before: el)
+        typedPadding = padded.utf16.count - text.utf16.count
         if let before = selectedRange(el), AXUIElementSetAttributeValue(el, kAXSelectedTextAttribute as CFString, padded as CFString) == .success {
             // Moved by the length of the text: it landed. Otherwise the app said yes and did nothing.
             if let after = selectedRange(el), after.location == before.location + (padded as NSString).length || after.location > before.location {
@@ -85,6 +87,10 @@ enum Insert {
     private static var lastDictation: Int?
     /// True when the last call typed part of its text before stopping (the app or the box changed).
     private(set) static var typedSome = false
+    /// How much of the text went in (UTF-16 units) when typing stopped partway.
+    private(set) static var typedCount = 0
+    /// The space put in front of the text (0 or 1 unit), so typedCount can be matched back to the text itself.
+    private(set) static var typedPadding = 0
 
     private static func remember(_ text: String) {
         let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
@@ -198,7 +204,7 @@ enum Insert {
             // shortcuts (Fn-E opens emoji, Option-letters type accents).
             down.flags = []; up.flags = []
             down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
-            ok = true; typedSome = true
+            ok = true; typedSome = true; typedCount += units.count
             usleep(4_000)
         }
         return ok
