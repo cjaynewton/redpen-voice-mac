@@ -153,9 +153,11 @@ final class HUD {
         box.layer?.cornerRadius = !classic && !(level && style == "tape") ? height / 2 : 4
     }
 
-    // Above where chat apps put their typing box, so it never hides inside one.
+    // Above where chat apps put their typing box, so it never hides inside one. On the screen with the pointer:
+    // with several screens, NSScreen.main is the menu bar screen for an app like this, often not the one in use.
     private func place() {
-        if let s = NSScreen.main {
+        let mouse = NSEvent.mouseLocation
+        if let s = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) }) ?? NSScreen.main {
             let f = s.visibleFrame
             panel.setFrameOrigin(NSPoint(x: f.midX - panel.frame.width / 2, y: f.minY + 120))
         }

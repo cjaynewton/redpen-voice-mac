@@ -75,6 +75,8 @@ check("chunk.shortGap", ch.cut(tone(5) + hush(0.2) + tone(2), from: 0) == nil)
 let longTalk = tone(26)
 if let c = ch.cut(longTalk, from: 0) { check("chunk.forced", c >= 4 * 16000 && c <= 25 * 16000) } else { check("chunk.forced", false) }
 check("chunk.fromLastCut", ch.cut(talk + tone(1), from: 6 * 16000) == nil)
+check("quiet.end", Chunker.endsQuiet(tone(2) + hush(0.5), from: 0) && !Chunker.endsQuiet(tone(2), from: 0) && !Chunker.endsQuiet(hush(2), from: 0))
+check("quiet.after", !Chunker.hasSpeech(tone(2) + hush(1), from: 2 * 16000 + 800, reference: 0) && Chunker.hasSpeech(tone(2) + hush(0.5) + tone(1), from: 2 * 16000 + 800, reference: 0))
 // How you talk: speech time and the pauses between stretches of speech.
 var tp = TalkProfile()
 tp.add(tone(2) + hush(0.3) + tone(2) + hush(1.0) + tone(1), words: 12)
@@ -94,6 +96,8 @@ check("fix.twoWords", Corrections.find(typed: "open claw code and run it", now: 
 check("fix.caseOnly", Corrections.find(typed: "send it to monica today", now: "send it to Monica today.").isEmpty)
 check("fix.rewrite", Corrections.find(typed: "can you look at the file and tell me", now: "please review the attached document thoroughly").isEmpty)
 check("fix.untouched", Corrections.find(typed: "this stays the same", now: "this stays the same and more words after").isEmpty)
+check("fix.lastWord", Corrections.find(typed: "please call so well", now: "please call Sowell") == [Corrections.Fix(heard: "so well", fixed: "Sowell")])
+check("fix.otherName", Corrections.find(typed: "please call Monica today", now: "please call Priya today").isEmpty)
 var learned = Learned()
 let f = Corrections.Fix(heard: "so well", fixed: "Sowell")
 check("learn.once", learned.see(f) == false)

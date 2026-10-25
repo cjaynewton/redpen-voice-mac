@@ -37,7 +37,16 @@ final class Transcriber {
         if let prompt, !prompt.isEmpty, let tokens = whisper.tokenizer?.encode(text: " " + prompt.trimmingCharacters(in: .whitespaces)) {
             options.promptTokens = tokens
         }
-        let text = Silence.clean(joined(try await whisper.transcribe(audioArray: audio, decodeOptions: options)), peak: peak)
+        // The Mac's AI chip now and then refuses a job when another app is using it ("ANE op async execution
+        // failed"); one more try a moment later almost always works.
+        let results: [TranscriptionResult]
+        do { results = try await whisper.transcribe(audioArray: audio, decodeOptions: options) }
+        catch {
+            Log.note("engine: whisper failed once, trying again")
+            try await Task.sleep(for: .milliseconds(150))
+            results = try await whisper.transcribe(audioArray: audio, decodeOptions: options)
+        }
+        let text = Silence.clean(joined(results), peak: peak)
         // Whisper skips a stretch it judges to be silence. A short, quiet sentence can be skipped whole (3 of 1,100
         // WildSpeech clips), so when nothing came back but the audio has real sound, ask again without that skip.
         guard text.isEmpty, peak > Silence.quietPeak else { return text }
@@ -180,6 +189,9 @@ final class Transcriber {
         var hints = ""
         /// Pass the last piece along as context for the next. Kept only if the test says it helps.
         var carry = false
+        /// A head start: when you go quiet while still holding the key, what you said since the last piece is written
+        /// straight away. If you let go without saying more, that text is the ending and nothing waits on Whisper.
+        private var early: (end: Int, text: String)?
 
         /// Starts writing pieces as they finish. Whisper only.
         func stream(_ chunker: Chunker) {
@@ -189,17 +201,33 @@ final class Transcriber {
                     try? await Task.sleep(for: .milliseconds(400))
                     let (audio, done) = lock.withLock { (samples, stopped) }
                     if done { break }
-                    guard let c = chunker.cut(audio, from: cut) else { continue }
-                    let piece = Array(audio[cut..<c])
-                    cut = c
-                    let text = (try? await Transcriber.whisperText(whisper, piece, prompt: Transcriber.prompt(hints, carry ? pieces.last : nil))) ?? ""
-                    if !text.isEmpty { pieces.append(text); onPiece?(text) }
+                    guard let c = chunker.cut(audio, from: cut) else {
+                        // Quiet for a moment with new words since the last piece: write them now, ahead of release.
+                        // Once per quiet spell: again only after you have said more.
+                        let saidMore = early.map { Chunker.hasSpeech(audio, from: $0.end, reference: cut) } ?? true
+                        if saidMore, audio.count - cut > Chunker.rate / 2, Chunker.endsQuiet(audio, from: cut) {
+                            let text = (try? await Transcriber.whisperText(whisper, Array(audio[cut...]), prompt: Transcriber.prompt(hints, carry ? pieces.last : nil))) ?? ""
+                            early = (audio.count, text)
+                        }
+                        continue
+                    }
+                    early = nil
+                    // The cut moves only once the piece is written: a failed piece stays in the audio still to do,
+                    // so the ending picks it up instead of losing it.
+                    do {
+                        let text = try await Transcriber.whisperText(whisper, Array(audio[cut..<c]), prompt: Transcriber.prompt(hints, carry ? pieces.last : nil))
+                        cut = c
+                        if !text.isEmpty { pieces.append(text); onPiece?(text) }
+                    } catch { Log.note("engine: a piece failed, it will be written with the ending") }
                 }
             }
         }
 
         /// The pieces already written while you talked, in order.
         var written: [String] { pieces }
+        /// True when the last quarter second was quiet: you had already stopped talking when you let go.
+        var endedQuiet: Bool { let a = recorded; return a.count > Chunker.rate / 2 && Chunker.endsQuiet(a, from: 0, seconds: 0.25) }
+
         /// This dictation's audio (Whisper only), for learning how you talk.
         var recorded: [Float] { lock.withLock { samples } }
 
@@ -255,8 +283,21 @@ final class Transcriber {
                 lock.withLock { stopped = true }
                 await loop?.value  // a piece being written finishes first, so the order holds
                 let audio = lock.withLock { samples }
-                let tail = try await Transcriber.whisperText(whisper, Array(audio[min(cut, audio.count)...]), prompt: Transcriber.prompt(hints, carry ? pieces.last : nil))
+                let tail: String
+                if let e = early, e.end <= audio.count, !Chunker.hasSpeech(audio, from: e.end, reference: cut) {
+                    tail = e.text  // nothing said after the head start: it is the ending
+                    Log.note("engine: ending was written ahead of release")
+                } else {
+                    do { tail = try await Transcriber.whisperText(whisper, Array(audio[min(cut, audio.count)...]), prompt: Transcriber.prompt(hints, carry ? pieces.last : nil)) }
+                    catch {
+                        // Keep what was already written; only the ending is lost.
+                        Log.note("engine: the ending failed, \(pieces.count) pieces kept")
+                        if pieces.isEmpty { throw error }
+                        tail = ""
+                    }
+                }
                 if !tail.isEmpty { pieces.append(tail) }
+                onPiece = nil
                 return pieces.joined(separator: " ")
             }
             let a = analyzer
@@ -279,6 +320,7 @@ final class Transcriber {
         }
 
         func cancel() {
+            onPiece = nil
             lock.withLock { stopped = true }
             loop?.cancel()
             feed.finish()
@@ -301,7 +343,8 @@ final class Transcriber {
         guard let whisper else { throw NSError(domain: "RedpenVoice", code: 4, userInfo: [NSLocalizedDescriptionKey: "Whisper is not loaded"]) }
         let audio = try AudioProcessor.loadAudioAsFloatArray(fromPath: url.path)
         var t0 = Date()
-        let whole = try await Self.whisperText(whisper, audio)
+        let skipWhole = ProcessInfo.processInfo.environment["VOICE_SKIP_WHOLE"] == "1"
+        let whole = skipWhole ? "" : try await Self.whisperText(whisper, audio)
         let wholeSecs = Date().timeIntervalSince(t0)
         t0 = Date()
         let s = try await Self.simulateStream(whisper, audio, chunker: chunker, hints: hints, carry: carry)

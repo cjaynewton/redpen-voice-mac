@@ -7,7 +7,12 @@ import VoiceCore
 /// First through Accessibility (replace the selection, which is empty at a plain cursor), checked by reading the
 /// cursor back; when an app says yes and does nothing, the text is typed instead, as key events.
 enum Insert {
-    static func text(_ text: String) -> Bool {
+    /// `joining`: the dictation this text belongs to, when it is typed in pieces, so Take back removes all of it.
+    static func text(_ text: String, joining: Int? = nil) -> Bool {
+        typedSome = false
+        guard !text.isEmpty else { return true }  // nothing to type; replacing the selection with "" would delete it
+        dictation = joining
+        defer { dictation = nil }
         let sys = AXUIElementCreateSystemWide()
         var focusedRef: CFTypeRef?
         let hasFocus = AXUIElementCopyAttributeValue(sys, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success
@@ -75,13 +80,17 @@ enum Insert {
     private(set) static var last: (text: String, pid: pid_t, at: Date)?
     static var typedSince = false
 
-    /// Set while one dictation is typed in pieces (hands-free, as you talk): Take back removes all of it.
-    static var continuing = false
+    /// The dictation being typed now, when it goes in pieces; pieces of the same one join up for Take back.
+    private static var dictation: Int?
+    private static var lastDictation: Int?
+    /// True when the last call typed part of its text before stopping (the app or the box changed).
+    private(set) static var typedSome = false
 
     private static func remember(_ text: String) {
         let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
-        if continuing, let l = last, l.pid == pid, !typedSince { last = (l.text + text, pid, Date()) }
+        if let d = dictation, d == lastDictation, let l = last, l.pid == pid, !typedSince { last = (l.text + text, pid, Date()) }
         else { last = (text, pid, Date()) }
+        lastDictation = dictation
         typedSince = false
     }
 
@@ -186,7 +195,7 @@ enum Insert {
             down.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
             up.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
             down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
-            ok = true
+            ok = true; typedSome = true
             usleep(4_000)
         }
         return ok

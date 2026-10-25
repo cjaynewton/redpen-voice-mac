@@ -353,10 +353,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The engine is listening before the pre-roll arrives, so nothing waits in a queue.
         s.start(module: module, vocabulary: names.vocabulary)
         // Whisper writes each stretch at a pause while you talk, so only the last few seconds are left at the end.
-        livePieces = 0; liveTyped = 0; liveShown = ""; Insert.continuing = false
+        livePieces = 0; liveTyped = 0; liveShown = ""; liveStopped = false
         if config.engine == "whisper" {
             s.hints = Hints.line(names: names.spellings, screen: (config.screenHints ?? true) ? screenWords() : [])
-            s.onPiece = { [weak self] piece in DispatchQueue.main.async { self?.piece(piece, from: s) } }
+            s.onPiece = { [weak self, weak s] piece in DispatchQueue.main.async { if let s { self?.piece(piece, from: s) } } }
             s.stream(Chunker(pauseSeconds: talk.pauseSeconds))
         }
         recorder.begin(onBuffer: { buf in s.push(buf) },
@@ -388,6 +388,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let fixWatch = FixWatch()
     private var liveTyped = 0
     private var liveShown = ""
+    private var liveStopped = false
 
     /// A stretch Whisper finished while you are still talking. Hands-free, it is typed into the box now (in order,
     /// only into a text box, never in rewrite mode, which needs the whole dictation). Holding the key, Fn or Option
@@ -397,11 +398,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         livePieces += 1
         liveShown += (liveShown.isEmpty ? "" : " ") + text
         guard config.liveWords ?? true else { return }
-        if keys.handsFree, config.mode != "rewrite", liveTyped == livePieces - 1, waitingText == nil,
+        if keys.handsFree, config.mode != "rewrite", !liveStopped, liveTyped == livePieces - 1, waitingText == nil,
            Insert.focus().kind != .notText {
             let out = config.mode == "noUms" ? Fillers.strip(names.apply(text)) : names.apply(text)
-            if Insert.text(out) { liveTyped += 1; Insert.continuing = true; Log.note("live: piece \(livePieces) typed") }
-            else { Log.note("live: piece \(livePieces) not typed, the rest goes in at the end") }
+            // Only "um"s: nothing to type, the piece is done.
+            if out.trimmingCharacters(in: .whitespaces).isEmpty { liveTyped += 1; return }
+            if Insert.text(out, joining: delivery) { liveTyped += 1; Log.note("live: piece \(livePieces) typed") }
+            else if Insert.typedSome {
+                // Part of it went in before the box changed: never type it again; the whole dictation is in history.
+                liveTyped += 1; liveStopped = true; Log.note("live: piece \(livePieces) typed in part, live typing stopped")
+            } else { liveStopped = true; Log.note("live: piece \(livePieces) not typed, the rest goes in at the end") }
         } else {
             hud.caption(liveShown)
         }
@@ -521,10 +527,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let gen = delivery
         let typedLive = liveTyped  // pieces already typed while you talked; only the rest goes in now
         writing += 1
+        let releasedAt = Date()
         Task { [weak self] in
             guard let self else { return }
-            // Half a second more after the key comes up: the last syllable is usually still in the air.
-            try? await Task.sleep(for: .milliseconds(500))
+            // More audio after the key comes up, for a last syllable still in the air: half a second, or a tenth
+            // when you had already gone quiet (Whisper), which saves most of that wait on every dictation.
+            try? await Task.sleep(for: .milliseconds(s.endedQuiet ? 100 : 500))
             // A new press that started in that half second owns the mic now. Stopping it here cut its recording off.
             if self.micOwner == owner {
                 Log.note("audio: \(self.recorder.pushedFrames) frames (\(String(format: "%.1f", Double(self.recorder.pushedFrames) / 16000))s), peak \(String(format: "%.3f", self.recorder.peak))")
@@ -533,7 +541,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Log.note("audio: a new press started, its recording kept going")
             }
             var raw = ""
+            let f0 = Date()
             do { raw = try await s.finish() } catch { Log.note("finish failed: \(error.localizedDescription)") }
+            let engineMs = Int(Date().timeIntervalSince(f0) * 1000)
             let t0 = Date()
             raw = self.names.apply(raw)
             var cleaned: String? = nil
@@ -558,7 +568,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     if newer { Log.note("insert: cursor not in a text box (\(focus.role)) and a new press began, kept for paste") }
                     else if !rest.isEmpty { Log.note("insert: cursor not in a text box (\(focus.role)), waiting for a click"); self.holdForClick(rest) }
                 } else {
-                    inserted = rest.isEmpty ? true : Insert.text(rest)
+                    inserted = rest.isEmpty ? true : Insert.text(rest, joining: typedLive > 0 ? gen : nil)
                     if inserted, !newer { self.fixWatch.watch(text) }
                     if !newer {
                         if inserted { self.hud.hide() } else { self.hud.flash("Couldn't type it here. Press ⌃⌥V to paste", for: 2.5) }
@@ -571,12 +581,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.talk.add(s.recorded, words: raw.split(separator: " ").count)
                 self.talk.save(AppDelegate.talkURL)
             }
-            Insert.continuing = false
             // A press that caught no words (a stray tap, a shortcut) leaves no history entry: 163 of 553 were empty.
             if !text.isEmpty { self.history.append(Entry(raw: raw, cleaned: cleaned, seconds: seconds, app: app, inserted: inserted)) }
             self.writing -= 1
             self.resumeMedia()
-            Log.note("dictation \(Int(seconds))s, \(raw.split(separator: " ").count) words, write \(Int(Date().timeIntervalSince(t0) * 1000))ms, into \(app), inserted \(inserted)")
+            Log.note("dictation \(Int(seconds))s, \(raw.split(separator: " ").count) words, write \(Int(Date().timeIntervalSince(t0) * 1000))ms, engine \(engineMs)ms, key up to done \(Int(Date().timeIntervalSince(releasedAt) * 1000))ms, into \(app), inserted \(inserted)")
             self.refreshMenu()
             if self.quitting { NSApp.reply(toApplicationShouldTerminate: true) }
         }

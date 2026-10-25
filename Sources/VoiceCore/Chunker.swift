@@ -43,6 +43,23 @@ public struct Chunker: Sendable {
         return from + q * Self.frame
     }
 
+    /// True when the last `seconds` after `from` are quiet next to the speech before them.
+    public static func endsQuiet(_ samples: [Float], from: Int, seconds: Double = 0.3) -> Bool {
+        let levels = levels(samples, from: from)
+        let n = Int(seconds * Double(rate) / Double(frame))
+        guard levels.count > n + 3 else { return false }
+        let quiet = quietLevel(levels)
+        guard levels.dropLast(n).contains(where: { $0 > quiet }) else { return false }  // no speech at all yet
+        return levels.suffix(n).allSatisfy { $0 <= quiet }
+    }
+
+    /// True when anything after `from` is as loud as speech, judged against the speech since `reference`.
+    public static func hasSpeech(_ samples: [Float], from: Int, reference: Int) -> Bool {
+        guard from < samples.count else { return false }
+        let quiet = quietLevel(levels(samples, from: min(reference, from)))
+        return levels(samples, from: from).contains { $0 > quiet }
+    }
+
     /// Loudness of each 30 ms frame after `from`.
     static func levels(_ samples: [Float], from: Int) -> [Float] {
         var out: [Float] = []

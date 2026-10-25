@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Finds the words you fixed by hand after a dictation went in: what Voice typed against what the box holds now.
@@ -28,17 +29,21 @@ public enum Corrections {
         var starts = Set<Int>()
         for (j, w) in kb.enumerated() where w == ka[0] || w == ka[1] { starts.insert(j); starts.insert(max(0, j - 1)) }
         if starts.isEmpty { return [] }
+        // A dictation is usually near the end of the box: the 40 latest places only, so a long box of repeated
+        // words can't make this slow.
+        starts = Set(starts.sorted().suffix(40))
         var best: (cost: Int, start: Int, end: Int)?
         for len in max(1, a.count - 3)...(a.count + 3) where len <= b.count {
             // Only where the dictation could start: its first or second word, or the word before it was fixed.
             for start in 0...(b.count - len) where starts.contains(start) {
                 let c = distance(ka, Array(kb[start..<(start + len)]))
-                if best == nil || c < best!.cost { best = (c, start, start + len) }
+                // On a tie the longer stretch wins, so a fixed last word is a swap, not a deletion.
+                if best == nil || c < best!.cost || (c == best!.cost && len > best!.end - best!.start) { best = (c, start, start + len) }
             }
         }
         guard let best, best.cost > 0 else { return [] }
         // Mostly the same words, or it's a rewrite and nothing should be learned from it.
-        guard Double(best.cost) <= max(1, Double(a.count) * 0.3) else { return [] }
+        guard Double(best.cost) <= max(2, Double(a.count) * 0.3) else { return [] }
         return swaps(a, Array(b[best.start..<best.end]))
     }
 
@@ -92,9 +97,25 @@ public enum Corrections {
             guard (1...3).contains(ga.count), (1...3).contains(gb.count) else { continue }
             let heard = ga.joined(separator: " ").trimmingCharacters(in: .punctuationCharacters)
             let fixed = gb.joined(separator: " ").trimmingCharacters(in: .punctuationCharacters)
-            if !heard.isEmpty, !fixed.isEmpty, heard.lowercased() != fixed.lowercased() { out.append(Fix(heard: heard, fixed: fixed)) }
+            if !heard.isEmpty, !fixed.isEmpty, heard.lowercased() != fixed.lowercased(), soundsAlike(heard, fixed) {
+                out.append(Fix(heard: heard, fixed: fixed))
+            }
         }
         return out
+    }
+
+    /// A misheard word is spelled much like the right one ("so well" and "Sowell", "claw code" and "Claude Code").
+    /// Swapping in a different word altogether ("Monica" to "Priya") is an edit to the message, not a fix.
+    static func soundsAlike(_ a: String, _ b: String) -> Bool {
+        let x = Array(a.lowercased().filter(\.isLetter)), y = Array(b.lowercased().filter(\.isLetter))
+        guard !x.isEmpty, !y.isEmpty else { return false }
+        var prev = Array(0...y.count)
+        for i in 1...x.count {
+            var cur = [i] + Array(repeating: 0, count: y.count)
+            for j in 1...y.count { cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (x[i - 1] == y[j - 1] ? 0 : 1)) }
+            prev = cur
+        }
+        return Double(prev[y.count]) <= Double(max(x.count, y.count)) * 0.5
     }
 }
 
@@ -107,7 +128,10 @@ public struct Learned: Codable, Sendable {
 
     public static let times = 2
 
-    static func id(_ f: Corrections.Fix) -> String { f.heard.lowercased() + " = " + f.fixed }
+    /// Counted by a fingerprint, not the words: the words themselves live only in your word list.
+    static func id(_ f: Corrections.Fix) -> String {
+        SHA256.hash(data: Data((f.heard.lowercased() + " = " + f.fixed).utf8)).map { String(format: "%02x", $0) }.joined()
+    }
 
     /// Counts a fix. Returns it when this sighting is the one that teaches it.
     public mutating func see(_ f: Corrections.Fix) -> Bool {

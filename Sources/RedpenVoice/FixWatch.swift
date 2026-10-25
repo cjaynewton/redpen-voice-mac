@@ -27,6 +27,8 @@ final class FixWatch {
     private func tick() {
         guard let el = element else { finish(); return }
         if Date() > until || NSWorkspace.shared.frontmostApplication?.processIdentifier != pid { finish(); return }
+        // Another box in the same app: judge the one Voice typed into, as it was last seen.
+        if let (now, _) = Insert.focusedElement(), !CFEqual(now, el) { finish(); return }
         guard let v = Insert.value(el) else { finish(); return }
         // Emptied: sent or cleared. Judge the last full box.
         if v.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { finish(); return }
@@ -38,8 +40,18 @@ final class FixWatch {
         timer?.invalidate(); timer = nil
         defer { element = nil; box = nil; typed = "" }
         guard let box, !typed.isEmpty else { return }
+        let typed = self.typed
+        // Matching runs off the main thread, so a long box never stalls typing or the talk key.
+        Task.detached(priority: .utility) {
+            let fixes = Corrections.find(typed: typed, now: box)
+            guard !fixes.isEmpty else { return }
+            await MainActor.run { self.learn(fixes) }
+        }
+    }
+
+    private func learn(_ fixes: [Corrections.Fix]) {
         var changed = false
-        for f in Corrections.find(typed: typed, now: box) where Self.looksLikeAName(f.fixed) {
+        for f in fixes where Self.looksLikeAName(f.fixed) {
             changed = true
             if learned.see(f) { onLearn(f) }
         }
