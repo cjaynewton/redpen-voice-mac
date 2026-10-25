@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import AVFoundation
 import CoreAudio
 import Speech
@@ -232,6 +233,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             firstRun = w
             w.show()
         }
+        Updates.shared.start()
+        updateWatch = Updates.shared.$waiting.sink { [weak self] _ in DispatchQueue.main.async { self?.refreshMenu() } }
         Log.note("launched")
     }
 
@@ -248,6 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return .terminateLater
     }
     private var quitting = false
+    private var updateWatch: AnyCancellable?
     /// Dictations whose words are still being written. The pause is held until the last one is done.
     private var writing = 0
     /// The press whose recording the mic is feeding. Only that press may stop it.
@@ -600,6 +604,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.test = { [weak self] in self?.panel.close(); self?.toggleTestRecording() }
         menu.words = { [weak self] in self?.panel.close(); self?.editNames() }
         menu.settings = { [weak self] in self?.panel.close(); self?.openSettings() }
+        menu.updates = { [weak self] in self?.panel.close(); Updates.shared.checkNow() }
         refreshMenu()
     }
 
@@ -635,6 +640,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         m.engine = config.engine == "whisper" ? "Whisper" : "Mac built-in"
         m.mic = recorder.inputName
+        m.update = Updates.shared.waiting
+        let fnTalks = config.talkKeyChoice == "fn" || config.talkKeyChoice == "fnOrOption"
+        m.warning = fnTalks ? FnKey.problem.map { "\($0). Set “Press 🌐 key to” to Do Nothing in Keyboard settings." } : nil
         m.talk = talk.summary ?? (talk.dictations > 0 ? "Learning how you talk: \(min(talk.dictations, TalkProfile.learnAfter)) of \(TalkProfile.learnAfter) dictations" : "")
         m.keyLine = "Hold \(keyNames) to talk." + ((config.doubleTap ?? true) ? " Tap twice to keep talking." : "")
         let all = history.all()

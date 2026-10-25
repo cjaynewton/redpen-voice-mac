@@ -16,6 +16,10 @@ struct MenuState {
     var last: String?
     var canTakeBack = false
     var testing = false
+    /// A newer version found by the daily check, shown instead of a window over your work.
+    var update: String?
+    /// Something on this Mac that gets in the way, said plainly (the Fn key set to start Apple's dictation).
+    var warning: String?
 }
 
 @MainActor
@@ -29,6 +33,7 @@ final class MenuModel: ObservableObject {
     var test: () -> Void = {}
     var words: () -> Void = {}
     var settings: () -> Void = {}
+    var updates: () -> Void = {}
 }
 
 /// The panel under the menu bar icon, in the settings page's paper, ink and red pen. Only what you reach for
@@ -46,6 +51,7 @@ struct MenuPanel: View {
             action("Paste last dictation", keys: "⌃⌥V", model.paste).disabled(s.last == nil)
             action("Transcribe a file…", model.file)
             action("Settings…", keys: "⌘,", model.settings).keyboardShortcut(",", modifiers: .command)
+            action(s.update.map { "Install version \($0)…" } ?? "Check for updates…", red: s.update != nil, model.updates)
             rule
             action("Quit Redpen Voice", keys: "⌘Q") { NSApp.terminate(nil) }.keyboardShortcut("q", modifiers: .command)
         }
@@ -66,6 +72,9 @@ struct MenuPanel: View {
             }
             Text("\(s.todayWords.formatted()) words today, \(s.todaySaved) min saved")
                 .font(.system(size: 12.5)).foregroundStyle(Ink.dim)
+            if let w = s.warning {
+                Text(w).font(.system(size: 12, weight: .medium)).foregroundStyle(Ink.red).fixedSize(horizontal: false, vertical: true)
+            }
             if !s.talk.isEmpty {
                 Text(s.talk).font(.system(size: 12)).foregroundStyle(Ink.dim).fixedSize(horizontal: false, vertical: true)
             }

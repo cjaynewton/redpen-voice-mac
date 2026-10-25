@@ -33,13 +33,17 @@ final class FirstRunModel: ObservableObject {
     @Published var config: Config
     @Published var mic = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
     @Published var access = AXIsProcessTrusted()
+    @Published var fnOK = FnKey.problem == nil
     @Published var engine = ""
     let engineState: () -> String
     var onDone: () -> Void = {}
 
     init(config: Config, engineState: @escaping () -> String) { self.config = config; self.engineState = engineState; engine = engineState() }
 
-    func tick() { mic = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized; access = AXIsProcessTrusted(); engine = engineState() }
+    func tick() {
+        mic = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized; access = AXIsProcessTrusted(); engine = engineState()
+        fnOK = FnKey.problem == nil
+    }
 
     func askMic() {
         AVCaptureDevice.requestAccess(for: .audio) { ok in DispatchQueue.main.async { self.mic = ok } }
@@ -83,12 +87,10 @@ struct FirstRunView: View {
             step(done: model.mic, title: "Microphone", detail: "So it can hear you.", button: "Allow", action: model.askMic)
             step(done: model.access, title: "Accessibility", detail: "So it can type into other apps and see the Fn key.", button: "Open settings", action: model.askAccess)
             step(done: model.engine == "ready", title: "Speech engine", detail: engineLine, button: nil, action: {})
-            VStack(alignment: .leading, spacing: 4) {
-                Text("The Fn key").font(.system(size: 13, weight: .semibold))
-                Text("In Keyboard settings, set “Press 🌐 key to” to Do Nothing, so the Mac does not open emoji or its own dictation when you hold it.")
-                    .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                Button("Open Keyboard settings", action: model.openKeyboardSettings).controlSize(.small)
-            }
+            step(done: model.fnOK, title: "The Fn key",
+                 detail: model.fnOK ? "Set to Do Nothing, so only Redpen Voice answers it."
+                     : "\(FnKey.problem ?? "Fn does something else too"). In Keyboard settings, set “Press 🌐 key to” to Do Nothing.",
+                 button: "Open Keyboard settings", action: model.openKeyboardSettings)
 
             Spacer()
             HStack {
