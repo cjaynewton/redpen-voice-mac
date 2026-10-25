@@ -225,6 +225,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var writing = 0
     /// The press whose recording the mic is feeding. Only that press may stop it.
     private var micOwner = 0
+    /// Goes up with every press. A dictation finishing after a newer press began never waits or touches the bar.
+    private var delivery = 0
 
     private var engineWord: String {
         switch engine.state {
@@ -268,6 +270,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard engine.state == .ready, let format = engine.audioFormat else { hud.flash(engineWord == "ready" ? "Not ready" : "Engine " + engineWord); return }
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { hud.flash("Allow the microphone"); return }
         remicIfDefaultMoved(reason: "input moved before this press")
+        if waitingText != nil { stopWaiting(); hud.hide(); Log.note("insert: new press, the waiting words stay for paste") }
+        delivery += 1
         busy = true
         // The bar waits a quarter second, so an Fn shortcut never flickers it.
         let settle = DispatchWorkItem { [weak self] in
@@ -307,7 +311,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let (s, module) = engine.session(config)
         session = s
         startedAt = Date()
-        startedIn = NSWorkspace.shared.frontmostApplication
         names = Names(text: Config.loadNames())
         if config.sounds { NSSound(named: "Pop")?.play() }
         if recorder.inputName.isEmpty {
@@ -336,7 +339,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.note("cancelled: another key while holding")
     }
 
-    private var startedIn: NSRunningApplication?
+    /// Words that finished while your cursor wasn't in a text box. They go in when you click into one.
+    private var waitingText: String?
+    private var waitTimer: Timer?
+    private var waitSeen = 0
+    private var waitPid: pid_t = 0
+
+    private func holdForClick(_ text: String) {
+        stopWaiting()
+        waitingText = text
+        let until = Date().addingTimeInterval(60)
+        hud.show("Click where the words go", level: false)
+        waitTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkWaiting(until: until) }
+        }
+    }
+
+    private func checkWaiting(until: Date) {
+        guard let text = waitingText, session == nil else { return }
+        if Date() > until {
+            stopWaiting()
+            hud.flash("Kept it. Press ⌃⌥V to paste", for: 3)
+            Log.note("insert: nobody clicked a text box in a minute, kept for paste")
+            return
+        }
+        // Same rule as straight after talking: anything but a page or a control takes the words. A box Accessibility
+        // can't name (Electron apps) must look the same twice, so the moment between two apps doesn't count.
+        // In a browser only a real text box counts: a failed read on a page must never release the words.
+        let focus = Insert.focus()
+        let front = NSWorkspace.shared.frontmostApplication
+        let browser = FocusGate.browsers.contains(front?.bundleIdentifier ?? "")
+        if focus.kind == .notText || (focus.kind == .unknown && browser) { waitSeen = 0; return }
+        let pid = front?.processIdentifier ?? 0
+        waitSeen = pid == waitPid ? waitSeen + 1 : 1
+        waitPid = pid
+        guard focus.kind == .text || waitSeen >= 2 else { return }
+        stopWaiting()
+        let ok = Insert.text(text)
+        hud.flash(ok ? "Pasted" : "Couldn't type it here. Press ⌃⌥V to paste", ok: ok, for: ok ? 1.0 : 2.5)
+        Log.note("insert: pasted after a click into \(focus.role), \(ok)")
+    }
+
+    private func stopWaiting() {
+        waitTimer?.invalidate(); waitTimer = nil
+        waitingText = nil; waitSeen = 0
+    }
 
     /// Puts back what this app paused, once. Not while a recording, or another dictation's writing, still holds the
     /// pause; the last one to finish puts it back. It listens first, and if a video or song is already playing (you
@@ -381,6 +428,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if config.sounds { NSSound(named: "Tink")?.play() }
         let app = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
         let owner = press
+        let gen = delivery
         writing += 1
         Task { [weak self] in
             guard let self else { return }
@@ -402,24 +450,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if self.config.mode == "noUms", !raw.isEmpty { let s = Fillers.strip(raw); if s != raw { cleaned = s } }
             let text = cleaned ?? raw
             var inserted = false
-            if text.isEmpty { self.hud.flash(self.recorder.peak < 0.005 ? "No sound from \(self.recorder.inputName)" : "Didn't catch that", for: 2.5) }
+            if text.isEmpty, self.delivery != gen { Log.note("no words, a new press began") }
+            else if text.isEmpty { self.hud.flash(self.recorder.peak < 0.005 ? "No sound from \(self.recorder.inputName)" : "Didn't catch that", for: 2.5) }
             else {
-                // The words go to the app you started in. If you switched, it is brought back first.
-                if let origin = self.startedIn, NSWorkspace.shared.frontmostApplication?.processIdentifier != origin.processIdentifier {
-                    origin.activate()
-                    try? await Task.sleep(for: .milliseconds(350))
-                    if NSWorkspace.shared.frontmostApplication?.processIdentifier != origin.processIdentifier {
-                        Log.note("insert: could not return to \(origin.localizedName ?? "?"), kept in history")
-                        self.hud.flash("You switched apps. Press ⌃⌥V to paste", for: 2.5)
-                        self.history.append(Entry(raw: raw, cleaned: cleaned, seconds: seconds, app: app, inserted: false))
-                        self.writing -= 1
-                        self.resumeMedia()
-                        return
+                // The words go where your cursor is now, whichever app that is. If it isn't in a text box (a web page,
+                // a video, a list), nothing is typed there: the words wait for you to click into one.
+                let focus = Insert.focus()
+                let newer = self.delivery != gen  // you pressed again while these words were being written
+                if focus.kind == .notText {
+                    if newer { Log.note("insert: cursor not in a text box (\(focus.role)) and a new press began, kept for paste") }
+                    else { Log.note("insert: cursor not in a text box (\(focus.role)), waiting for a click"); self.holdForClick(text) }
+                } else {
+                    inserted = Insert.text(text)
+                    if !newer {
+                        if inserted { self.hud.hide() } else { self.hud.flash("Couldn't type it here. Press ⌃⌥V to paste", for: 2.5) }
                     }
+                    Log.note("insert: focus \(focus.role), \(focus.kind.rawValue)")
                 }
-                inserted = Insert.text(text)
-                if inserted { self.hud.hide() }
-                if !inserted { self.hud.flash("Couldn't type it here. Press ⌃⌥V to paste", for: 2.5) }
             }
             self.history.append(Entry(raw: raw, cleaned: cleaned, seconds: seconds, app: app, inserted: inserted))
             self.writing -= 1
@@ -510,7 +557,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Control-Option-V: the last dictation again, at the cursor.
     private func pasteLastNow() {
-        guard session == nil, let e = history.last() else { hud.flash("Nothing to paste yet"); return }
+        guard session == nil, let e = history.lastSpoken() else { hud.flash("Nothing to paste yet"); return }
+        stopWaiting()
+        delivery += 1  // a dictation still being written won't start its own wait after this
+        // Never type into a page or a video: there, letters are shortcuts.
+        let focus = Insert.focus()
+        guard focus.kind != .notText else {
+            hud.flash("Click into a text box, then press ⌃⌥V", for: 2.5)
+            Log.note("paste last: cursor not in a text box (\(focus.role))")
+            return
+        }
         let ok = Insert.text(e.text)
         hud.flash(ok ? "Pasted" : "Could not paste", ok: ok)
         Log.note("paste last: \(ok)")
@@ -555,7 +611,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showLast() {
-        guard let e = history.last() else { return }
+        guard let e = history.lastSpoken() else { return }
         let a = NSAlert()
         a.messageText = "Last dictation"
         a.informativeText = (e.cleaned.map { "Rewrite:\n\($0)\n\nRaw:\n" } ?? "") + e.raw

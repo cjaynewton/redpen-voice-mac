@@ -33,6 +33,8 @@ h.append(Entry(raw: "second line here", cleaned: "Second line here.", seconds: 4
 check("history.last", h.last()?.raw == "second line here")
 check("history.text", h.last()?.text == "Second line here.")
 check("history.words", h.last()?.words == 3)
+h.append(Entry(raw: "", cleaned: nil, seconds: 1, app: "T", inserted: false))
+check("history.lastSpoken.skipsEmpty", h.last()?.raw == "" && h.lastSpoken()?.raw == "second line here")
 for i in 0..<20 { h.append(Entry(raw: "n \(i)", seconds: 1, app: "x", inserted: true)) }
 h.trim(to: 5)
 check("history.trim", h.all().count == 5 && h.all().last?.raw == "n 19")
@@ -61,6 +63,16 @@ check("media.resume.newpress", !MediaGate.shouldResume(paused: true, recordingAg
 check("media.resume.alreadyplaying", !MediaGate.shouldResume(paused: true, playingNow: true))
 check("media.alerts", !MediaGate.isMedia("systemsoundserverd") && !MediaGate.isMedia("corespeechd") && !MediaGate.isMedia("Monologue"))
 check("media.players", MediaGate.isMedia("Google Chrome Helper (Aperitif)") && MediaGate.isMedia("Music") && !MediaGate.isMedia("Boom 3D"))
+func fk(_ r: String?, ed: Bool = false, set: Bool = false, web: Bool = false) -> FocusKind { FocusGate.kind(role: r, editableAncestor: ed, valueSettable: set, inBrowser: web) }
+check("focus.textbox", fk("AXTextArea") == .text)
+check("focus.contenteditable", fk("AXGroup", ed: true, web: true) == .text)
+check("focus.webpage", fk("AXWebArea", web: true) == .notText)
+check("focus.player", fk("AXGroup", web: true) == .notText)
+check("focus.button", fk("AXButton") == .notText)
+check("focus.none", fk(nil) == .unknown)
+check("focus.word", fk("AXLayoutArea") == .unknown && fk("AXScrollArea") == .unknown && fk("AXGroup") == .unknown)
+check("focus.slider", fk("AXSlider", set: true) == .notText)
+check("focus.settableGroup", fk("AXGroup", set: true, web: true) == .text)
 
 // Silence: sound labels and invented phrases from a quiet mic are dropped, real words are kept.
 check("silence.label", Silence.clean("*Loud sound*", peak: 0.03) == "")

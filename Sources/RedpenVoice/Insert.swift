@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
+import VoiceCore
 
 /// Puts text where the cursor is, in whatever app is in front, without touching the clipboard.
 /// First through Accessibility (replace the selection, which is empty at a plain cursor), checked by reading the
@@ -24,9 +25,29 @@ enum Insert {
             }
             Log.note("insert: accessibility accepted but cursor did not move, typing")
         }
+        // Focus can move between the check and here: never type into a page or a video.
+        guard focus().kind != .notText else { Log.note("insert: focus left the text box, not typed"); return false }
         let ok = type(padded)
         if ok { remember(padded) }
         return ok
+    }
+
+    /// What kind of place the cursor is in right now, and the focused element's role for the log.
+    static func focus() -> (kind: FocusKind, role: String) {
+        if let app = NSWorkspace.shared.frontmostApplication { wakeElectron(pid: app.processIdentifier) }
+        let sys = AXUIElementCreateSystemWide()
+        var f: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(sys, kAXFocusedUIElementAttribute as CFString, &f) == .success, let f,
+              CFGetTypeID(f) == AXUIElementGetTypeID() else { return (.unknown, "none") }
+        let el = f as! AXUIElement
+        var v: CFTypeRef?
+        let role = AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &v) == .success ? (v as? String) : nil
+        let editable = AXUIElementCopyAttributeValue(el, "AXEditableAncestor" as CFString, &v) == .success && v != nil
+        var settable = DarwinBoolean(false)
+        AXUIElementIsAttributeSettable(el, kAXValueAttribute as CFString, &settable)
+        let browser = FocusGate.browsers.contains(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "")
+        let kind = FocusGate.kind(role: role, editableAncestor: editable, valueSettable: settable.boolValue, inBrowser: browser)
+        return (kind, role ?? "?")
     }
 
     // MARK: Taking back the last dictation
@@ -115,6 +136,10 @@ enum Insert {
     private static func wakeElectron(_ el: AXUIElement) {
         var pid: pid_t = 0
         AXUIElementGetPid(el, &pid)
+        wakeElectron(pid: pid)
+    }
+
+    private static func wakeElectron(pid: pid_t) {
         guard pid > 0 else { return }
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
@@ -122,10 +147,15 @@ enum Insert {
     }
 
     /// Types the text as keyboard events, 20 characters at a time. Slower than a paste and works everywhere.
+    /// Stops if you switch apps partway, so the rest never lands somewhere else.
     static func type(_ text: String) -> Bool {
         guard let src = CGEventSource(stateID: .combinedSessionState) else { return false }
+        let app = NSWorkspace.shared.frontmostApplication?.processIdentifier
         var ok = false
         for chunk in Array(text.utf16).chunks(of: 20) {
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier != app { Log.note("insert: app changed while typing, stopped"); return false }
+            // A tab change keeps the same app: check the place itself too, so the rest never become page shortcuts.
+            if focus().kind == .notText { Log.note("insert: focus left the text box while typing, stopped"); return false }
             var units = chunk
             guard let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true),
                   let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) else { return ok }

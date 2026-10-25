@@ -39,6 +39,9 @@ public struct History {
     }
 
     public func last() -> Entry? { all().last }
+    /// The newest dictation that has words. A press that caught nothing is kept in the history but never pasted:
+    /// Paste last used to land on those and paste nothing.
+    public func lastSpoken() -> Entry? { all().last { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } }
 
     /// Keeps the newest entries. Rewrites the file only when it is over the cap.
     public func trim(to cap: Int = History.cap) {
