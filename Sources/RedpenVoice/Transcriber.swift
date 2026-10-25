@@ -358,16 +358,18 @@ final class Transcriber {
                     if done { break }
                     guard let c = chunker.cut(audio, from: from) else { continue }
                     let text = (try? await Transcriber.parakeetText(drafter, Array(audio[from..<c]))) ?? ""
-                    let index: Int = lock.withLock { drafts.append(Draft(start: from, end: c, text: text)); return drafts.count - 1 }
+                    // The draft and its callback go out together, so a Whisper check can never reach the app first.
+                    lock.withLock {
+                        drafts.append(Draft(start: from, end: c, text: text))
+                        onDraft?(drafts.count - 1, text)
+                    }
                     from = c
-                    if !text.isEmpty { onDraft?(index, text) } else { onDraft?(index, "") }
                 }
             }
         }
 
         /// Where Whisper cuts in draft mode: the first draft end at least 4 s after the last check (never past 25 s).
-        private func draftCheckCut(from: Int) -> (end: Int, upTo: Int)? {
-            let ds = lock.withLock { drafts }
+        private func draftCheckCut(_ ds: [Draft], from: Int) -> (end: Int, upTo: Int)? {
             guard checkedUpTo < ds.count else { return nil }
             for i in checkedUpTo..<ds.count where ds[i].end - from >= 4 * Chunker.rate {
                 if ds[i].end - from > 25 * Chunker.rate, i > checkedUpTo { return (ds[i - 1].end, i) }
@@ -386,11 +388,12 @@ final class Transcriber {
                     // Published only if not already stopped, in one step, so letting go can never miss it.
                     if !lock.withLock({ if stopped { return false }; napping = nap; return true }) { nap.cancel() }
                     _ = try? await nap.value
-                    let (audio, done) = lock.withLock { napping = nil; return (samples, stopped) }
+                    let (audio, done, ds) = lock.withLock { napping = nil; return (samples, stopped, drafts) }
                     if done { break }
                     if drafter != nil {
                         // Draft mode: Whisper rereads whole runs of drafts; no head start (the drafts are the speed).
-                        guard let d = draftCheckCut(from: cut) else { continue }
+                        // Audio and drafts are read in one step, so a draft can't end past the audio in hand.
+                        guard let d = draftCheckCut(ds, from: cut), d.end <= audio.count, d.end > cut else { continue }
                         do {
                             let text = try await Transcriber.whisperText(whisper, Array(audio[cut..<d.end]), prompt: Transcriber.prompt(hints, nil))
                             let range = checkedUpTo..<d.upTo

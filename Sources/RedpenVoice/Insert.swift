@@ -131,18 +131,31 @@ enum Insert {
     }
 
     /// Deletes `count` characters before the cursor. No modifiers: with Fn held, Delete is forward delete, and with
-    /// Option held it deletes whole words.
-    static func backspace(_ count: Int) {
-        guard let src = CGEventSource(stateID: .combinedSessionState) else { return }
+    /// Option held it deletes whole words. `still` is asked before every character; the moment it says no (you
+    /// typed or clicked), it stops. Returns how many it deleted.
+    @discardableResult
+    static func backspace(_ count: Int, while still: () -> Bool = { true }) -> Int {
+        guard let src = CGEventSource(stateID: .combinedSessionState) else { return 0 }
+        var done = 0
         for _ in 0..<count {
+            guard still() else { break }
             for down in [true, false] {
                 guard let e = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_Delete), keyDown: down) else { continue }
                 e.flags = []
                 e.post(tap: .cghidEventTap)
             }
+            done += 1
             usleep(1_500)
         }
+        return done
     }
+
+    /// Forgets the last dictation's record, when the box no longer matches it (a draft was replaced), so Take back
+    /// can never delete by an old length.
+    static func forgetLast() { last = nil }
+
+    /// How many characters are selected in a box, or nil when it won't say.
+    static func selectionLength(_ el: AXUIElement) -> Int? { selectedRange(el)?.length }
 
     private static func selectedRange(_ el: AXUIElement) -> NSRange? {
         var v: CFTypeRef?
@@ -191,13 +204,14 @@ enum Insert {
     }
 
     /// Types the text as keyboard events, 20 characters at a time. Slower than a paste and works everywhere.
-    /// Stops if you switch apps partway, so the rest never lands somewhere else.
-    static func type(_ text: String) -> Bool {
+    /// Stops if you switch apps partway, so the rest never lands somewhere else, or when `still` says no.
+    static func type(_ text: String, while still: () -> Bool = { true }) -> Bool {
         guard let src = CGEventSource(stateID: .combinedSessionState) else { return false }
         let app = NSWorkspace.shared.frontmostApplication?.processIdentifier
         var ok = false
         for chunk in Array(text.utf16).chunks(of: 20) {
             if NSWorkspace.shared.frontmostApplication?.processIdentifier != app { Log.note("insert: app changed while typing, stopped"); return false }
+            guard still() else { Log.note("insert: you typed or clicked, stopped"); return false }
             // A tab change keeps the same app: check the place itself too, so the rest never become page shortcuts.
             if focus().kind == .notText { Log.note("insert: focus left the text box while typing, stopped"); return false }
             var units = chunk
