@@ -112,8 +112,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // `--media-check` logs which apps hold the speakers and how loud the Mac is playing right now.
         if CommandLine.arguments.contains("--media-check") {
             let players = Media.playingApps()
-            SoundTap.loudness(for: 0.25) { peak in
-                Log.note("media-check: apps [\(players.joined(separator: ", "))], loudness \(peak.map { String(format: "%.4f", $0) } ?? "no tap"), playing \(MediaGate.isPlaying(peak: peak))")
+            SoundTap.loudness(of: players.map(\.object), for: 0.25) { peak in
+                Log.note("media-check: apps [\(players.map(\.name).joined(separator: ", "))], loudness \(peak.map { String(format: "%.4f", $0) } ?? "no tap"), playing \(MediaGate.isPlaying(peak: peak))")
                 exit(0)
             }
             return
@@ -210,13 +210,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Quit asked while you are talking: finish the dictation and write the words first, then go.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard session != nil else { return .terminateNow }
+        guard session != nil else {
+            // Words still being written are dropped on quit; the video they paused is put back.
+            if pausedMedia { pausedMedia = false; Media.pressPlayPause(); Log.note("media: resumed on quit") }
+            return .terminateNow
+        }
         Log.note("quit asked mid-dictation, finishing first")
         quitting = true
         end()
         return .terminateLater
     }
     private var quitting = false
+    /// Dictations whose words are still being written. The pause is held until the last one is done.
+    private var writing = 0
 
     private var engineWord: String {
         switch engine.state {
@@ -273,18 +279,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // An app holding the speakers open in silence (Chrome, Boom 3D) no longer starts a paused video.
         press += 1
         let thisPress = press
-        let players = config.pauseMedia ? Media.playingApps() : []
-        if !players.isEmpty {
-            SoundTap.loudness(for: 0.25) { peak in
+        // A press that starts while the last one's pause is still held (its words still being written) takes the
+        // pause over, so the video comes back once, after this press, and is never paused or started twice.
+        let players = config.pauseMedia && !pausedMedia ? Media.playingApps() : []
+        if pausedMedia {
+            Log.note("media: still paused from the last press")
+        } else if !players.isEmpty {
+            SoundTap.loudness(of: players.map(\.object), for: 0.25) { peak in
                 DispatchQueue.main.async { [weak self] in
-                    guard let self, self.press == thisPress, self.session != nil else { return }
-                    self.pausedMedia = MediaGate.isPlaying(peak: peak)
-                    if self.pausedMedia { Media.pressPlayPause() }
-                    Log.note("media: apps [\(players.joined(separator: ", "))], loudness \(peak.map { String(format: "%.4f", $0) } ?? "no tap"), paused \(self.pausedMedia)")
+                    guard let self, self.press == thisPress, self.session != nil, !self.pausedMedia else { return }
+                    let playing = MediaGate.isPlaying(peak: peak)
+                    if playing { self.pausedMedia = true; Media.pressPlayPause() }
+                    Log.note("media: apps [\(players.map(\.name).joined(separator: ", "))], loudness \(peak.map { String(format: "%.4f", $0) } ?? "no tap"), paused \(playing)")
                 }
             }
         } else {
-            pausedMedia = false
             Log.note("media: no app playing")
         }
         settleWork?.cancel(); settleWork = settle
@@ -316,11 +325,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         recorder.end()
         s.cancel()
         hud.hide()
-        if MediaGate.shouldResume(paused: pausedMedia) { Media.pressPlayPause(); pausedMedia = false }
+        resumeMedia()
         Log.note("cancelled: another key while holding")
     }
 
     private var startedIn: NSRunningApplication?
+
+    /// Puts back what this app paused, once. Not while a recording, or another dictation's writing, still holds the
+    /// pause; the last one to finish puts it back. It listens first, and if a video or song is already playing (you
+    /// pressed play yourself, or the Mac picked another tab), it presses nothing: the play/pause key is a switch, so
+    /// a press then would pause that one or start a second video beside it. If it can't listen, it presses nothing
+    /// either: a video left paused is better than a surprise.
+    private func resumeMedia() {
+        guard MediaGate.shouldResume(paused: pausedMedia, recordingAgain: session != nil || writing > 0) else { return }
+        pausedMedia = false
+        // Quitting: no time to listen, the app is about to go.
+        if quitting { Media.pressPlayPause(); Log.note("media: resumed on quit"); return }
+        let players = Media.playingApps()
+        guard !players.isEmpty else { Media.pressPlayPause(); Log.note("media: resumed"); return }
+        SoundTap.loudness(of: players.map(\.object), for: 0.2) { peak in
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                let playing = MediaGate.isPlaying(peak: peak)
+                if self.session != nil || self.writing > 0 {
+                    // A new press started while this listened: it takes the pause over and puts it back later.
+                    if !playing { self.pausedMedia = true }
+                    Log.note("media: new press while resuming, \(playing ? "already playing" : "still paused")")
+                } else if peak == nil {
+                    Log.note("media: not resumed, couldn't listen to [\(players.map(\.name).joined(separator: ", "))]")
+                } else if MediaGate.shouldResume(paused: true, playingNow: playing) {
+                    Media.pressPlayPause()
+                    Log.note("media: resumed")
+                } else {
+                    Log.note("media: not resumed, already playing in [\(players.map(\.name).joined(separator: ", "))]")
+                }
+            }
+        }
+    }
 
     private func end() {
         guard let s = session else { return }
@@ -330,6 +371,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hud.writing()
         if config.sounds { NSSound(named: "Tink")?.play() }
         let app = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
+        writing += 1
         Task { [weak self] in
             guard let self else { return }
             // Half a second more after the key comes up: the last syllable is usually still in the air.
@@ -355,7 +397,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         Log.note("insert: could not return to \(origin.localizedName ?? "?"), kept in history")
                         self.hud.flash("You switched apps. Press ⌃⌥V to paste", for: 2.5)
                         self.history.append(Entry(raw: raw, cleaned: cleaned, seconds: seconds, app: app, inserted: false))
-                        if MediaGate.shouldResume(paused: self.pausedMedia) { Media.pressPlayPause(); self.pausedMedia = false }
+                        self.writing -= 1
+                        self.resumeMedia()
                         return
                     }
                 }
@@ -364,7 +407,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if !inserted { self.hud.flash("Couldn't type it here. Press ⌃⌥V to paste", for: 2.5) }
             }
             self.history.append(Entry(raw: raw, cleaned: cleaned, seconds: seconds, app: app, inserted: inserted))
-            if MediaGate.shouldResume(paused: self.pausedMedia) { Media.pressPlayPause(); self.pausedMedia = false }
+            self.writing -= 1
+            self.resumeMedia()
             Log.note("dictation \(Int(seconds))s, \(raw.split(separator: " ").count) words, write \(Int(Date().timeIntervalSince(t0) * 1000))ms, into \(app), inserted \(inserted)")
             self.refreshMenu()
             if self.quitting { NSApp.reply(toApplicationShouldTerminate: true) }

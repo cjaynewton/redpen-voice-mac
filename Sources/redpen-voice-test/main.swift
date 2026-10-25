@@ -56,6 +56,11 @@ check("media.silent", !MediaGate.isPlaying(peak: 0.0005) && !MediaGate.isPlaying
 check("media.loud", MediaGate.isPlaying(peak: 0.05))
 check("media.chrome", !MediaGate.isRouter("Google Chrome Helper (Aperitif)"))
 check("media.resume", MediaGate.shouldResume(paused: false) == false)
+check("media.resume.ours", MediaGate.shouldResume(paused: true))
+check("media.resume.newpress", !MediaGate.shouldResume(paused: true, recordingAgain: true))
+check("media.resume.alreadyplaying", !MediaGate.shouldResume(paused: true, playingNow: true))
+check("media.alerts", !MediaGate.isMedia("systemsoundserverd") && !MediaGate.isMedia("corespeechd") && !MediaGate.isMedia("Monologue"))
+check("media.players", MediaGate.isMedia("Google Chrome Helper (Aperitif)") && MediaGate.isMedia("Music") && !MediaGate.isMedia("Boom 3D"))
 
 // Silence: sound labels and invented phrases from a quiet mic are dropped, real words are kept.
 check("silence.label", Silence.clean("*Loud sound*", peak: 0.03) == "")

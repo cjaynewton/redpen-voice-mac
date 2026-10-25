@@ -2,15 +2,18 @@ import AudioToolbox
 import CoreAudio
 import Foundation
 
-/// Listens to what the Mac is playing out loud for a moment and reports how loud it was, 0 to 1.
+/// Listens to what some apps are playing out loud for a moment and reports how loud it was, 0 to 1.
 /// Used only to decide whether to press pause: apps like Chrome and Boom 3D hold the speakers open while silent,
 /// so "the speakers are on" is not the same as "something is playing". Needs the one-time system audio permission;
 /// without it the tap hears silence and nothing is paused.
 enum SoundTap {
-    static func loudness(for seconds: Double, done: @escaping @Sendable (Float?) -> Void) {
+    /// `processes`: listen to these apps only (CoreAudio process objects), so an alert sound or another app's beep
+    /// never counts as a video playing.
+    static func loudness(of processes: [AudioObjectID], for seconds: Double, done: @escaping @Sendable (Float?) -> Void) {
+        guard !processes.isEmpty else { done(nil); return }
         guard running.claim() else { done(nil); return }
         let done: @Sendable (Float?) -> Void = { v in running.release(); done(v) }
-        let desc = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
+        let desc = CATapDescription(stereoMixdownOfProcesses: processes)
         desc.uuid = UUID()
         desc.isPrivate = true
         desc.muteBehavior = .unmuted

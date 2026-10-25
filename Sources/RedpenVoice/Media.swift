@@ -3,11 +3,16 @@ import CoreAudio
 import VoiceCore
 
 /// Pauses whatever is playing while you talk, and only then. The check asks CoreAudio which apps are sending sound
-/// out right now, one app at a time, and ignores sound routers like Boom 3D that keep the speakers on all day.
-/// A Mac with nothing playing never gets a play/pause press, so a paused video never starts by surprise.
+/// out right now, one app at a time, and ignores sound routers like Boom 3D that keep the speakers on all day and
+/// system sounds like alerts. A Mac with nothing playing never gets a play/pause press, so a paused video never
+/// starts by surprise.
 enum Media {
-    /// Names of the apps sending sound out right now, routers and this app left out.
-    static func playingApps() -> [String] {
+    /// An app sending sound out right now, with the CoreAudio object that lets its sound alone be listened to.
+    struct Player { let name: String; let object: AudioObjectID }
+
+    /// The apps sending sound out right now that could be playing a video or a song. Sound routers, system alert
+    /// sounds, Siri's listener and this app are left out, so a notification never decides a pause.
+    static func playingApps() -> [Player] {
         let system = AudioObjectID(kAudioObjectSystemObject)
         var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList,
                                               mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
@@ -16,7 +21,7 @@ enum Media {
         var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
         guard AudioObjectGetPropertyData(system, &addr, 0, nil, &size, &ids) == noErr else { return [] }
         let me = ProcessInfo.processInfo.processIdentifier
-        var names: [String] = []
+        var players: [Player] = []
         for id in ids {
             var out = UInt32(0), pid = pid_t(0)
             var sz = UInt32(MemoryLayout<UInt32>.size)
@@ -26,12 +31,10 @@ enum Media {
             addr.mSelector = kAudioProcessPropertyPID
             guard AudioObjectGetPropertyData(id, &addr, 0, nil, &sz, &pid) == noErr, pid != me else { continue }
             let name = NSRunningApplication(processIdentifier: pid)?.localizedName ?? processName(pid)
-            if !MediaGate.isRouter(name) { names.append(name) }
+            if MediaGate.isMedia(name) { players.append(Player(name: name, object: id)) }
         }
-        return names
+        return players
     }
-
-    static func outputRunning() -> Bool { !playingApps().isEmpty }
 
     private static func processName(_ pid: pid_t) -> String {
         var buf = [CChar](repeating: 0, count: 1024)
