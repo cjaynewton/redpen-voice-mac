@@ -1,6 +1,7 @@
 import AVFoundation
 import Speech
 import WhisperKit
+import FluidAudio
 import VoiceCore
 
 /// Apple's on-device speech engine, or Whisper, downloaded once and run on this Mac. The model stays loaded while
@@ -13,6 +14,10 @@ final class Transcriber {
     private var locale = Locale(identifier: "en-CA")
     private var format: AVAudioFormat?
     private var whisper: WhisperKit?
+    /// Parakeet v2 (NVIDIA, English), the Fast engine: a minute of talk in well under a second, a few more mistakes.
+    private var parakeet: AsrManager?
+    static let parakeetMarker = Config.dir.appendingPathComponent("parakeet-ready")
+    static var parakeetOnDisk: Bool { FileManager.default.fileExists(atPath: parakeetMarker.path) }
 
     /// Whisper large-v3 turbo, compressed by Argmax to 626 MB. 8.3% words wrong on WildSpeech-Bench (Apple 12.0%).
     static let whisperModel = "openai_whisper-large-v3-v20240930_626MB"
@@ -39,6 +44,7 @@ final class Transcriber {
         }
         // One job at a time: two dictations close together (a double tap right after talking) asked Whisper at once
         // and both crawled (41 s on a busy Mac, Oct 25). They now wait in line.
+        let queued = Date()
         await gate.acquire()
         let started = Date()
         let results: [TranscriptionResult]
@@ -54,6 +60,12 @@ final class Transcriber {
         } catch { await gate.release(); throw error }
         lastJob = Date().timeIntervalSince(started)
         await gate.release()
+        // Where the time goes, so slowness can be told apart: waiting in line, the encoder (fixed cost per 30 s
+        // window), the decoder, and fallbacks (Whisper decoding again at a higher temperature).
+        if let t = results.first?.timings {
+            let ms = { (x: TimeInterval) in Int(x * 1000) }
+            Log.note("engine job: \(String(format: "%.1f", seconds))s audio, in line \(ms(started.timeIntervalSince(queued)))ms, whisper \(ms(lastJob))ms (encode \(ms(t.encoding))ms x\(Int(t.totalEncodingRuns)), decode \(ms(t.decodingLoop))ms, fallbacks \(Int(t.totalDecodingFallbacks)), first word \(ms(t.firstTokenTime - t.pipelineStart))ms)")
+        }
         let text = Silence.clean(joined(results), peak: peak)
         // Whisper skips a stretch it judges to be silence. A short, quiet sentence can be skipped whole (3 of 1,100
         // WildSpeech clips), so when nothing came back but the audio has real sound, ask again without that skip.
@@ -82,6 +94,7 @@ final class Transcriber {
     func prepare(_ config: Config) async {
         set(.checking)
         if config.engine == "whisper" { await prepareWhisper(); return }
+        if config.engine == "parakeet" { await prepareParakeet(); return }
         let wanted = Locale(identifier: config.locale)
         let supported = await DictationTranscriber.supportedLocale(equivalentTo: wanted)
         guard let supported else { set(.unsupported); Log.note("engine: locale \(config.locale) unsupported"); return }
@@ -112,6 +125,37 @@ final class Transcriber {
         } catch {
             set(.failed(error.localizedDescription)); Log.note("engine: failed \(error.localizedDescription)")
         }
+    }
+
+    /// Downloads Parakeet the first time (about 600 MB), then loads it. Later launches load it from disk.
+    private func prepareParakeet() async {
+        do {
+            if parakeet == nil {
+                if !Self.parakeetOnDisk { set(.downloading(0)) }
+                let t = Date()
+                let models = try await AsrModels.downloadAndLoad(version: .v2)
+                let m = AsrManager(config: .default)
+                try await m.loadModels(models)
+                parakeet = m
+                FileManager.default.createFile(atPath: Self.parakeetMarker.path, contents: nil)
+                Log.note("engine: parakeet loaded in \(Int(Date().timeIntervalSince(t)))s")
+            }
+            format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)
+            set(.ready)
+            Log.note("engine: ready, parakeet")
+        } catch {
+            set(.failed(error.localizedDescription)); Log.note("engine: parakeet failed \(error.localizedDescription)")
+        }
+    }
+
+    static func parakeetText(_ p: AsrManager, _ audio: [Float]) async throws -> String {
+        guard audio.count > 1600 else { return "" }
+        let peak = audio.map { abs($0) }.max() ?? 0
+        var state = TdtDecoderState.make(decoderLayers: await p.decoderLayerCount)
+        let t = Date()
+        let r = try await p.transcribe(audio, decoderState: &state)
+        Log.note("engine job: \(String(format: "%.1f", Double(audio.count) / 16000))s audio, parakeet \(Int(Date().timeIntervalSince(t) * 1000))ms")
+        return Silence.clean(r.text, peak: peak)
     }
 
     /// Whether Whisper's files are already on this Mac.
@@ -222,22 +266,32 @@ final class Transcriber {
         /// A head start: when you go quiet while still holding the key, what you said since the last piece is written
         /// straight away. If you let go without saying more, that text is the ending and nothing waits on Whisper.
         private var early: (end: Int, text: String)?
+        private var napping: Task<Void, Error>?
+        private var guessing: Task<String, Error>?
 
         /// Starts writing pieces as they finish. Whisper only.
         func stream(_ chunker: Chunker) {
             guard let whisper else { return }
             loop = Task.detached(priority: .userInitiated) { [self] in
-                while !Task.isCancelled {
-                    try? await Task.sleep(for: .milliseconds(400))
-                    let (audio, done) = lock.withLock { (samples, stopped) }
+                while true {
+                    // A nap the ending can cut short: letting go never waits out the rest of it.
+                    let nap = Task { try await Task.sleep(for: .milliseconds(400)) }
+                    lock.withLock { napping = nap }
+                    _ = try? await nap.value
+                    let (audio, done) = lock.withLock { napping = nil; return (samples, stopped) }
                     if done { break }
                     guard let c = chunker.cut(audio, from: cut) else {
                         // Quiet for a moment with new words since the last piece: write them now, ahead of release.
-                        // Once per quiet spell: again only after you have said more.
+                        // Once per quiet spell: again only after you have said more. Letting go cancels a guess still
+                        // being written, so the ending never waits on work it may throw away.
                         let saidMore = early.map { Chunker.hasSpeech(audio, from: $0.end, reference: cut) } ?? true
                         if saidMore, Transcriber.lastJob < 2, audio.count - cut > Chunker.rate / 2, Chunker.endsQuiet(audio, from: cut) {
-                            let text = (try? await Transcriber.whisperText(whisper, Array(audio[cut...]), prompt: Transcriber.prompt(hints, carry ? pieces.last : nil))) ?? ""
-                            early = (audio.count, text)
+                            let from = cut, prompt = Transcriber.prompt(hints, carry ? pieces.last : nil)
+                            let guess = Task { try await Transcriber.whisperText(whisper, Array(audio[from...]), prompt: prompt) }
+                            lock.withLock { guessing = guess }
+                            let text = try? await guess.value
+                            lock.withLock { guessing = nil }
+                            if let text, !guess.isCancelled { early = (audio.count, text) }
                         }
                         continue
                     }
@@ -261,15 +315,18 @@ final class Transcriber {
         /// This dictation's audio (Whisper only), for learning how you talk.
         var recorded: [Float] { lock.withLock { samples } }
 
-        init(whisper: WhisperKit? = nil) {
+        private let parakeet: AsrManager?
+
+        init(whisper: WhisperKit? = nil, parakeet: AsrManager? = nil) {
             self.whisper = whisper
+            self.parakeet = parakeet
             var c: AsyncStream<AnalyzerInput>.Continuation!
             input = AsyncStream<AnalyzerInput> { c = $0 }
             feed = c
         }
 
         func push(_ buffer: AVAudioPCMBuffer) {
-            guard whisper != nil else { feed.yield(AnalyzerInput(buffer: buffer)); return }
+            guard whisper != nil || parakeet != nil else { feed.yield(AnalyzerInput(buffer: buffer)); return }
             guard let ch = buffer.floatChannelData?[0] else { return }
             lock.withLock { samples.append(contentsOf: UnsafeBufferPointer(start: ch, count: Int(buffer.frameLength))) }
         }
@@ -309,9 +366,14 @@ final class Transcriber {
         /// and whatever it had is returned, so the app never hangs on "Writing".
         func finish() async throws -> String {
             feed.finish()
+            if let parakeet { return try await Transcriber.parakeetText(parakeet, lock.withLock { samples }) }
             if let whisper {
-                lock.withLock { stopped = true }
+                let (nap, guess) = lock.withLock { stopped = true; return (napping, guessing) }
+                nap?.cancel(); guess?.cancel()
+                let f0 = Date()
                 await loop?.value  // a piece being written finishes first, so the order holds
+                let loopWait = Int(Date().timeIntervalSince(f0) * 1000)
+                let t0 = Date()
                 let audio = lock.withLock { samples }
                 let tail: String
                 if let e = early, e.end <= audio.count, !Chunker.hasSpeech(audio, from: e.end, reference: cut) {
@@ -328,6 +390,7 @@ final class Transcriber {
                 }
                 if !tail.isEmpty { pieces.append(tail) }
                 onPiece = nil
+                Log.note("engine finish: waited \(loopWait)ms for the stream, ending \(Int(Date().timeIntervalSince(t0) * 1000))ms, \(pieces.count) pieces")
                 return pieces.joined(separator: " ")
             }
             let a = analyzer
@@ -361,11 +424,44 @@ final class Transcriber {
 
     func session(_ config: Config) -> (Session, (any SpeechModule)?) {
         if config.engine == "whisper" { return (Session(whisper: whisper), nil) }
+        if config.engine == "parakeet" { return (Session(parakeet: parakeet), nil) }
         return (Session(), module(config))
     }
 
     private static func joined(_ results: [TranscriptionResult]) -> String {
         results.map(\.text).joined(separator: " ").replacingOccurrences(of: "  ", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The live path, timed: a recording fed in at talking speed (with `pause` seconds of quiet at the end, as when
+    /// you stop talking before letting go), then released. Returns how long finish() took, which is what you wait for.
+    func sessionTest(_ url: URL, pause: Double) async throws -> (ms: Int, text: String) {
+        guard let whisper, let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false) else { return (0, "") }
+        let audio = try AudioProcessor.loadAudioAsFloatArray(fromPath: url.path) + [Float](repeating: 0.0003, count: Int(pause * 16000))
+        let s = Session(whisper: whisper)
+        s.stream(Chunker())
+        let step = 1600  // a tenth of a second
+        var i = 0
+        while i < audio.count {
+            let n = min(step, audio.count - i)
+            guard let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(n)) else { break }
+            buf.frameLength = AVAudioFrameCount(n)
+            for k in 0..<n { buf.floatChannelData![0][k] = audio[i + k] }
+            s.push(buf)
+            i += n
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        let t = Date()
+        let text = try await s.finish()
+        return (Int(Date().timeIntervalSince(t) * 1000), text)
+    }
+
+    /// Speed test: one clip, five times warm, then again after `idle` seconds doing nothing. Timings go to the log.
+    func speedTest(_ url: URL, idle: Double) async throws {
+        guard let whisper else { return }
+        let audio = try AudioProcessor.loadAudioAsFloatArray(fromPath: url.path)
+        for i in 1...5 { let t = Date(); _ = try await Self.whisperText(whisper, audio); print("warm \(i): \(Int(Date().timeIntervalSince(t) * 1000)) ms") }
+        try await Task.sleep(for: .seconds(idle))
+        for i in 1...2 { let t = Date(); _ = try await Self.whisperText(whisper, audio); print("after \(Int(idle)) s idle \(i): \(Int(Date().timeIntervalSince(t) * 1000)) ms") }
     }
 
     /// One file, written whole (as before streaming) and streamed, with the time each takes. For the streaming test.
@@ -384,6 +480,9 @@ final class Transcriber {
 
     /// Runs the engine over an audio file and returns the text. For checking the engine without a microphone.
     func transcribeFile(_ url: URL, config: Config) async throws -> String {
+        if config.engine == "parakeet", let parakeet {
+            return try await Self.parakeetText(parakeet, try AudioProcessor.loadAudioAsFloatArray(fromPath: url.path))
+        }
         if config.engine == "whisper" {
             guard let whisper else { throw NSError(domain: "RedpenVoice", code: 4, userInfo: [NSLocalizedDescriptionKey: "Whisper is not loaded"]) }
             return try await Self.whisperText(whisper, try AudioProcessor.loadAudioAsFloatArray(fromPath: url.path))

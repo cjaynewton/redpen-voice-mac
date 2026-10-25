@@ -66,6 +66,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.settings?.model.engineState = s
             if s == .ready { self?.warmMic() }
         }
+        // `--session-test clips.txt [pauseSeconds]` feeds each clip through a live dictation at talking speed and times
+        // the wait after letting go.
+        if let i = CommandLine.arguments.firstIndex(of: "--session-test"), i + 1 < CommandLine.arguments.count {
+            let list = (try? String(contentsOfFile: CommandLine.arguments[i + 1], encoding: .utf8))?.split(separator: "\n").map(String.init) ?? []
+            let pause = i + 2 < CommandLine.arguments.count ? Double(CommandLine.arguments[i + 2]) ?? 0.4 : 0.4
+            var config = config
+            config.engine = "whisper"
+            Task { [config, engine] in
+                await engine.prepare(config)
+                for path in list where !path.isEmpty {
+                    do { let r = try await engine.sessionTest(URL(fileURLWithPath: path), pause: pause); print("\((path as NSString).lastPathComponent): \(r.ms) ms after release, \(r.text.split(separator: " ").count) words") }
+                    catch { print("failed: \(error)") }
+                    fflush(stdout)
+                }
+                exit(0)
+            }
+            return
+        }
+        // `--speed-test clip.wav [idleSeconds]` times Whisper on one clip, warm and after sitting idle.
+        if let i = CommandLine.arguments.firstIndex(of: "--speed-test"), i + 1 < CommandLine.arguments.count {
+            let path = CommandLine.arguments[i + 1]
+            let idle = i + 2 < CommandLine.arguments.count ? Double(CommandLine.arguments[i + 2]) ?? 60 : 60
+            var config = config
+            config.engine = "whisper"
+            Task { [config, engine] in
+                await engine.prepare(config)
+                do { try await engine.speedTest(URL(fileURLWithPath: path), idle: idle) } catch { print("failed: \(error)") }
+                fflush(stdout); exit(0)
+            }
+            return
+        }
         // `--stream-test files.txt out.jsonl [pauseSeconds]` writes each file whole and streamed (cut at pauses as a
         // live dictation would be), one JSON line each, with the wait after release. Whisper only.
         if let i = CommandLine.arguments.firstIndex(of: "--stream-test"), i + 2 < CommandLine.arguments.count {
@@ -322,6 +353,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // pause over, so the video comes back once, after this press, and is never paused or started twice.
         // The video is left alone until this is a real press: a quick tap (the first of a double tap, or a stray
         // tap) is over before 0.3 s and never presses anything, so taps can't flip a video on and off.
+        if resumeWork != nil { resumeWork?.cancel(); resumeWork = nil }  // pressed again before the video came back
         if pausedMedia {
             Log.note("media: still paused from the last press")
         } else if config.pauseMedia {
@@ -400,12 +432,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         livePieces += 1
         liveShown += (liveShown.isEmpty ? "" : " ") + text
         guard config.liveWords ?? true else { return }
-        if keys.handsFree, config.mode != "rewrite", !liveStopped, liveTyped == livePieces - 1, waitingText == nil,
-           Insert.focus().kind != .notText {
+        // Typed as you talk, holding the key or hands-free, but only into a text box (D-763). Holding the key needs a
+        // box Accessibility names as text; hands-free also takes a box it can't name (Electron apps), as at release.
+        let focus = config.mode == "rewrite" ? (kind: FocusKind.notText, role: "") : Insert.focus()
+        let canType = keys.handsFree ? focus.kind != .notText : focus.kind == .text
+        if canType, !liveStopped, liveTyped == livePieces - 1, waitingText == nil {
             let out = config.mode == "noUms" ? Fillers.strip(names.apply(text)) : names.apply(text)
             // Only "um"s: nothing to type, the piece is done.
             if out.trimmingCharacters(in: .whitespaces).isEmpty { liveTyped += 1; return }
-            if Insert.text(out, joining: delivery) { liveTyped += 1; Log.note("live: piece \(livePieces) typed") }
+            if Insert.text(out, joining: delivery) { liveTyped += 1; Log.note("live: piece \(livePieces) typed, \(keys.handsFree ? "hands-free" : "holding the key")") }
             else if Insert.typedSome {
                 // Part of it went in before the box changed: never type it again; the whole dictation is in history.
                 liveTyped += 1; liveStopped = true; Log.note("live: piece \(livePieces) typed in part, live typing stopped")
@@ -500,7 +535,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// pressed play yourself, or the Mac picked another tab), it presses nothing: the play/pause key is a switch, so
     /// a press then would pause that one or start a second video beside it. If it can't listen, it presses nothing
     /// either: a video left paused is better than a surprise.
+    /// Puts the video back a second after you finish, not at once: press again within that second and it simply stays
+    /// paused. Play at once then pause two seconds later didn't stick on Oct 25 (the video was still starting up).
     private func resumeMedia() {
+        guard MediaGate.shouldResume(paused: pausedMedia, recordingAgain: session != nil || writing > 0) else { return }
+        if quitting { resumeNow(); return }
+        resumeWork?.cancel()
+        let w = DispatchWorkItem { [weak self] in self?.resumeNow() }
+        resumeWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: w)
+    }
+    private var resumeWork: DispatchWorkItem?
+
+    private func resumeNow() {
+        resumeWork = nil
         guard MediaGate.shouldResume(paused: pausedMedia, recordingAgain: session != nil || writing > 0) else { return }
         pausedMedia = false
         // "Play again when I stop talking" off: pause only, so nothing ever starts by itself.
@@ -594,7 +642,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             if typedLive > 0 { Log.note("live: \(typedLive) of \(s.written.count) pieces typed while talking") }
-            if !raw.isEmpty, self.config.engine == "whisper" {
+            if !raw.isEmpty, self.config.engine == "whisper" || self.config.engine == "parakeet" {
                 self.talk.add(s.recorded, words: raw.split(separator: " ").count)
                 self.talk.save(AppDelegate.talkURL)
             }
@@ -664,7 +712,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .unsupported: m.status = "Not available"
         case .failed: m.status = "Engine failed"
         }
-        m.engine = config.engine == "whisper" ? "Whisper" : "Mac built-in"
+        m.engine = ["whisper": "Whisper", "parakeet": "Fast"][config.engine] ?? "Mac built-in"
         m.mic = recorder.inputName
         m.update = Updates.shared.waiting
         let fnTalks = config.talkKeyChoice == "fn" || config.talkKeyChoice == "fnOrOption"

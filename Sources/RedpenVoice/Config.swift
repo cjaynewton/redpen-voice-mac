@@ -32,7 +32,8 @@ struct Config: Codable {
     /// Names near the cursor (the box you're in, the window title) given to Whisper as spelling hints. On when missing.
     var screenHints: Bool?
     /// "dictation" (Apple's dictation model, tuned for talking to a text field), "transcription" (Apple's general
-    /// model) or "whisper" (OpenAI's Whisper, downloaded once and run on this Mac).
+    /// model), "whisper" (OpenAI's Whisper, downloaded once and run on this Mac) or "parakeet" (NVIDIA's Parakeet v2,
+    /// the Fast engine: downloaded once, words in well under a second, a few more mistakes than Whisper).
     var engine = "dictation"
     var locale = "en-CA"
     /// Off by default: a click at every start gets old fast.

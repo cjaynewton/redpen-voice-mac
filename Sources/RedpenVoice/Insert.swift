@@ -194,6 +194,9 @@ enum Insert {
                   let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) else { return ok }
             down.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
             up.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
+            // No modifiers: with Fn or Option held to talk, the letters would otherwise arrive as Fn or Option
+            // shortcuts (Fn-E opens emoji, Option-letters type accents).
+            down.flags = []; up.flags = []
             down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
             ok = true; typedSome = true
             usleep(4_000)

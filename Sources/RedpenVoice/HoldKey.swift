@@ -82,7 +82,9 @@ final class HoldKey {
         let down = e.modifierFlags.contains(flag)
         // A release the keyboard itself does not report (the key is still physically down) is an echo of
         // something the app posted, not the finger lifting.
-        if !down, CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(code)) { return }
+        // The hardware's own state, not the session's: words typed while the key is held are posted without Fn or
+        // Option, and the session state can read that as the key coming up.
+        if !down, CGEventSource.keyState(.hidSystemState, key: CGKeyCode(code)) { return }
         set(code, down)
     }
 
@@ -97,10 +99,16 @@ final class HoldKey {
     }
 
     private func set(_ code: Int, _ down: Bool) {
+        // One talk key at a time: the key that started a dictation owns it, and the other one (right Option hit by
+        // accident while holding Fn) is ignored, so it can't keep the dictation going or start another (Oct 25).
+        if let o = owner, code != o { return }
         guard down != held.contains(code) else { return }
         if down { held.insert(code) } else { held.remove(code) }
+        if down, owner == nil { owner = code }
         changed(down)
+        if held.isEmpty, !active, !latched { owner = nil }
     }
+    private var owner: Int?
 
     private func changed(_ down: Bool) {
         if down {

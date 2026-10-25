@@ -71,6 +71,7 @@ final class SettingsModel: ObservableObject {
     }
 
     var usesWhisper: Bool { config.engine == "whisper" }
+    var usesFast: Bool { config.engine == "parakeet" }
     var whisperOnDisk: Bool { Transcriber.whisperOnDisk }
 
     /// Downloads and loads Whisper while the built-in engine keeps working, then switches to it.
@@ -239,7 +240,14 @@ struct SettingsView: View {
                 }
             }
             Divider().overlay(Ink.line)
-            engineRow(on: !model.usesWhisper, dashed: false, action: { model.config.engine = "dictation" }) {
+            engineRow(on: model.usesFast, dashed: !Transcriber.parakeetOnDisk, action: { model.config.engine = "parakeet" }) {
+                Text("Fast").font(.system(size: 15, weight: .semibold))
+                note(Transcriber.parakeetOnDisk
+                     ? "Parakeet, from NVIDIA. Words land in well under a second. On your own voice it got about 1 more word in 20 wrong than Whisper. English only."
+                     : "Parakeet, from NVIDIA. Words land in well under a second, with a few more mistakes than Whisper. A one-time download of about 600 MB the first time you pick it.")
+            }
+            Divider().overlay(Ink.line)
+            engineRow(on: !model.usesWhisper && !model.usesFast, dashed: false, action: { model.config.engine = "dictation" }) {
                 Text("Mac built-in").font(.system(size: 15, weight: .semibold))
                 note("Already on your Mac, ready now. Words appear a little sooner.")
                 if !model.whisperOnDisk && model.fetch == nil { heard("Mac built-in heard", builtInLine) }
