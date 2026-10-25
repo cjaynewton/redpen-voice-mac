@@ -75,5 +75,7 @@ if pgrep -x RedpenVoice >/dev/null; then
     [[ "$last" == *"recording from"* || "$last" == *"test: recording"* ]] || break
     sleep 1
   done
+  # A rebuild is a normal quit: leave the note so the crash watchdog doesn't reopen the old copy.
+  touch "$HOME/Library/Application Support/Redpen Voice/clean-quit"
   pkill -f "$HOME/Applications/Redpen Voice.app/Contents/MacOS/RedpenVoice"; sleep 1; open ~/Applications/"Redpen Voice.app"; echo "Restarted"
 fi

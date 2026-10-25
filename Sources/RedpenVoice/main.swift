@@ -67,7 +67,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.refreshMenu()
             self?.firstRun?.refresh()
             self?.settings?.model.engineState = s
-            if s == .ready { self?.warmMic() }
+            if s == .ready {
+                self?.warmMic()
+                if self?.restarted == true { self?.restarted = false; self?.hud.flash("Restarted, ready", ok: true, for: 2.5) }
+            }
         }
         // `--session-test clips.txt [pauseSeconds]` feeds each clip through a live dictation at talking speed and times
         // the wait after letting go.
@@ -284,6 +287,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             firstRun = w
             w.show()
         }
+        // One copy at a time: a second one (opened by hand while the watchdog reopens it) goes quietly.
+        let mine = Bundle.main.bundleIdentifier ?? ""
+        if NSRunningApplication.runningApplications(withBundleIdentifier: mine).contains(where: { $0.processIdentifier != getpid() }) {
+            Log.note("another copy is running, this one quits"); Watchdog.markCleanQuit(); exit(0)
+        }
+        Watchdog.start()
+        restarted = CommandLine.arguments.contains("--restarted")
         Updates.shared.start()
         updateWatch = Updates.shared.$waiting.sink { [weak self] _ in DispatchQueue.main.async { self?.refreshMenu() } }
         Log.note("launched")
@@ -303,6 +313,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     private var quitting = false
     private var updateWatch: AnyCancellable?
+    /// Reopened by the watchdog after a crash: the bar says so once the engine is ready.
+    private var restarted = false
+
+    func applicationWillTerminate(_ n: Notification) { Watchdog.markCleanQuit() }
     /// Dictations whose words are still being written. The pause is held until the last one is done.
     private var writing = 0
     /// The press whose recording the mic is feeding. Only that press may stop it.
@@ -1025,6 +1039,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         settings?.show()
     }
+}
+
+// Watchdog mode: a small copy that reopens the app if it crashes. Runs before any window or menu exists.
+if let i = CommandLine.arguments.firstIndex(of: "--watchdog"), i + 1 < CommandLine.arguments.count, let pid = pid_t(CommandLine.arguments[i + 1]) {
+    Watchdog.run(parent: pid)
 }
 
 MainActor.assumeIsolated {

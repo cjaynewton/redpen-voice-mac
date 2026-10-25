@@ -194,6 +194,16 @@ final class Transcriber {
         }
     }
 
+    /// Where each part of Whisper runs. `VOICE_COMPUTE` picks for a test: "ane" (WhisperKit's default, the Neural
+    /// Engine for both), "gpudec" (decoder on the graphics chip), "gpu" (both on the graphics chip).
+    static var computeOptions: ModelComputeOptions? {
+        switch ProcessInfo.processInfo.environment["VOICE_COMPUTE"] {
+        case "gpudec": return ModelComputeOptions(audioEncoderCompute: .cpuAndNeuralEngine, textDecoderCompute: .cpuAndGPU)
+        case "gpu": return ModelComputeOptions(audioEncoderCompute: .cpuAndGPU, textDecoderCompute: .cpuAndGPU)
+        default: return nil
+        }
+    }
+
     /// Downloads and loads Whisper without touching the engine in use, so the built-in one keeps taking dictation
     /// until Whisper is ready to switch to. Cancelling the task stops the download.
     func fetchWhisper(progress: @escaping (Double) -> Void) async throws {
@@ -204,6 +214,7 @@ final class Transcriber {
         try Task.checkCancellation()
         let t = Date()
         whisper = try await WhisperKit(WhisperKitConfig(model: Self.whisperModel, modelFolder: Self.whisperFolder.path,
+                                                       computeOptions: Self.computeOptions,
                                                        verbose: false, logLevel: .error, prewarm: true, load: true, download: false))
         Log.note("engine: whisper loaded in \(Log.int(Date().timeIntervalSince(t)))s")
     }
