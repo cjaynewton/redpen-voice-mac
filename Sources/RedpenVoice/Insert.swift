@@ -130,11 +130,16 @@ enum Insert {
         return nil
     }
 
-    private static func backspace(_ count: Int) {
+    /// Deletes `count` characters before the cursor. No modifiers: with Fn held, Delete is forward delete, and with
+    /// Option held it deletes whole words.
+    static func backspace(_ count: Int) {
         guard let src = CGEventSource(stateID: .combinedSessionState) else { return }
         for _ in 0..<count {
-            CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_Delete), keyDown: true)?.post(tap: .cghidEventTap)
-            CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_Delete), keyDown: false)?.post(tap: .cghidEventTap)
+            for down in [true, false] {
+                guard let e = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_Delete), keyDown: down) else { continue }
+                e.flags = []
+                e.post(tap: .cghidEventTap)
+            }
             usleep(1_500)
         }
     }

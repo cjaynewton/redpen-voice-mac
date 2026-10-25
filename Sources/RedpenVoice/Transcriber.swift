@@ -93,7 +93,11 @@ final class Transcriber {
     /// Finds the language model, downloads it the first time, and remembers the audio format it wants.
     func prepare(_ config: Config) async {
         set(.checking)
-        if config.engine == "whisper" { await prepareWhisper(); return }
+        if config.engine == "whisper" {
+            await prepareWhisper()
+            if config.draftMode == true { await loadDraftEngine() }
+            return
+        }
         if config.engine == "parakeet" { await prepareParakeet(); return }
         let wanted = Locale(identifier: config.locale)
         let supported = await DictationTranscriber.supportedLocale(equivalentTo: wanted)
@@ -146,6 +150,20 @@ final class Transcriber {
         } catch {
             set(.failed(error.localizedDescription)); Log.note("engine: parakeet failed \(error.localizedDescription)")
         }
+    }
+
+    /// Fast draft, Whisper checks: Parakeet loaded beside Whisper, without changing the engine in use.
+    private func loadDraftEngine() async {
+        guard parakeet == nil else { return }
+        do {
+            let t = Date()
+            let models = try await AsrModels.downloadAndLoad(version: .v2)
+            let m = AsrManager(config: .default)
+            try await m.loadModels(models)
+            parakeet = m
+            FileManager.default.createFile(atPath: Self.parakeetMarker.path, contents: nil)
+            Log.note("engine: draft engine (parakeet) loaded in \(Log.int(Date().timeIntervalSince(t)))s")
+        } catch { Log.note("engine: draft engine failed \(error.localizedDescription), Whisper alone") }
     }
 
     static func parakeetText(_ p: AsrManager, _ audio: [Float]) async throws -> String {
@@ -271,6 +289,8 @@ final class Transcriber {
         var hints = ""
         /// True when the last part could not be written (the engine failed on it); what came before is kept.
         private(set) var endingLost = false
+        /// Whisper's text for the ending (everything after the last check), for replacing the last drafts.
+        private(set) var lastTail = ""
         /// Pass the last piece along as context for the next. Kept only if the test says it helps.
         var carry = false
         /// A head start: when you go quiet while still holding the key, what you said since the last piece is written
@@ -278,6 +298,72 @@ final class Transcriber {
         private var early: (end: Int, text: String)?
         private var napping: Task<Void, Error>?
         private var guessing: Task<String, Error>?
+
+        // MARK: Fast draft, Whisper checks (D-764)
+        /// A short stretch Parakeet wrote at a small pause, by its place in the audio.
+        struct Draft { let start: Int; let end: Int; let text: String }
+        /// The draft engine (Parakeet). When set, drafts are written at every short pause and Whisper rereads whole
+        /// runs of drafts (4 s or more, cut where a draft ended), so each check covers drafts exactly.
+        var drafter: AsrManager?
+        var onDraft: ((Int, String) -> Void)?
+        /// Whisper's text for drafts `range`, to replace what the draft typed.
+        var onCheck: ((Range<Int>, String) -> Void)?
+        private var drafts: [Draft] = []
+        /// Drafts already covered by a Whisper check; the ending covers the rest.
+        private(set) var checkedUpTo = 0
+        private var draftLoop: Task<Void, Never>?
+        private var draftNap: Task<Void, Error>?
+        /// When the last audio arrived and how much there was, to place a sample in time (for the draft timing).
+        private var lastPush = (at: Date(), count: 0)
+        var draftCount: Int { lock.withLock { drafts.count } }
+
+        /// Where speech began in this dictation's audio (the first loud 30 ms), for timing the first draft.
+        var speechOnset: Int {
+            let a = recorded
+            let levels = Chunker.levels(a, from: 0)
+            guard !levels.isEmpty else { return 0 }
+            let q = Chunker.quietLevel(levels)
+            return (levels.firstIndex { $0 > q } ?? 0) * 480
+        }
+
+        /// The moment sample `i` was heard, give or take a buffer.
+        func timeOf(_ i: Int) -> Date {
+            let p = lock.withLock { lastPush }
+            return p.at.addingTimeInterval(-Double(p.count - i) / Double(Chunker.rate))
+        }
+
+        /// Starts the draft loop: every quarter second, at a short pause, Parakeet writes what was said since the last
+        /// draft. About a fifth of a second a stretch on an M1 Max.
+        func streamDrafts() {
+            guard let drafter else { return }
+            let chunker = Chunker(minSeconds: 0.8, maxSeconds: 6, pauseSeconds: 0.2)
+            draftLoop = Task.detached(priority: .userInitiated) { [self] in
+                var from = 0
+                while true {
+                    let nap = Task { try await Task.sleep(for: .milliseconds(200)) }
+                    if !lock.withLock({ if stopped { return false }; draftNap = nap; return true }) { nap.cancel() }
+                    _ = try? await nap.value
+                    let (audio, done) = lock.withLock { draftNap = nil; return (samples, stopped) }
+                    if done { break }
+                    guard let c = chunker.cut(audio, from: from) else { continue }
+                    let text = (try? await Transcriber.parakeetText(drafter, Array(audio[from..<c]))) ?? ""
+                    let index: Int = lock.withLock { drafts.append(Draft(start: from, end: c, text: text)); return drafts.count - 1 }
+                    from = c
+                    if !text.isEmpty { onDraft?(index, text) } else { onDraft?(index, "") }
+                }
+            }
+        }
+
+        /// Where Whisper cuts in draft mode: the first draft end at least 4 s after the last check (never past 25 s).
+        private func draftCheckCut(from: Int) -> (end: Int, upTo: Int)? {
+            let ds = lock.withLock { drafts }
+            guard checkedUpTo < ds.count else { return nil }
+            for i in checkedUpTo..<ds.count where ds[i].end - from >= 4 * Chunker.rate {
+                if ds[i].end - from > 25 * Chunker.rate, i > checkedUpTo { return (ds[i - 1].end, i) }
+                return (ds[i].end, i + 1)
+            }
+            return nil
+        }
 
         /// Starts writing pieces as they finish. Whisper only.
         func stream(_ chunker: Chunker) {
@@ -291,6 +377,18 @@ final class Transcriber {
                     _ = try? await nap.value
                     let (audio, done) = lock.withLock { napping = nil; return (samples, stopped) }
                     if done { break }
+                    if drafter != nil {
+                        // Draft mode: Whisper rereads whole runs of drafts; no head start (the drafts are the speed).
+                        guard let d = draftCheckCut(from: cut) else { continue }
+                        do {
+                            let text = try await Transcriber.whisperText(whisper, Array(audio[cut..<d.end]), prompt: Transcriber.prompt(hints, nil))
+                            let range = checkedUpTo..<d.upTo
+                            cut = d.end; checkedUpTo = d.upTo
+                            if !text.isEmpty { pieces.append(text) }
+                            onCheck?(range, text)
+                        } catch { Log.note("engine: a check failed, the ending covers it") }
+                        continue
+                    }
                     guard let c = chunker.cut(audio, from: cut) else {
                         // Quiet for a moment with new words since the last piece: write them now, ahead of release.
                         // Once per quiet spell: again only after you have said more. Letting go cancels a guess still
@@ -339,7 +437,10 @@ final class Transcriber {
         func push(_ buffer: AVAudioPCMBuffer) {
             guard whisper != nil || parakeet != nil else { feed.yield(AnalyzerInput(buffer: buffer)); return }
             guard let ch = buffer.floatChannelData?[0] else { return }
-            lock.withLock { samples.append(contentsOf: UnsafeBufferPointer(start: ch, count: Int(buffer.frameLength))) }
+            lock.withLock {
+                samples.append(contentsOf: UnsafeBufferPointer(start: ch, count: Int(buffer.frameLength)))
+                lastPush = (Date(), samples.count)
+            }
         }
 
         func start(module: (any SpeechModule)?, vocabulary: [String]) {
@@ -379,9 +480,10 @@ final class Transcriber {
             feed.finish()
             if let parakeet { return try await Transcriber.parakeetText(parakeet, lock.withLock { samples }) }
             if let whisper {
-                let (nap, guess) = lock.withLock { stopped = true; return (napping, guessing) }
-                nap?.cancel(); guess?.cancel()
+                let (nap, guess, dnap) = lock.withLock { stopped = true; return (napping, guessing, draftNap) }
+                nap?.cancel(); guess?.cancel(); dnap?.cancel()
                 let f0 = Date()
+                await draftLoop?.value
                 await loop?.value  // a piece being written finishes first, so the order holds
                 let loopWait = Log.ms(Date().timeIntervalSince(f0))
                 let t0 = Date()
@@ -401,7 +503,8 @@ final class Transcriber {
                     }
                 }
                 if !tail.isEmpty { pieces.append(tail) }
-                onPiece = nil
+                lastTail = tail
+                onPiece = nil; onDraft = nil; onCheck = nil
                 Log.note("engine finish: waited \(loopWait)ms for the stream, ending \(Log.ms(Date().timeIntervalSince(t0)))ms, \(pieces.count) pieces")
                 return pieces.joined(separator: " ")
             }
@@ -425,7 +528,8 @@ final class Transcriber {
         }
 
         func cancel() {
-            onPiece = nil
+            onPiece = nil; onDraft = nil; onCheck = nil
+            draftLoop?.cancel()
             lock.withLock { stopped = true }
             loop?.cancel()
             feed.finish()
@@ -435,7 +539,11 @@ final class Transcriber {
     }
 
     func session(_ config: Config) -> (Session, (any SpeechModule)?) {
-        if config.engine == "whisper" { return (Session(whisper: whisper), nil) }
+        if config.engine == "whisper" {
+            let s = Session(whisper: whisper)
+            if config.draftMode == true { s.drafter = parakeet }
+            return (s, nil)
+        }
         if config.engine == "parakeet" { return (Session(parakeet: parakeet), nil) }
         return (Session(), module(config))
     }
@@ -475,6 +583,42 @@ final class Transcriber {
         for i in 1...5 { let t = Date(); _ = try await Self.whisperText(whisper, audio, prompt: prompt); print("warm \(i): \(Log.ms(Date().timeIntervalSince(t))) ms") }
         try await Task.sleep(for: .seconds(idle))
         for i in 1...2 { let t = Date(); _ = try await Self.whisperText(whisper, audio, prompt: prompt); print("after \(Int(idle)) s idle \(i): \(Log.ms(Date().timeIntervalSince(t))) ms") }
+    }
+
+    /// Draft mode on a file, as it would run live: Parakeet drafts at short pauses, Whisper rereads runs of drafts
+    /// (4 s or more, cut at a draft end), then the ending. Returns Whisper's final text, the drafts' text, and how many
+    /// checks changed words.
+    func draftTest(_ url: URL) async throws -> [String: Any] {
+        guard let whisper, let parakeet else { throw NSError(domain: "RedpenVoice", code: 4, userInfo: [NSLocalizedDescriptionKey: "both engines needed"]) }
+        let audio = try AudioProcessor.loadAudioAsFloatArray(fromPath: url.path)
+        let dch = Chunker(minSeconds: 0.8, maxSeconds: 6, pauseSeconds: 0.2)
+        var drafts: [(end: Int, text: String)] = [], dfrom = 0, wcut = 0, checked = 0
+        var final: [String] = [], checks = 0, changed = 0, words = 0, draftSecs: [Double] = []
+        var heard = 0
+        while heard < audio.count {
+            heard = min(audio.count, heard + 3200)
+            let visible = Array(audio[0..<heard])
+            if let c = dch.cut(visible, from: dfrom) {
+                let t0 = Date()
+                drafts.append((c, try await Self.parakeetText(parakeet, Array(audio[dfrom..<c]))))
+                draftSecs.append(Date().timeIntervalSince(t0)); dfrom = c
+            }
+            if let i = (checked..<drafts.count).first(where: { drafts[$0].end - wcut >= 4 * Chunker.rate }) {
+                let w = try await Self.whisperText(whisper, Array(audio[wcut..<drafts[i].end]))
+                let d = drafts[checked...i].map(\.text).joined(separator: " ")
+                checks += 1; let n = Corrections.wordsChanged(d, w); if n > 0 { changed += 1; words += n }
+                final.append(w); wcut = drafts[i].end; checked = i + 1
+            }
+        }
+        let t0 = Date()
+        let w = try await Self.whisperText(whisper, Array(audio[wcut...]))
+        let tailSecs = Date().timeIntervalSince(t0)
+        let d = drafts[checked...].map(\.text).joined(separator: " ")
+        checks += 1; let n = Corrections.wordsChanged(d, w); if n > 0 { changed += 1; words += n }
+        final.append(w)
+        return ["file": url.lastPathComponent, "seconds": Double(audio.count) / 16000, "hyp": final.filter { !$0.isEmpty }.joined(separator: " "),
+                "hyp_draft": drafts.map(\.text).joined(separator: " "), "checks": checks, "changed": changed, "words_changed": words,
+                "draft_ms_median": draftSecs.isEmpty ? 0 : Log.ms(draftSecs.sorted()[draftSecs.count / 2]), "tail_secs": tailSecs]
     }
 
     /// One file, written whole (as before streaming) and streamed, with the time each takes. For the streaming test.

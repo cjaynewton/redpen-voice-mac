@@ -29,6 +29,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pasteKey: Shortcut?
     private var undoKey: Shortcut?
     private var typingWatch: Any?
+    private var clickWatch: Any?
+    /// The last time you typed a key or clicked, to know that the end of the box is still Voice's own typing.
+    private var userActedAt = Date.distantPast
     private var names = Names(text: "")
     private let menu = MenuModel()
     private let panel = NSPopover()
@@ -105,6 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let pause = i + 3 < CommandLine.arguments.count ? Double(CommandLine.arguments[i + 3]) ?? 0.5 : 0.5
             var config = config
             config.engine = "whisper"
+            if ProcessInfo.processInfo.environment["VOICE_DRAFT"] == "1" { config.draftMode = true }
             FileManager.default.createFile(atPath: outPath, contents: nil)
             Task { [config, engine] in
                 await engine.prepare(config)
@@ -112,6 +116,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 for path in list where !path.isEmpty {
                     do {
                         let env = ProcessInfo.processInfo.environment
+                        if env["VOICE_DRAFT"] == "1" {
+                            let row = try await engine.draftTest(URL(fileURLWithPath: path))
+                            if let d = try? JSONSerialization.data(withJSONObject: row) { h.write(d); h.write(Data("\n".utf8)) }
+                            print("\((path as NSString).lastPathComponent) done"); fflush(stdout)
+                            continue
+                        }
                         let row = try await engine.streamTest(URL(fileURLWithPath: path), chunker: Chunker(pauseSeconds: pause),
                                                               hints: env["VOICE_HINTS"] ?? "", carry: env["VOICE_CARRY"] == "1")
                         if let d = try? JSONSerialization.data(withJSONObject: row) { h.write(d); h.write(Data("\n".utf8)) }
@@ -256,8 +266,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         undoKey = Shortcut(id: 2, keyCode: kVK_ANSI_Z, name: "Control-Option-Z") { [weak self] in self?.takeBack() }
         // Any key you type yourself after a dictation means take-back must not guess. Our own typing is skipped.
         let me = Int64(ProcessInfo.processInfo.processIdentifier)
-        typingWatch = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { e in
-            if e.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) != me { MainActor.assumeIsolated { Insert.typedSince = true } }
+        typingWatch = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            if e.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) != me {
+                MainActor.assumeIsolated {
+                    Insert.typedSince = true
+                    if self?.keys.keys.contains(where: { $0.code == Int(e.keyCode) }) != true { self?.userActedAt = Date() }
+                }
+            }
+        }
+        // A click anywhere means you may have moved the cursor: draft fixing stops for that dictation.
+        clickWatch = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            MainActor.assumeIsolated { self?.userActedAt = Date() }
         }
         if !config.firstRunDone || !AXIsProcessTrusted() {
             let w = FirstRunWindow(config: config, engineState: { [weak self] in self?.engineWord ?? "" })
@@ -387,7 +406,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         s.start(module: module, vocabulary: names.vocabulary)
         // Whisper writes each stretch at a pause while you talk, so only the last few seconds are left at the end.
         livePieces = 0; liveTyped = 0; liveShown = ""; liveStopped = false; liveLeftover = ""
-        if config.engine == "whisper" {
+        resetDrafts()
+        if config.engine == "whisper", s.drafter != nil, config.mode != "rewrite" {
+            s.onDraft = { [weak self, weak s] i, t in DispatchQueue.main.async { if let s { self?.draft(i, t, from: s) } } }
+            s.onCheck = { [weak self, weak s] r, t in DispatchQueue.main.async { if let s { self?.check(r, t, from: s) } } }
+            s.streamDrafts()
+            s.stream(Chunker(pauseSeconds: talk.pauseSeconds))
+        } else if config.engine == "whisper" {
             // Off unless switched on: Whisper reads a hint word by word before it starts, and his 355-character names
             // list added about 3 s to every dictation (2.0 s to 5.2 s on the same clip, Oct 25). The names list still
             // fixes the words after Whisper writes them.
@@ -490,6 +515,125 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         wasHandsFree = true
     }
     private var wasHandsFree = false
+
+    // MARK: Fast draft, Whisper checks (D-764)
+
+    /// What this dictation's drafts typed, in order, so a check can replace exactly that and nothing else.
+    struct Run { var drafts: Range<Int>; var text: String; var checked: Bool }
+    private var runs: [Run] = []
+    private var nextDraft = 0
+    private var draftsStopped = false, checksStopped = false
+    private var draftBox: (pid: pid_t, element: AXUIElement)?
+    private var draftStartedAt = Date()
+    private var draftFirstLag: Double?
+    private var draftStats = (checks: 0, changed: 0, words: 0)
+
+    private func resetDrafts() {
+        runs = []; nextDraft = 0; draftsStopped = false; checksStopped = false; draftBox = nil
+        draftStartedAt = Date(); draftFirstLag = nil; draftStats = (0, 0, 0)
+    }
+
+    private func clean(_ t: String) -> String {
+        let n = names.apply(t)
+        return config.mode == "noUms" ? Fillers.strip(n) : n
+    }
+
+    /// Still Voice's own typing at the end of the same box: no key or click from you since this dictation began,
+    /// same app, same box.
+    private func draftSafe() -> Bool {
+        guard userActedAt < draftStartedAt, let b = draftBox, NSWorkspace.shared.frontmostApplication?.processIdentifier == b.pid,
+              let (now, _) = Insert.focusedElement(), CFEqual(now, b.element) else { return false }
+        return true
+    }
+
+    /// A draft from the fast engine: typed at once if the cursor is in a text box (D-763), in order, never after a
+    /// draft that couldn't go in.
+    private func draft(_ i: Int, _ text: String, from s: Transcriber.Session) {
+        guard session === s, i == nextDraft else { return }
+        nextDraft = i + 1
+        let out = clean(text)
+        if draftsStopped { liveShown += (liveShown.isEmpty ? "" : " ") + out; hud.caption(liveShown); return }
+        if out.trimmingCharacters(in: .whitespaces).isEmpty { runs.append(Run(drafts: i..<i + 1, text: "", checked: false)); return }
+        if runs.isEmpty {
+            // The first draft fixes where this dictation goes: a text box, or nowhere until you let go.
+            guard Insert.focus().kind == .text, let (el, pid) = Insert.focusedElement() else {
+                draftsStopped = true; liveShown = out; hud.caption(liveShown); return
+            }
+            draftBox = (pid, el)
+        }
+        guard draftSafe() else { draftsStopped = true; liveShown = out; hud.caption(liveShown); Log.note("draft: you moved or typed, drafts stopped"); return }
+        if Insert.text(out, joining: delivery) {
+            let typed = String(repeating: " ", count: Insert.typedPadding) + out
+            runs.append(Run(drafts: i..<i + 1, text: typed, checked: false))
+            if draftFirstLag == nil { draftFirstLag = Date().timeIntervalSince(s.timeOf(s.speechOnset)) }
+        } else {
+            draftsStopped = true
+            if Insert.typedSome { checksStopped = true }  // the box no longer matches the record
+            Log.note("draft: could not type, drafts stopped")
+        }
+    }
+
+    /// Whisper's text for drafts `range`. If it differs from what the drafts typed, and the end of the box is still
+    /// Voice's own typing, the drafts from there on are deleted and typed again with Whisper's words.
+    private func check(_ range: Range<Int>, _ whisper: String, from s: Transcriber.Session?) {
+        if let s, session !== s, !finishing { return }
+        guard !checksStopped, let first = runs.firstIndex(where: { $0.drafts.lowerBound == range.lowerBound }),
+              let last = runs.lastIndex(where: { $0.drafts.upperBound == range.upperBound }), last >= first else {
+            if !runs.isEmpty { checksStopped = true }
+            return
+        }
+        let covered = runs[first...last]
+        let typed = covered.map(\.text).joined()
+        let w = clean(whisper)
+        draftStats.checks += 1
+        let diff = Corrections.wordsChanged(typed, w)
+        guard diff > 0 else {
+            runs.replaceSubrange(first...last, with: [Run(drafts: range, text: typed, checked: true)])
+            return
+        }
+        draftStats.changed += 1; draftStats.words += diff
+        guard draftSafe() else { checksStopped = true; Log.note("draft: you moved or typed, the draft stays"); return }
+        let later = runs[(last + 1)...].map(\.text).joined()
+        let lead = typed.first == " " ? " " : ""
+        let fixed = lead + w.trimmingCharacters(in: .whitespaces)
+        Insert.backspace((typed + later).count)
+        if Insert.type(fixed + later) {
+            runs.replaceSubrange(first...last, with: [Run(drafts: range, text: fixed, checked: true)])
+        } else { checksStopped = true; Log.note("draft: retyping stopped partway") }
+    }
+    private var finishing = false
+
+    /// The ending in draft mode: Whisper's last words replace the drafts not yet checked (if the end of the box is
+    /// still Voice's own typing), then one log line with the numbers that say whether this works.
+    private func finishDrafts(_ s: Transcriber.Session, released: Date) -> Bool {
+        finishing = true
+        defer { finishing = false }
+        let tail = clean(s.lastTail)
+        if !checksStopped, let first = runs.firstIndex(where: { !$0.checked }) {
+            let unchecked = runs[first...].map(\.text).joined()
+            draftStats.checks += 1
+            let diff = Corrections.wordsChanged(unchecked, tail)
+            if diff > 0 {
+                draftStats.changed += 1; draftStats.words += diff
+                if draftSafe() {
+                    let lead = unchecked.first == " " ? " " : ""
+                    Insert.backspace(unchecked.count)
+                    if Insert.type(lead + tail.trimmingCharacters(in: .whitespaces)) {
+                        runs.replaceSubrange(first..., with: [Run(drafts: first..<s.draftCount, text: lead + tail, checked: true)])
+                    } else { checksStopped = true }
+                } else { checksStopped = true }
+            } else {
+                runs.replaceSubrange(first..., with: [Run(drafts: first..<s.draftCount, text: unchecked, checked: true)])
+            }
+        } else if !checksStopped, !tail.isEmpty, draftSafe() {
+            _ = Insert.text(tail, joining: delivery)  // words after the last draft
+        }
+        let kept = checksStopped || draftsStopped
+        if kept { hud.flash("Part went in as a quick draft. ⌃⌥V pastes the checked version.", for: 3) } else { hud.hide() }
+        let lag = draftFirstLag.map { "\(Log.ms($0))ms" } ?? "none"
+        Log.note("draft: first words \(lag) after you started talking, \(runs.count) runs, checks \(draftStats.checks), changed \(draftStats.changed) (\(draftStats.words) words), \(kept ? "draft kept (you moved or typed)" : "final is Whisper's"), ending typed \(Log.ms(Date().timeIntervalSince(released)))ms after release")
+        return true
+    }
 
     /// Words that finished while your cursor wasn't in a text box. They go in when you click into one.
     private var waitingText: String?
@@ -630,7 +774,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 rest = [leftover, more].filter { !$0.isEmpty }.joined(separator: leftover.hasSuffix(" ") ? "" : " ")
             }
             var inserted = false
-            if text.isEmpty, self.delivery != gen { Log.note("no words, a new press began") }
+            // Fast draft, Whisper checks: the drafts are already in the box; Whisper's ending replaces the last ones.
+            let draftHandled = s.drafter != nil && !self.runs.isEmpty
+            if draftHandled { inserted = self.finishDrafts(s, released: releasedAt) }
+            if draftHandled {}
+            else if text.isEmpty, self.delivery != gen { Log.note("no words, a new press began") }
             else if text.isEmpty { self.hud.flash(self.recorder.peak < 0.005 ? "No sound from \(self.recorder.inputName)" : "Didn't catch that", for: 2.5) }
             else {
                 // The words go where your cursor is now, whichever app that is. If it isn't in a text box (a web page,
@@ -862,7 +1010,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if settings == nil {
             let model = SettingsModel(config: config, engine: engine) { [weak self] c in
                 guard let self else { return }
-                let engineChanged = c.engine != self.config.engine || c.locale != self.config.locale
+                let engineChanged = c.engine != self.config.engine || c.locale != self.config.locale || c.draftMode != self.config.draftMode
                 let micChanged = c.inputDevice != self.config.inputDevice
                 self.config = c
                 Self.applyAppearance(c)

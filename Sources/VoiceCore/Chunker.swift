@@ -61,7 +61,7 @@ public struct Chunker: Sendable {
     }
 
     /// Loudness of each 30 ms frame after `from`.
-    static func levels(_ samples: [Float], from: Int) -> [Float] {
+    public static func levels(_ samples: [Float], from: Int) -> [Float] {
         var out: [Float] = []
         out.reserveCapacity((samples.count - from) / frame)
         var i = from
@@ -76,7 +76,7 @@ public struct Chunker: Sendable {
 
     /// Quiet means well below this speaker's speech level here: a tenth of the loud frames' level, and never below
     /// a floor so a silent room isn't all "speech".
-    static func quietLevel(_ levels: [Float]) -> Float {
+    public static func quietLevel(_ levels: [Float]) -> Float {
         let sorted = levels.sorted()
         let loud = sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.9))]
         return max(0.003, loud * 0.1)

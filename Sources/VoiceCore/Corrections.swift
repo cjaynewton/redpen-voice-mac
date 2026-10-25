@@ -47,6 +47,11 @@ public enum Corrections {
         return swaps(a, Array(b[best.start..<best.end]))
     }
 
+    /// How many words differ between two versions of the same words, ignoring case and punctuation.
+    public static func wordsChanged(_ a: String, _ b: String) -> Int {
+        distance(words(a).map(key).filter { !$0.isEmpty }, words(b).map(key).filter { !$0.isEmpty })
+    }
+
     /// Word-level edit distance.
     static func distance(_ a: [String], _ b: [String]) -> Int {
         var prev = Array(0...b.count)

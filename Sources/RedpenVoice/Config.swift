@@ -32,6 +32,9 @@ struct Config: Codable {
     /// Names from the list and near the cursor given to Whisper as spelling hints. Off when missing: each hint word
     /// costs time before Whisper starts (about 3 s for a 355-character list on an M1 Max).
     var screenHints: Bool?
+    /// Fast draft, Whisper checks (D-764): Parakeet types a draft as you talk and Whisper quietly fixes it a moment
+    /// later. Whisper only; off when missing, so Whisper alone stays as it was.
+    var draftMode: Bool?
     /// "dictation" (Apple's dictation model, tuned for talking to a text field), "transcription" (Apple's general
     /// model), "whisper" (OpenAI's Whisper, downloaded once and run on this Mac) or "parakeet" (NVIDIA's Parakeet v2,
     /// the Fast engine: downloaded once, words in well under a second, a few more mistakes than Whisper).

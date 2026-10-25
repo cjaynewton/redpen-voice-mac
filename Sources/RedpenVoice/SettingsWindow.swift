@@ -239,6 +239,12 @@ struct SettingsView: View {
                     Button("Download Whisper") { model.getWhisper() }.controlSize(.large).padding(.top, 10)
                 }
             }
+            if model.usesWhisper {
+                row("Fast draft, Whisper checks", "A quick draft types as you talk; a moment later Whisper quietly fixes any words it hears differently. Stops fixing the moment you click or type.") {
+                    Toggle("", isOn: Binding(get: { model.config.draftMode ?? false }, set: { model.config.draftMode = $0 }))
+                        .labelsHidden().toggleStyle(.switch).tint(Ink.red)
+                }.padding(.bottom, 10)
+            }
             Divider().overlay(Ink.line)
             engineRow(on: model.usesFast, dashed: !Transcriber.parakeetOnDisk, action: { model.config.engine = "parakeet" }) {
                 Text("Fast").font(.system(size: 15, weight: .semibold))
