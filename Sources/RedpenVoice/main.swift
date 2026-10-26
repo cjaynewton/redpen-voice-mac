@@ -157,7 +157,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { [config, engine] in
                 await engine.prepare(config)
                 for path in list where !path.isEmpty {
-                    do { let r = try await engine.sessionTest(URL(fileURLWithPath: path), pause: pause); print("\((path as NSString).lastPathComponent): \(r.ms) ms after release, \(r.text.split(separator: " ").count) words") }
+                    do { let r = try await engine.sessionTest(URL(fileURLWithPath: path), pause: pause); print("\((path as NSString).lastPathComponent): \(r.ms) ms after release: \(r.text)") }
                     catch { print("failed: \(error)") }
                     fflush(stdout)
                 }
@@ -386,6 +386,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     private var quitting = false
     private var updateWatch: AnyCancellable?
+    /// Set while Voice decides whether something was playing, so the new session holds its drafts until then.
+    private var holdForMedia = false
+
+    /// Calls back once the apps' sound has gone quiet (checked every tenth of a second), or after `tries` checks.
+    nonisolated static func waitForQuiet(_ apps: [AudioObjectID], tries: Int, done: @escaping @Sendable (Date) -> Void) {
+        SoundTap.loudness(of: apps, for: 0.1) { peak in
+            if !MediaGate.isPlaying(peak: peak) || tries <= 0 { done(Date()) } else { waitForQuiet(apps, tries: tries - 1, done: done) }
+        }
+    }
     /// Reopened by the watchdog after a crash: the bar says so once the engine is ready.
     private var restarted = false
 
@@ -468,16 +477,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if pausedMedia {
             Log.note("media: still paused from the last press")
         } else if config.pauseMedia {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                guard let self, self.press == thisPress, self.session != nil, !self.pausedMedia else { return }
-                let players = Media.playingApps()
-                guard !players.isEmpty else { Log.note("media: no app playing"); return }
+            let players = Media.playingApps()
+            if players.isEmpty { Log.note("media: no app playing") }
+            else {
+                holdForMedia = true
+                // Listen from the moment the key goes down; press pause no sooner than 0.3 s in, so a tap never does.
+                let pressedAt = Date()
                 SoundTap.loudness(of: players.map(\.object), for: 0.25) { peak in
                     DispatchQueue.main.async { [weak self] in
-                        guard let self, self.press == thisPress, self.session != nil, !self.pausedMedia else { return }
-                        let playing = MediaGate.isPlaying(peak: peak)
-                        if playing { self.pausedMedia = true; Media.pressPlayPause() }
-                        Log.note("media: apps [\(players.map(\.name).joined(separator: ", "))], loudness \(peak.map { String(format: "%.4f", $0) } ?? "no tap"), paused \(playing)")
+                        let wait = max(0, 0.3 - Date().timeIntervalSince(pressedAt))
+                        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+                            guard let self else { return }
+                            guard self.press == thisPress, let s = self.session, !self.pausedMedia else { self.session?.mediaSettled(); return }
+                            let playing = MediaGate.isPlaying(peak: peak)
+                            Log.note("media: apps [\(players.map(\.name).joined(separator: ", "))], loudness \(peak.map { String(format: "%.4f", $0) } ?? "no tap"), paused \(playing)")
+                            guard playing else { s.mediaSettled(); return }  // nothing playing: every word kept
+                            self.pausedMedia = true; Media.pressPlayPause()
+                            let pausedAt = Date()
+                            // The video's own sound reached the mic until the pause took hold: listen for that app going
+                            // quiet, then leave out everything before it, plus 0.15 s for the speakers and the room.
+                            Self.waitForQuiet(players.map(\.object), tries: 8) { quietAt in
+                                DispatchQueue.main.async {
+                                    let cut = s.sampleAt(quietAt.addingTimeInterval(0.15))
+                                    s.silence(upTo: cut)
+                                    s.mediaSettled()
+                                    Log.note("media: left out the first \(String(format: "%.1f", Double(cut) / 16000)) s (the video's sound), quiet \(Log.ms(quietAt.timeIntervalSince(pausedAt)))ms after the pause")
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -486,6 +513,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: settle)
         let (s, module) = engine.session(config)
         session = s
+        if holdForMedia { s.holdForMedia(); holdForMedia = false }
         startedAt = Date()
         names = Names(text: Config.loadNames())
         if config.sounds { NSSound(named: "Pop")?.play() }

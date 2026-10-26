@@ -328,6 +328,32 @@ final class Transcriber {
         private var lastPush = (at: Date(), count: 0)
         var draftCount: Int { lock.withLock { drafts.count } }
 
+        // MARK: Leaving out the video's sound (Oct 26)
+        /// Audio before this sample is blanked: what a video played into the mic before its pause took hold.
+        private var silenceUntil = 0
+        /// False while Voice is still deciding whether something is playing; drafts and pieces wait, so the video's
+        /// words are never written. Counts as settled after 2 s whatever happens.
+        private var mediaSettledFlag = true
+        private var holdingSince = Date()
+        func holdForMedia() { lock.withLock { mediaSettledFlag = false; holdingSince = Date() } }
+        func mediaSettled() { lock.withLock { mediaSettledFlag = true } }
+        fileprivate var settledForLoops: Bool {
+            lock.withLock { mediaSettledFlag || Date().timeIntervalSince(holdingSince) > 2 }
+        }
+
+        /// The sample heard at `d` (later than the newest sample means one not yet arrived).
+        func sampleAt(_ d: Date) -> Int {
+            lock.withLock { max(0, lastPush.count + Int(d.timeIntervalSince(lastPush.at) * Double(Chunker.rate))) }
+        }
+
+        /// Blanks everything before sample `i`, including audio that hasn't arrived yet.
+        func silence(upTo i: Int) {
+            lock.withLock {
+                silenceUntil = max(silenceUntil, i)
+                for k in 0..<min(silenceUntil, samples.count) { samples[k] = 0 }
+            }
+        }
+
         /// Where speech began in this dictation's audio (the first loud 30 ms), for timing the first draft.
         var speechOnset: Int {
             let a = recorded
@@ -356,6 +382,7 @@ final class Transcriber {
                     _ = try? await nap.value
                     let (audio, done) = lock.withLock { draftNap = nil; return (samples, stopped) }
                     if done { break }
+                    if !settledForLoops { continue }
                     guard let c = chunker.cut(audio, from: from) else { continue }
                     let text = (try? await Transcriber.parakeetText(drafter, Array(audio[from..<c]))) ?? ""
                     // The draft and its callback go out together, so a Whisper check can never reach the app first.
@@ -390,6 +417,7 @@ final class Transcriber {
                     _ = try? await nap.value
                     let (audio, done, ds) = lock.withLock { napping = nil; return (samples, stopped, drafts) }
                     if done { break }
+                    if !settledForLoops { continue }
                     if drafter != nil {
                         // Draft mode: Whisper rereads whole runs of drafts; no head start (the drafts are the speed).
                         // Audio and drafts are read in one step, so a draft can't end past the audio in hand.
@@ -452,7 +480,9 @@ final class Transcriber {
             guard whisper != nil || parakeet != nil else { feed.yield(AnalyzerInput(buffer: buffer)); return }
             guard let ch = buffer.floatChannelData?[0] else { return }
             lock.withLock {
+                let start = samples.count
                 samples.append(contentsOf: UnsafeBufferPointer(start: ch, count: Int(buffer.frameLength)))
+                if silenceUntil > start { for k in start..<min(silenceUntil, samples.count) { samples[k] = 0 } }
                 lastPush = (Date(), samples.count)
             }
         }
@@ -572,6 +602,9 @@ final class Transcriber {
         guard let whisper, let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false) else { return (0, "") }
         let audio = try AudioProcessor.loadAudioAsFloatArray(fromPath: url.path) + [Float](repeating: 0.0003, count: Int(pause * 16000))
         let s = Session(whisper: whisper)
+        // VOICE_SILENCE_AT=1.3: act as if a video was paused and went quiet at that second (the live path's cut).
+        let silenceAt = ProcessInfo.processInfo.environment["VOICE_SILENCE_AT"].flatMap(Double.init)
+        if silenceAt != nil { s.holdForMedia() }
         s.stream(Chunker())
         let step = 1600  // a tenth of a second
         var i = 0
@@ -582,6 +615,10 @@ final class Transcriber {
             for k in 0..<n { buf.floatChannelData![0][k] = audio[i + k] }
             s.push(buf)
             i += n
+            if let t = silenceAt, Double(i) / 16000 >= t, Double(i - n) / 16000 < t {
+                s.silence(upTo: s.sampleAt(Date().addingTimeInterval(0.15)))
+                s.mediaSettled()
+            }
             try await Task.sleep(for: .milliseconds(100))
         }
         let t = Date()
