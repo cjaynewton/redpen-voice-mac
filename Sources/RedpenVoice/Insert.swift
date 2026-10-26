@@ -69,6 +69,20 @@ enum Insert {
         return (el, pid)
     }
 
+    /// Puts text straight into a box that is not in front (you moved to another app while talking), without bringing
+    /// it forward. Counts only when the box's text grew by exactly that much; Chrome and Electron boxes usually refuse
+    /// when they're in the background, and then the words wait for you to go back.
+    static func textInto(_ el: AXUIElement, _ text: String) -> Bool {
+        guard !text.isEmpty, let before = value(el) else { return false }
+        let padded = spaced(text, before: el)
+        guard AXUIElementSetAttributeValue(el, kAXSelectedTextAttribute as CFString, padded as CFString) == .success,
+              let after = value(el), after.utf16.count == before.utf16.count + padded.utf16.count, after.contains(padded) else { return false }
+        var pid: pid_t = 0
+        AXUIElementGetPid(el, &pid)
+        last = (padded, pid, Date()); lastDictation = nil; typedSince = false
+        return true
+    }
+
     /// A box's whole text, or nil when the app won't say.
     static func value(_ el: AXUIElement) -> String? {
         var v: CFTypeRef?
@@ -142,7 +156,7 @@ enum Insert {
             for down in [true, false] {
                 guard let e = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_Delete), keyDown: down) else { continue }
                 e.flags = []
-                e.post(tap: .cghidEventTap)
+                e.post(tap: .cgSessionEventTap)
             }
             done += 1
             usleep(1_500)
@@ -204,6 +218,9 @@ enum Insert {
     }
 
     /// Types the text as keyboard events, 20 characters at a time. Slower than a paste and works everywhere.
+    /// Typed keys go in at the session level, not as hardware: posted as hardware they reset the Mac's "seconds since
+    /// the last key press", so Voice's own typing looked like you typing and live drafts stopped after the first
+    /// 20 characters (Oct 26, every draft dictation stuck at one run).
     /// Stops if you switch apps partway, so the rest never lands somewhere else, or when `still` says no.
     static func type(_ text: String, while still: () -> Bool = { true }) -> Bool {
         guard let src = CGEventSource(stateID: .combinedSessionState) else { return false }
@@ -222,7 +239,7 @@ enum Insert {
             // No modifiers: with Fn or Option held to talk, the letters would otherwise arrive as Fn or Option
             // shortcuts (Fn-E opens emoji, Option-letters type accents).
             down.flags = []; up.flags = []
-            down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
+            down.post(tap: .cgSessionEventTap); up.post(tap: .cgSessionEventTap)
             ok = true; typedSome = true; typedCount += units.count
             usleep(4_000)
         }

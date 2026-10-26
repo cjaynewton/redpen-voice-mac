@@ -77,8 +77,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // second), then reads the box back. Writes pass or fail to out.txt.
         if let i = CommandLine.arguments.firstIndex(of: "--draft-replace-test"), i + 1 < CommandLine.arguments.count {
             let out = CommandLine.arguments[i + 1]
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            let want = i + 2 < CommandLine.arguments.count ? CommandLine.arguments[i + 2] : "TextEdit"
+            let ids = ["TextEdit": "com.apple.TextEdit", "Google Chrome": "com.google.Chrome"]
+            if let id = ids[want], let app = NSRunningApplication.runningApplications(withBundleIdentifier: id).first { app.activate() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                 var lines: [String] = ["app: \(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")", "trusted: \(AXIsProcessTrusted())"]
+                // Never type or delete anywhere but the test document: the app in front must be the expected one and
+                // the focus a text box.
+                guard NSWorkspace.shared.frontmostApplication?.localizedName == want, Insert.focus().kind == .text else {
+                    lines.append("SKIPPED: \(want) with a text box was not in front")
+                    try? lines.joined(separator: "\n").write(toFile: out, atomically: true, encoding: .utf8)
+                    exit(2)
+                }
                 let el = Insert.focusedElement()?.0
                 func box() -> String { el.flatMap { Insert.value($0) } ?? "(can't read)" }
                 // Cursor to the end of the box (Command-Down).
@@ -87,22 +97,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 usleep(300_000)
                 lines.append("before: \(box().debugDescription)")
-                _ = Insert.text("one two three")
-                let a = String(repeating: " ", count: Insert.typedPadding) + "one two three"
+                // Drafts over 20 characters (more than one typed chunk each), with the same guard live drafts use.
+                let start = Date()
+                let quiet = { AppDelegate.userQuietSince(start) }
+                let d1 = "one two three four five six", d2 = "seven eight nine ten eleven"
+                let ok1 = Insert.text(d1, while: quiet)
+                let a = String(repeating: " ", count: Insert.typedPadding) + d1
                 usleep(300_000)
-                _ = Insert.text("four five")
-                let b = String(repeating: " ", count: Insert.typedPadding) + "four five"
+                let ok2 = Insert.text(d2, while: quiet)
+                let b = String(repeating: " ", count: Insert.typedPadding) + d2
+                lines.append("draft 1 typed \(ok1), draft 2 typed \(ok2), still quiet \(quiet())")
                 usleep(300_000)
                 lines.append("drafts: \(box().debugDescription)")
-                let fixed = (a.first == " " ? " " : "") + "One, two, three."
-                let n = Insert.backspace((a + b).count)
-                let ok = Insert.type(fixed + b)
+                let fixed = (a.first == " " ? " " : "") + "One, two, three, four, five, six."
+                let n = Insert.backspace((a + b).count, while: quiet)
+                let ok = Insert.type(fixed + b, while: quiet)
                 usleep(400_000)
                 let final = box()
                 lines.append("deleted \(n) of \((a + b).count), retyped \(ok)")
                 lines.append("after: \(final.debugDescription)")
-                let want = "Mine stays. One, two, three. four five"
+                let want = "Mine stays. One, two, three, four, five, six. seven eight nine ten eleven"
                 lines.append(final.hasSuffix(want) || final == want ? "PASS" : "FAIL (wanted \(want.debugDescription))")
+                try? lines.joined(separator: "\n").write(toFile: out, atomically: true, encoding: .utf8)
+                exit(0)
+            }
+            return
+        }
+        // `--back-test out.txt AppName` checks typing into a box that is no longer in front: notes the focused box in the
+        // named app, brings Finder forward, types into the noted box without bringing it back, and reads it.
+        if let i = CommandLine.arguments.firstIndex(of: "--back-test"), i + 2 < CommandLine.arguments.count {
+            let out = CommandLine.arguments[i + 1], want = CommandLine.arguments[i + 2]
+            let ids = ["TextEdit": "com.apple.TextEdit", "Google Chrome": "com.google.Chrome"]
+            if let id = ids[want], let app = NSRunningApplication.runningApplications(withBundleIdentifier: id).first { app.activate() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                var lines = ["app: \(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")"]
+                guard NSWorkspace.shared.frontmostApplication?.localizedName == want, Insert.focus().kind == .text, let (el, _) = Insert.focusedElement() else {
+                    lines.append("SKIPPED"); try? lines.joined(separator: "\n").write(toFile: out, atomically: true, encoding: .utf8); exit(2)
+                }
+                let before = Insert.value(el) ?? "?"
+                NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first?.activate()
+                usleep(600_000)
+                lines.append("front now: \(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")")
+                let ok = Insert.textInto(el, "back where I started")
+                lines.append("typed into the box in the background: \(ok)")
+                lines.append("before: \(before.debugDescription)")
+                lines.append("after: \((Insert.value(el) ?? "?").debugDescription)")
                 try? lines.joined(separator: "\n").write(toFile: out, atomically: true, encoding: .utf8)
                 exit(0)
             }
@@ -401,6 +440,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { hud.flash("Allow the microphone"); return }
         remicIfDefaultMoved(reason: "input moved before this press")
         if waitingText != nil { stopWaiting(); hud.hide(); Log.note("insert: new press, the waiting words stay for paste") }
+        // Where this dictation's words go back to, if you move away while they are written.
+        if Insert.focus().kind == .text, let (el, pid) = Insert.focusedElement() {
+            startBox = StartBox(pid: pid, element: el, app: NSRunningApplication(processIdentifier: pid)?.localizedName ?? "that app",
+                                window: Self.windowTitle(pid))
+        } else { startBox = nil }
         fixWatch.finish()
         delivery += 1
         busy = true
@@ -713,6 +757,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.note("draft: first words \(lag) after you started talking, \(d.runs.count) runs, checks \(d.checks), changed \(d.changed) (\(d.words) words), \(kept ? "draft kept" : "final is Whisper's"), ending typed \(Log.ms(Date().timeIntervalSince(released)))ms after release")
     }
 
+    /// The text box you were in when you started talking. The words go back there, even if you moved to another app
+    /// while they were being written ("like Monologue"): straight in if that app allows it, or the moment you are
+    /// back in that box. Never into some other box.
+    struct StartBox { let pid: pid_t; let element: AXUIElement; let app: String; let window: String? }
+    private var startBox: StartBox?
+
+    private static func windowTitle(_ pid: pid_t) -> String? {
+        var w: CFTypeRef?, t: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXFocusedWindowAttribute as CFString, &w) == .success, let w,
+              AXUIElementCopyAttributeValue(w as! AXUIElement, kAXTitleAttribute as CFString, &t) == .success else { return nil }
+        return t as? String
+    }
+
+    /// True when the cursor is back in that box: the same element, or (Electron apps can hand back a new element for
+    /// the same box) the same app and window with a text box in focus.
+    private func isAt(_ b: StartBox) -> Bool {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == b.pid, let (now, _) = Insert.focusedElement() else { return false }
+        if CFEqual(now, b.element) { return true }
+        return Insert.focus().kind == .text && Self.windowTitle(b.pid) == b.window
+    }
+
+    /// Words waiting for the box you started in.
+    private var waitingBox: StartBox?
+
+    private func holdForBox(_ b: StartBox, _ text: String) {
+        stopWaiting()
+        waitingText = text; waitingBox = b
+        hud.flash("Saved for \(b.app). It goes in when you're back in that box.", for: 2.5)
+        let until = Date().addingTimeInterval(600)
+        waitTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkWaiting(until: until) }
+        }
+    }
+
     /// Words that finished while your cursor wasn't in a text box. They go in when you click into one.
     private var waitingText: String?
     private var waitTimer: Timer?
@@ -731,6 +809,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func checkWaiting(until: Date) {
         guard let text = waitingText, session == nil else { return }
+        if let b = waitingBox {
+            if Date() > until { stopWaiting(); Log.note("insert: you didn't go back to the box in 10 minutes, kept for paste"); return }
+            guard isAt(b) else { return }
+            stopWaiting()
+            let ok = Insert.text(text)
+            hud.flash(ok ? "Typed where you started" : "Couldn't type it here. Press ⌃⌥V to paste", ok: ok, for: ok ? 1.2 : 2.5)
+            Log.note("insert: back in the box you started in, typed \(ok)")
+            return
+        }
         if Date() > until {
             stopWaiting()
             hud.flash("Kept it. Press ⌃⌥V to paste", for: 3)
@@ -756,7 +843,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func stopWaiting() {
         waitTimer?.invalidate(); waitTimer = nil
-        waitingText = nil; waitSeen = 0
+        waitingText = nil; waitSeen = 0; waitingBox = nil
     }
 
     /// Puts back what this app paused, once. Not while a recording, or another dictation's writing, still holds the
@@ -819,6 +906,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let typedLive = liveTyped  // pieces already typed while you talked; only the rest goes in now
         let myDrafting = drafting
         finishingDrafting = myDrafting
+        let box = startBox
         let leftover = liveLeftover
         writing += 1
         let releasedAt = Date()
@@ -866,7 +954,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // a video, a list), nothing is typed there: the words wait for you to click into one.
                 let focus = Insert.focus()
                 let newer = self.delivery != gen  // you pressed again while these words were being written
-                if focus.kind == .notText {
+                if let b = box, !newer, !rest.isEmpty, !self.isAt(b) {
+                    // You moved away while the words were written: they go back to the box you started in.
+                    if Insert.textInto(b.element, rest) {
+                        inserted = true
+                        self.hud.flash("Typed into \(b.app), where you started", ok: true, for: 1.5)
+                        Log.note("insert: typed into the box you started in, without bringing it forward")
+                    } else {
+                        Log.note("insert: you moved away; words wait for the box you started in")
+                        self.holdForBox(b, rest)
+                    }
+                } else if focus.kind == .notText {
                     if newer { Log.note("insert: cursor not in a text box (\(focus.role)) and a new press began, kept for paste") }
                     else if !rest.isEmpty { Log.note("insert: cursor not in a text box (\(focus.role)), waiting for a click"); self.holdForClick(rest) }
                 } else {
