@@ -13,12 +13,16 @@ public enum Meaning {
     ]
 
     static func words(_ s: String) -> [String] {
-        s.lowercased().replacingOccurrences(of: "’", with: "'")
-            .split(whereSeparator: { !($0.isLetter || $0.isNumber || $0 == "'" || $0 == "." || $0 == "," || $0 == "-" || $0 == "−") }).map(String.init)
-            .map { $0.replacingOccurrences(of: "−", with: "-") }
-            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: ".,'")) }
-            .map { $0.hasPrefix("-") && $0.dropFirst().first?.isNumber == true ? $0 : $0.trimmingCharacters(in: CharacterSet(charactersIn: "-")) }
-            .filter { !$0.isEmpty }
+        let text = s.lowercased().replacingOccurrences(of: "’", with: "'").replacingOccurrences(of: "−", with: "-")
+        let keep: (Character) -> Bool = { $0.isLetter || $0.isNumber || $0 == "'" || $0 == "." || $0 == "," || $0 == "-" }
+        var out: [String] = []
+        for raw in text.split(whereSeparator: { !keep($0) }) {
+            let t = String(raw).trimmingCharacters(in: CharacterSet(charactersIn: ".,'"))
+            // A leading minus before a digit stays ("-5"); any other hyphen splits ("twenty-one" is "twenty", "one").
+            if t.hasPrefix("-"), t.dropFirst().first?.isNumber == true { out.append(t); continue }
+            out += t.split(separator: "-").map(String.init).filter { !$0.isEmpty }
+        }
+        return out
     }
 
     /// How many negations: the words above plus every "n't" ("don't", "isn't", "won't").

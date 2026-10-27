@@ -397,10 +397,12 @@ final class Transcriber {
         /// words are never written. Counts as settled after 2 s whatever happens.
         private var mediaSettledFlag = true
         private var holdingSince = Date()
-        func holdForMedia() { lock.withLock { mediaSettledFlag = false; holdingSince = Date(); mediaHeld = true } }
-        private var mediaHeld = false
-        /// Something was playing when this dictation began (a video decision was made for it).
-        var hadMedia: Bool { lock.withLock { mediaHeld } }
+        func holdForMedia() { lock.withLock { mediaSettledFlag = false; holdingSince = Date() } }
+        /// A video was actually playing in this dictation (its words were taken off, or the start was left out).
+        var hadMedia: Bool { lock.withLock { echoTask != nil || echoAudio != nil || silenceUntil > 0 || echoFailedFlag } }
+
+        /// Let go before Voice could check a playing video: the words are kept for Paste last, not typed.
+        func mediaUnchecked() { lock.withLock { echoFailedFlag = true } }
         func mediaSettled() { lock.withLock { mediaSettledFlag = true } }
         fileprivate var settledForLoops: Bool {
             lock.withLock { mediaSettledFlag || Date().timeIntervalSince(holdingSince) > 2 }
@@ -518,7 +520,8 @@ final class Transcriber {
                     do {
                         let text = await echoStripped(try await Transcriber.whisperText(whisper, Array(audio[cut..<c]), prompt: Transcriber.prompt(hints, carry ? pieces.last : nil)))
                         cut = c
-                        if !text.isEmpty { pieces.append(text); onPiece?(text) }
+                        // Once the video's words couldn't be checked, nothing more is typed as you talk.
+                        if !text.isEmpty { pieces.append(text); if !echoFailed { onPiece?(text) } }
                     } catch { Log.note("engine: a piece failed, it will be written with the ending") }
                 }
             }

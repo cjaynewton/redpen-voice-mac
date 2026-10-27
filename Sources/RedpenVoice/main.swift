@@ -317,9 +317,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             for o in boxes where !CFEqual(o, el) {
                 print("box-test: other box in the window -> \(BoxMatch.same(start: start, now: Self.boxPrint(o, withText: false), nowText: Insert.value(o), sameElement: false))")
             }
-            AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, "" as CFString)
-            usleep(300_000)
-            print("box-test: same box after it was emptied -> \(BoxMatch.same(start: start, now: Self.boxPrint(el, withText: false), nowText: Insert.value(el), sameElement: true))")
+            // Emptying is tried only on the test page, and the text is put back after.
+            if (start.context ?? "").contains("rv-box-test") {
+                let before = Insert.value(el) ?? ""
+                AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, "" as CFString)
+                usleep(300_000)
+                print("box-test: same box after it was emptied -> \(BoxMatch.same(start: start, now: Self.boxPrint(el, withText: false), nowText: Insert.value(el), sameElement: true))")
+                AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, before as CFString)
+            } else { print("box-test: not the rv-box-test page, the box is left as it is") }
             exit(0)
         }
         if CommandLine.arguments.contains("--media-check") {
@@ -570,7 +575,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             // Let go (or pressed again) before Voice could decide: this dictation still gets a decision,
                             // so the video's words can't slip through. A press that short was all video if anything played.
                             guard self.press == thisPress, self.session === s, !self.pausedMedia else {
-                                if MediaGate.isPlaying(peak: peak) { s.silence(upTo: Int.max / 4) }
+                                // Never erased: the words are kept for Paste last and nothing is typed.
+                                if MediaGate.isPlaying(peak: peak) { s.mediaUnchecked() }
                                 s.mediaSettled(); return
                             }
                             let playing = MediaGate.isPlaying(peak: peak)
@@ -951,7 +957,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The box you started in still holds what it held at key-down, so writing into it in the background is safe.
     private func unchanged(_ b: StartBox) -> Bool {
-        BoxMatch.same(start: b.print, now: b.print, nowText: Insert.value(b.element), sameElement: true)
+        BoxMatch.same(start: b.print, now: Self.boxPrint(b.element, withText: false), nowText: Insert.value(b.element), sameElement: true)
     }
 
     /// Words waiting for the box you started in.
