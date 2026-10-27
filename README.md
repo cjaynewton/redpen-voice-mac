@@ -13,7 +13,7 @@ Everything runs on your Mac. Your voice is never sent anywhere.
 ## How it works
 
 1. **Hold Fn or right Option and talk.** A small bar at the bottom of the screen moves with your voice, so you know it's listening. With the Instant engine, your words show in it as you talk.
-2. **Let go.** The words go into the box you were typing in, in any app, without touching your clipboard.
+2. **Let go.** The words are typed into the box you were in, in any app. If the typing doesn't land, Voice pastes them instead and puts your clipboard back exactly as it was.
 
    <img src="docs/screenshots/bar-typed.png" alt="The bar after letting go: a green tick and Typed into Notes, where you started" width="287">
 
@@ -56,7 +56,7 @@ Tap the key twice to keep talking with your hands free, and tap once more to fin
 - **Learns how you talk.** Like a driving app that learns how you drive, it learns your pace and how long you pause, and uses that to decide where a thought ends. Only the numbers are kept.
 - **Goes back to the box you started in.** If you move to another app or box while the words are being written, Voice only types into the box you started in, after checking it's the same box: same place, and its text still starting the way it did. When that app allows it they go straight in; otherwise they wait until you're back in that box. If that box was sent or changed meanwhile, or Voice can't tell, nothing is typed and Paste last has the words. If you started on a web page or a video instead of a text box, nothing is typed there (on a video page, letters are shortcuts): the words wait for you to click into a box.
 - **Fits the sentence.** Dictate into the middle of a sentence and the first word starts lowercase ("and then and we go"), except "I" and names from your list; right before a word, the closing full stop goes. Only in boxes that tell Voice what's around the cursor.
-- **Nothing lost.** Every dictation is kept in a history file on your Mac. Press Control-Option-V to paste the last one again.
+- **Nothing lost.** Press Control-Option-V to paste your last dictation anywhere; it pastes (rather than types) so it works where typing just failed, and puts your clipboard back after. Every dictation is in the History window, unless you choose to keep nothing.
 - **Take it back.** Control-Option-Z removes the last dictation, only when it is still the last thing typed.
 - **Pauses your music and video** while you talk and starts them again after, only when something is actually playing.
 - **Transcribe a file.** Any audio or video file to text, saved beside the file.
@@ -85,7 +85,13 @@ Every choice on one page: the engine, how your words come out, the key you talk 
 
 ## The first time you open it
 
-One window asks how your words should come out and walks you through the microphone and Accessibility (so it can type into other apps and see the Fn key). If you talk with Fn, it also checks the Mac's own Fn setting. macOS also asks for:
+One window, three parts, and Done waits until each one works:
+
+1. **How your words come out:** raw, ums taken out, or tidied.
+2. **Set up:** the microphone, with its name and a live level so a silent or wrong mic shows now; Accessibility, so it can type into other apps and see your talk key; the speech engine, ready before you start; and, if you talk with Fn, the Mac's own Fn setting, which has to be off (or switch to right Option).
+3. **Try it:** say one sentence into the window and see your own words before you leave.
+
+macOS also asks for:
 
 - **Speech Recognition**, when the app first opens, for Apple's own engine.
 - **System audio**, the first time a video or song is playing when you start talking, so Voice can tell it's playing and take its words off the start of your dictation.
@@ -93,7 +99,18 @@ One window asks how your words should come out and walks you through the microph
 <p align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/firstrun-dark.png">
-  <img src="docs/screenshots/firstrun-light.png" alt="First run: raw words, ums taken out or tidy it up, then the microphone, Accessibility, the speech engine and the Fn key" width="480">
+  <img src="docs/screenshots/firstrun-light.png" alt="First run: how your words come out, then the microphone with its level, Accessibility and the speech engine, then a practice sentence shown in the window" width="480">
+</picture>
+</p>
+
+## History
+
+Every dictation, newest first: search them, copy one, delete one. Choose how long they're kept: the last 2,000, the last week, or nothing at all. Open it from the menu.
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/history-dark.png">
+  <img src="docs/screenshots/history-light.png" alt="The history window: search, then each dictation with its time, the app it went into, Copy and Delete, and a Keep choice" width="480">
 </picture>
 </p>
 
@@ -109,6 +126,19 @@ All three engines were run on [WildSpeech-Bench](https://huggingface.co/datasets
 
 The Instant figure is the model fed in pieces as a microphone would, the way the app runs it. The last column is only the engine's part, measured on an M1 Max. On top of it, Voice keeps listening 0.1 seconds after you let go (0.5 seconds if you were still talking) and then types the words: across 19 real dictations that part took a median 0.58 seconds (0.17 seconds when you'd already stopped talking). So with Instant, words land about 0.6 seconds after you let go.
 
+### FluidVoice's engines, on the same recordings
+
+[FluidVoice](https://github.com/altic-dev/FluidVoice) is another free, on-device dictation app for Mac. Its default engine on Apple silicon is Parakeet TDT v3, run on the whole recording when you let go; Flash (Parakeet EOU) is one of its options. We ran both through [FluidAudio](https://github.com/FluidInference/FluidAudio), the open library it builds on, the way FluidVoice runs them, on an M1 Max.
+
+| Engine | Words wrong, WildSpeech (275 recordings) | Words wrong, one-minute dictations (30) | Engine's part after the audio ends | Peak memory |
+|---|---|---|---|---|
+| Most accurate (Whisper), Redpen Voice | 7.8% | 3.5% | about 1.2 s for the last stretch | |
+| Instant (Parakeet Unified), Redpen Voice | 9.9% | 3.4% | 0.03 s at any length | 51 MB |
+| Parakeet TDT v3, FluidVoice's default | 10.3% | 5.3% | 0.12 s for a short dictation, 0.73 s for a minute | 104 MB |
+| Flash (Parakeet EOU), a FluidVoice option | 22.1% | not run | 0.02 s | |
+
+How it was tested: the WildSpeech column is every fourth recording of the 1,100 (Whisper scores 7.8% on these and on all of them), scored with the same text normalizer as the table above. The one-minute dictations are 30 LibriSpeech recordings of read speech, about a minute each. Times are the engine's work after the last of the audio, not the whole wait after you let go. These are the engines, not the apps: FluidVoice uses its own build of FluidAudio, and for recordings over 15 seconds its own way of splitting them, which we didn't reproduce. Peak memory is the test program's, measured by macOS; Whisper's is left blank because it was only measured inside the whole app (about 220 MB).
+
 On [TORGO](https://www.cs.toronto.edu/~complingweb/data/TORGO/torgo.html), recordings of slurred speech from people with dysarthria, Whisper got 32.2% of words wrong and the built-in engine 39.4%. On the clear speech in the same set, 2.2% and 7.7%.
 
 ## Privacy
@@ -120,6 +150,8 @@ On [TORGO](https://www.cs.toronto.edu/~complingweb/data/TORGO/torgo.html), recor
   - The log in `~/Library/Logs/RedpenVoice.log` holds timings, app names and counts, never your words.
 - **The microphone stays on while Voice is open**, so the Mac's orange microphone dot stays lit. It holds only the last 0.6 seconds in memory, so the word you say as the key goes down isn't cut, and that is overwritten continuously. Nothing is kept until you press the key.
 - **Text boxes.** It reads the box you're dictating into, on your Mac: when you start (so the words go back to the right box) and after (to learn the names you fix). Only the fixed names are kept.
+- **Clipboard.** Voice types your words; it only borrows the clipboard when typing didn't land, and for Paste last. The text is marked so clipboard managers skip it, and what you had is put back half a second later, unless you copied something new in between.
+- **How long dictations are kept** is your choice in the History window: the last 2,000, the last week, or nothing (Paste last then works until Voice quits).
 - **Videos.** When it pauses a video, it listens to that app's sound for about a second, in memory only, to take the video's words off the start of your dictation.
 - **Network.** The Whisper or Instant model downloads once from Hugging Face if you choose one; Apple's speech files for your language download once from Apple if the Mac doesn't have them yet; and the app checks GitHub once a day for a newer version.
 

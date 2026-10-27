@@ -95,7 +95,7 @@ enum Insert {
             else { Log.note("clipboard: something new was copied meanwhile, left as it is") }
         }
         borrowed = (saved, mine, restore)
-        pasteQuietUntil = Date().addingTimeInterval(1.5)
+        pasteQuietUntil = DispatchTime.now() + 1.5
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: restore)
         remember(text)
         return true
@@ -104,8 +104,9 @@ enum Insert {
     /// True while the clipboard is borrowed and for 1.5 s after a paste: a second paste is refused, so even a slow app
     /// that reads its Command-V late can't take the second text twice. (When an app reads the clipboard can't be
     /// known; an app stalled longer than that is the case this doesn't cover.)
-    static var pasteBusy: Bool { borrowed != nil || Date() < pasteQuietUntil }
-    nonisolated(unsafe) private static var pasteQuietUntil = Date.distantPast
+    static var pasteBusy: Bool { borrowed != nil || DispatchTime.now() < pasteQuietUntil }
+    /// A clock that only moves forward, so changing the Mac's time can't shorten or stretch the wait.
+    nonisolated(unsafe) private static var pasteQuietUntil = DispatchTime(uptimeNanoseconds: 0)
 
     /// The clipboard Voice has borrowed and not yet put back: what you had, the change count of Voice's own text, and
     /// the pending put-back.
