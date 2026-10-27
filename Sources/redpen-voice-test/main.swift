@@ -318,6 +318,14 @@ do {
     let aside = ((try? FileManager.default.contentsOfDirectory(atPath: dmg.path)) ?? []).filter { $0.hasPrefix("stats.damaged-") }
     check("stats.damagedMovedAside", aside.count == 1 && ds.writable && ds.days.isEmpty && !ds.backfilled && ds.problem != nil, "\(aside)")
     check("stats.damagedKept", aside.first.flatMap { try? String(contentsOf: dmg.appendingPathComponent($0), encoding: .utf8) } == "{not json")
+    // Read only (for pictures): a damaged file stays where it is, and nothing is ever written.
+    let ro2 = dir.appendingPathComponent("ro2"); try? FileManager.default.createDirectory(at: ro2, withIntermediateDirectories: true)
+    try? Data("{not json".utf8).write(to: ro2.appendingPathComponent("stats.json"))
+    let rd = StatsStore.readOnly(url: ro2.appendingPathComponent("stats.json"))
+    rd.add(words: 3, seconds: 1, engine: "whisper", date: now, calendar: cal)
+    check("stats.readOnlyLeavesDamaged", !rd.writable && (try? String(contentsOf: ro2.appendingPathComponent("stats.json"), encoding: .utf8)) == "{not json"
+          && ((try? FileManager.default.contentsOfDirectory(atPath: ro2.path)) ?? []).count == 1)
+    check("stats.readOnlyReads", StatsStore.readOnly(url: statsURL).days == st.days && !StatsStore.readOnly(url: statsURL).writable)
     // A file that can't be read is left exactly as it is, and nothing is written over it.
     let lockedURL = dir.appendingPathComponent("locked-stats.json")
     try? Data("{\"backfilled\":true,\"days\":[],\"version\":1}".utf8).write(to: lockedURL)

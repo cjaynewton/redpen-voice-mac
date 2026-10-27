@@ -404,7 +404,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Ink.registerFonts()
             NSApp.appearance = NSAppearance(named: CommandLine.arguments.contains("dark") ? .darkAqua : .aqua)
             let model = SettingsModel(config: config, engine: engine) { _ in }
-            stats.reload()
+            stats.reload(readOnly: true)
             model.statsTotal = { [stats] in let s = Stats.score(stats.days); return (s.words, s.seconds) }
             // `ready`: drawn as a Mac where the chosen engine has finished loading (for the README pictures).
             if CommandLine.arguments.contains("ready") { model.engineState = .ready }
@@ -429,7 +429,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let i = CommandLine.arguments.firstIndex(of: "--menu-shot"), i + 1 < CommandLine.arguments.count {
             Ink.registerFonts()
             NSApp.appearance = NSAppearance(named: CommandLine.arguments.contains("dark") ? .darkAqua : .aqua)
-            stats.reload()
+            stats.reload(readOnly: true)
             menu.state = menuState()
             // `ready`: drawn as a set-up Mac (engine loaded, Fn key already set), for the README pictures.
             if CommandLine.arguments.contains("ready") { menu.state.ready = true; menu.state.status = "Ready"; menu.state.warning = nil }
@@ -1433,6 +1433,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func refreshMenu() {
         menu.state = menuState()
         if let m = statsWindow?.model { m.typing = config.typingSpeed; m.reload() }
+        // Settings' "saved so far" line reads the counts when it draws.
+        settings?.model.objectWillChange.send()
     }
 
     private func menuState() -> MenuState {

@@ -39,19 +39,28 @@ public final class StatsStore {
         if load { reload() } else { writable = false }
     }
 
+    /// Read only, never written: what a picture of the window shows.
+    public static func readOnly(url: URL) -> StatsStore {
+        let s = StatsStore(url: url, load: false)
+        s.reload(readOnly: true)
+        return s
+    }
+
     public var days: [DayStats] { file.days }
     public var backfilled: Bool { file.backfilled }
 
     /// Reads the file again. Missing: a new store. Unreadable: kept as it is, never written. Readable but damaged:
     /// moved aside to stats.damaged-<time>.json and a new store started (the history is counted into it again).
-    public func reload() {
+    /// `readOnly`: for a picture of the window, never moves, writes or recovers anything.
+    public func reload(readOnly: Bool = false) {
         writable = true; problem = nil; file = File()
         guard FileManager.default.fileExists(atPath: url.path) else { return }
         guard let d = try? Data(contentsOf: url) else {
             writable = false; problem = "stats.json can't be read; counts kept in memory only"
             return
         }
-        if let f = try? JSONDecoder().decode(File.self, from: d) { file = f; return }
+        if let f = try? JSONDecoder().decode(File.self, from: d) { file = f; if readOnly { writable = false }; return }
+        if readOnly { writable = false; problem = "stats.json is damaged"; return }
         let stamp = Int(Date().timeIntervalSince1970)
         let aside = url.deletingLastPathComponent().appendingPathComponent("stats.damaged-\(stamp).json")
         if (try? FileManager.default.moveItem(at: url, to: aside)) != nil {
