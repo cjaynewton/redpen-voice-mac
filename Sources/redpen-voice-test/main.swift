@@ -299,6 +299,36 @@ do {
     s2.add(words: 5, seconds: 2, engine: "whisper", date: now, calendar: cal)
     let sw = Stats.speed(s2.days, now: now, calendar: cal)
     check("stats.speedWeekly", sw.weekly && sw.points.count >= 9 && sw.points.count <= 10 && sw.points.first?.wpm == 125 && sw.points.last?.wpm == nil, "\(sw.points.map(\.wpm))")
+    // The recording path itself, under each keep choice: the history keeps what you chose, the stats count every one.
+    for keep in ["all", "week", "none"] {
+        let k = dir.appendingPathComponent("rec-\(keep)")
+        let kh = History(url: k.appendingPathComponent("history.jsonl")), ks = StatsStore(url: k.appendingPathComponent("stats.json"))
+        Dictations.record(Entry(date: tenDaysAgo, raw: "an older one here", seconds: 2, app: "Notes", inserted: true), keep: keep, history: kh, stats: ks, engine: "whisper", calendar: cal)
+        Dictations.record(Entry(date: now, raw: "a new one", seconds: 1, app: "Notes", inserted: true), keep: keep, history: kh, stats: ks, engine: "live", calendar: cal)
+        let reopened = StatsStore(url: k.appendingPathComponent("stats.json"))
+        let wantHistory = ["all": 2, "week": 1, "none": 0][keep]!
+        check("stats.record.\(keep)", Stats.score(reopened.days).words == 7 && Stats.score(reopened.days).count == 2 && kh.all().count == wantHistory,
+              "\(Stats.score(reopened.days)) history \(kh.all().count)")
+    }
+    // A damaged file is moved aside, never written over; the history is then counted into a new one.
+    let dmg = dir.appendingPathComponent("damaged"); try? FileManager.default.createDirectory(at: dmg, withIntermediateDirectories: true)
+    let dmgURL = dmg.appendingPathComponent("stats.json")
+    try? Data("{not json".utf8).write(to: dmgURL)
+    let ds = StatsStore(url: dmgURL)
+    let aside = ((try? FileManager.default.contentsOfDirectory(atPath: dmg.path)) ?? []).filter { $0.hasPrefix("stats.damaged-") }
+    check("stats.damagedMovedAside", aside.count == 1 && ds.writable && ds.days.isEmpty && !ds.backfilled && ds.problem != nil, "\(aside)")
+    check("stats.damagedKept", aside.first.flatMap { try? String(contentsOf: dmg.appendingPathComponent($0), encoding: .utf8) } == "{not json")
+    // A file that can't be read is left exactly as it is, and nothing is written over it.
+    let lockedURL = dir.appendingPathComponent("locked-stats.json")
+    try? Data("{\"backfilled\":true,\"days\":[],\"version\":1}".utf8).write(to: lockedURL)
+    try? FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: lockedURL.path)
+    let ls = StatsStore(url: lockedURL)
+    ls.add(words: 5, seconds: 2, engine: "whisper", date: now, calendar: cal)
+    let lsReset = ls.reset()
+    let lsBackfill = ls.backfillIfNeeded(h.all(), calendar: cal)
+    try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: lockedURL.path)
+    check("stats.unreadableNotWritten", !ls.writable && !lsReset && (try? String(contentsOf: lockedURL, encoding: .utf8)) == "{\"backfilled\":true,\"days\":[],\"version\":1}")
+    check("stats.unreadableBackfillNotMarked", !lsBackfill && !ls.backfilled)
     try? FileManager.default.removeItem(at: dir)
 }
 

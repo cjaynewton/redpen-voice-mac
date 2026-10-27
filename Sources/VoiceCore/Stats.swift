@@ -25,15 +25,39 @@ public final class StatsStore {
     }
 
     public let url: URL
-    private var file: File
+    private var file = File()
+    /// False when stats.json is there but can't be read: the counts are kept in memory and the file is never written
+    /// over, so nothing on disk is lost.
+    public private(set) var writable = true
+    /// What went wrong with the file, said plainly, for the log.
+    public private(set) var problem: String?
 
     public init(url: URL) {
         self.url = url
-        if let d = try? Data(contentsOf: url), let f = try? JSONDecoder().decode(File.self, from: d) { file = f } else { file = File() }
+        reload()
     }
 
     public var days: [DayStats] { file.days }
     public var backfilled: Bool { file.backfilled }
+
+    /// Reads the file again. Missing: a new store. Unreadable: kept as it is, never written. Readable but damaged:
+    /// moved aside to stats.damaged-<time>.json and a new store started (the history is counted into it again).
+    public func reload() {
+        writable = true; problem = nil; file = File()
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        guard let d = try? Data(contentsOf: url) else {
+            writable = false; problem = "stats.json can't be read; counts kept in memory only"
+            return
+        }
+        if let f = try? JSONDecoder().decode(File.self, from: d) { file = f; return }
+        let stamp = Int(Date().timeIntervalSince1970)
+        let aside = url.deletingLastPathComponent().appendingPathComponent("stats.damaged-\(stamp).json")
+        if (try? FileManager.default.moveItem(at: url, to: aside)) != nil {
+            problem = "stats.json was damaged; kept as \(aside.lastPathComponent) and started again"
+        } else {
+            writable = false; problem = "stats.json is damaged and couldn't be moved aside; counts kept in memory only"
+        }
+    }
 
     /// "2026-10-27" for a date, on this Mac's calendar and time zone.
     public static func key(_ date: Date, calendar: Calendar = .current) -> String {
@@ -44,7 +68,7 @@ public final class StatsStore {
     /// Counts one dictation.
     public func add(words: Int, seconds: Double, engine: String, date: Date = Date(), calendar: Calendar = .current) {
         tally(&file.days, day: StatsStore.key(date, calendar: calendar), engine: engine, words: words, seconds: seconds)
-        save()
+        _ = save()
     }
 
     /// The first time only: counts the dictations already in the history, so today's and all-time numbers carry over.
@@ -52,18 +76,23 @@ public final class StatsStore {
     @discardableResult
     public func backfillIfNeeded(_ entries: [Entry], calendar: Calendar = .current) -> Bool {
         guard !file.backfilled else { return false }
+        let before = file
         for e in entries where !e.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             tally(&file.days, day: StatsStore.key(e.date, calendar: calendar), engine: "unknown", words: e.words, seconds: e.seconds)
         }
         file.backfilled = true
-        save()
+        // Not saved: counted again next time rather than marked done and lost.
+        if !save() { file = before; return false }
         return true
     }
 
-    /// Every count back to zero. The history is never counted again.
-    public func reset() {
+    /// Every count back to zero. The history is never counted again. False, and nothing changed, if it can't be saved.
+    @discardableResult
+    public func reset() -> Bool {
+        let before = file
         file = File(backfilled: true, days: [])
-        save()
+        if !save() { file = before; return false }
+        return true
     }
 
     private func tally(_ days: inout [DayStats], day: String, engine: String, words: Int, seconds: Double) {
@@ -75,12 +104,23 @@ public final class StatsStore {
     }
 
     /// Readable only by you, written whole so a crash mid-write never leaves half a file.
-    private func save() {
+    private func save() -> Bool {
+        guard writable else { return false }
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let enc = JSONEncoder(); enc.outputFormatting = [.sortedKeys]
-        guard let d = try? enc.encode(file) else { return }
-        try? d.write(to: url, options: .atomic)
+        guard let d = try? enc.encode(file), (try? d.write(to: url, options: .atomic)) != nil else { return false }
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        return true
+    }
+}
+
+/// Where a finished dictation goes (D-825, D-837): into the history as you chose to keep it, and into the day's
+/// numbers always.
+public enum Dictations {
+    public static func record(_ e: Entry, keep: String, history: History, stats: StatsStore, engine: String, calendar: Calendar = .current) {
+        if keep != "none" { history.append(e) }
+        if keep == "week" { history.apply(keep: keep, now: e.date) }
+        stats.add(words: e.words, seconds: e.seconds, engine: engine, date: e.date, calendar: calendar)
     }
 }
 

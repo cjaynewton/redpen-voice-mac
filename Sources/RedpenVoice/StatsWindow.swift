@@ -37,7 +37,16 @@ final class StatsModel: ObservableObject {
     var onReset: () -> Void = {}
     var openSettings: () -> Void = {}
 
-    init(typing: Double, load: @escaping () -> [DayStats]) { self.typing = typing; self.load = load; days = load() }
+    private var watches: [NSObjectProtocol] = []
+
+    init(typing: Double, load: @escaping () -> [DayStats]) {
+        self.typing = typing; self.load = load; days = load()
+        // A new day, a new time zone or waking up moves "today" and "this week": drawn again even with no dictation.
+        let refresh: @Sendable (Notification) -> Void = { [weak self] _ in Task { @MainActor in self?.reload() } }
+        watches = [NotificationCenter.default.addObserver(forName: .NSCalendarDayChanged, object: nil, queue: .main, using: refresh),
+                   NotificationCenter.default.addObserver(forName: .NSSystemTimeZoneDidChange, object: nil, queue: .main, using: refresh),
+                   NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main, using: refresh)]
+    }
 
     func reload() { days = load() }
     func reset() { onReset(); reload() }

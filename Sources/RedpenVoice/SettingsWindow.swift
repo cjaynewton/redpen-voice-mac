@@ -432,7 +432,8 @@ struct SettingsView: View {
         let t = model.statsTotal()
         let speed = Int(model.config.typingSpeed)
         let saved = Score(words: t.words, seconds: t.seconds, typing: model.config.typingSpeed).minutesSaved
-        let choices = Array(stride(from: 20, through: 120, by: 10)) + (speed % 10 == 0 ? [] : [speed])
+        let steps = Array(stride(from: 20, through: 120, by: 10))
+        let choices = steps + (steps.contains(speed) ? [] : [speed])
         return row("Your typing speed", "\(Score.savedText(saved)) saved so far, compared with typing at \(speed) words a minute.") {
             Picker("", selection: Binding(get: { speed }, set: { model.config.typingWPM = $0 })) {
                 ForEach(choices.sorted(), id: \.self) { Text("\($0) words a minute").tag($0) }

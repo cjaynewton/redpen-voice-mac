@@ -84,6 +84,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.2) { exit(0) }
             return
         }
+        // `--stats-shot out.png [dark]` draws the Stats window with made-up sample numbers, never the ones on this Mac.
+        if let i = CommandLine.arguments.firstIndex(of: "--stats-shot"), i + 1 < CommandLine.arguments.count {
+            Ink.registerFonts()
+            NSApp.appearance = NSAppearance(named: CommandLine.arguments.contains("dark") ? .darkAqua : .aqua)
+            let now = Date()
+            let sample = StatsModel.sample(now: now)
+            let model = StatsModel(typing: 40) { sample }; model.now = { now }
+            let v = NSHostingView(rootView: StatsView(model: model).buttonBorderShape(.roundedRectangle(radius: 4)))
+            v.frame = NSRect(x: 0, y: 0, width: StatsView.width, height: 728)
+            Self.shoot(v, to: CommandLine.arguments[i + 1])
+            return
+        }
         Config.ensureNamesFile()
         // Once, before the history is trimmed: the counts from before stats.json existed carry over.
         if stats.backfillIfNeeded(history.all()) { Log.note("stats: counted \(stats.days.reduce(0) { $0 + $1.dictations }) dictations from the history") }
@@ -428,18 +440,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Self.shoot(v, to: CommandLine.arguments[i + 1])
             return
         }
-        // `--stats-shot out.png [dark]` draws the Stats window with made-up sample numbers, never the ones on this Mac.
-        if let i = CommandLine.arguments.firstIndex(of: "--stats-shot"), i + 1 < CommandLine.arguments.count {
-            Ink.registerFonts()
-            NSApp.appearance = NSAppearance(named: CommandLine.arguments.contains("dark") ? .darkAqua : .aqua)
-            let now = Date()
-            let sample = StatsModel.sample(now: now)
-            let model = StatsModel(typing: 40) { sample }; model.now = { now }
-            let v = NSHostingView(rootView: StatsView(model: model).buttonBorderShape(.roundedRectangle(radius: 4)))
-            v.frame = NSRect(x: 0, y: 0, width: StatsView.width, height: 728)
-            Self.shoot(v, to: CommandLine.arguments[i + 1])
-            return
-        }
         // `--history-shot out.png [dark]` draws the history window with the history in the folder in use (README).
         if let i = CommandLine.arguments.firstIndex(of: "--history-shot"), i + 1 < CommandLine.arguments.count {
             Ink.registerFonts()
@@ -527,6 +527,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // One copy at a time: a second one (opened by hand while the watchdog reopens it) goes quietly.
         // The loser leaves no quit note: the note is per copy, and the running copy's watchdog must still guard it.
         if !Watchdog.takeLock() { Log.note("another copy is running, this one quits"); exit(0) }
+        // Read again now that this is the only copy: another may have counted a dictation since launch began.
+        stats.reload()
+        if let p = stats.problem { Log.note("stats: \(p)") }
         Watchdog.start()
         restarted = CommandLine.arguments.contains("--restarted")
         Updates.shared.start()
@@ -1366,11 +1369,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let entry = Entry(raw: raw, cleaned: cleaned, seconds: seconds, app: app, inserted: inserted)
                 self.lastSaid = entry
                 // How long it's kept is your choice (D-825): nothing at all, the last week, or the newest 2,000.
-                let keep = self.config.historyKeep ?? "all"
-                if keep != "none" { self.history.append(entry) }
-                if keep == "week" { self.history.apply(keep: keep) }
                 // The day's numbers are counted whatever is kept (D-837).
-                self.stats.add(words: entry.words, seconds: entry.seconds, engine: self.config.engine)
+                Dictations.record(entry, keep: self.config.historyKeep ?? "all", history: self.history, stats: self.stats, engine: self.config.engine)
             }
             self.writing -= 1
             self.resumeMedia()
@@ -1640,8 +1640,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if statsWindow == nil {
             let m = StatsModel(typing: config.typingSpeed) { [weak self] in self?.stats.days ?? [] }
             m.onReset = { [weak self] in
-                self?.stats.reset()
-                Log.note("stats: reset")
+                let ok = self?.stats.reset() ?? false
+                Log.note(ok ? "stats: reset" : "stats: reset failed, stats.json couldn't be written")
                 self?.refreshMenu()
             }
             m.openSettings = { [weak self] in self?.openSettings() }
