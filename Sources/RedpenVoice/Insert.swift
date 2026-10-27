@@ -70,12 +70,13 @@ enum Insert {
     static func paste(_ text: String) -> Bool {
         guard !text.isEmpty, !ownWindowInFront else { return false }
         let pb = NSPasteboard.general
-        // One borrow at a time: a second paste within the half second keeps the first one's original, so what you
-        // had is what comes back, never Voice's own text.
-        let saved: ClipboardSnapshot
-        if let b = borrowed, pb.changeCount == b.mine { saved = b.original; b.restore.cancel() }
-        else { saved = ClipboardSnapshot.take(pb) }
-        borrowed = nil
+        // One paste at a time: a second one waits until the first has been read and the clipboard put back, so a slow
+        // app can never read the second text for the first paste, and what comes back is always what you had.
+        if borrowed != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { _ = paste(text) }
+            return true
+        }
+        let saved = ClipboardSnapshot.take(pb)
         pb.clearContents()
         let item = NSPasteboardItem()
         item.setString(text, forType: .string)
@@ -91,7 +92,7 @@ enum Insert {
         down.flags = .maskCommand; up.flags = .maskCommand
         down.post(tap: .cgSessionEventTap); up.post(tap: .cgSessionEventTap)
         let restore = DispatchWorkItem {
-            borrowed = nil
+            if borrowed?.mine == mine { borrowed = nil }
             if pb.changeCount == mine { saved.restore(to: pb); Log.note("clipboard: put back") }
             else { Log.note("clipboard: something new was copied meanwhile, left as it is") }
         }

@@ -1158,7 +1158,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             stopWaiting()
             let ok = Insert.text(text)
-            hud.flash(ok ? "Typed where you started" : "Couldn't type it here. Press ⌃⌥V to paste", ok: ok, for: ok ? 1.2 : 2.5)
+            if ok, Insert.unconfirmed { hud.flash("Didn't see it land. Press ⌃⌥V to paste it", for: 3) }
+            else { hud.flash(ok ? "Typed where you started" : "Couldn't type it here. Press ⌃⌥V to paste", ok: ok, for: ok ? 1.2 : 2.5) }
             Log.note("insert: back in the box you started in, typed \(ok)")
             return
         }
@@ -1181,7 +1182,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard focus.kind == .text || waitSeen >= 2 else { return }
         stopWaiting()
         let ok = Insert.text(text)
-        hud.flash(ok ? "Pasted" : "Couldn't type it here. Press ⌃⌥V to paste", ok: ok, for: ok ? 1.0 : 2.5)
+        if ok, Insert.unconfirmed { hud.flash("Didn't see it land. Press ⌃⌥V to paste it", for: 3) }
+        else { hud.flash(ok ? "Pasted" : "Couldn't type it here. Press ⌃⌥V to paste", ok: ok, for: ok ? 1.0 : 2.5) }
         Log.note("insert: pasted after a click into \(focus.role), \(ok)")
     }
 
