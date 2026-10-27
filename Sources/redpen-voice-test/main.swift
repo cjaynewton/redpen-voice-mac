@@ -230,6 +230,78 @@ do {
     try? FileManager.default.removeItem(at: url)
 }
 
+// Stats (D-837): daily counts in their own file, numbers only; the history's keep choice and deletes never touch them.
+do {
+    let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("rv-stats-test-\(UUID().uuidString)")
+    var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(identifier: "America/Toronto")!
+    let now = cal.date(from: DateComponents(year: 2026, month: 10, day: 27, hour: 15))!
+    let yesterday = cal.date(byAdding: .day, value: -1, to: now)!, tenDaysAgo = cal.date(byAdding: .day, value: -10, to: now)!
+    let statsURL = dir.appendingPathComponent("stats.json")
+    let h = History(url: dir.appendingPathComponent("history.jsonl"))
+    // Backfill: the history's dictations are counted once; a press that caught nothing is not.
+    h.append(Entry(date: tenDaysAgo, raw: "one two three four", seconds: 3, app: "Notes", inserted: true))
+    h.append(Entry(date: yesterday, raw: "five six", seconds: 2, app: "Mail", inserted: true))
+    h.append(Entry(date: yesterday, raw: "", seconds: 1, app: "Mail", inserted: false))
+    let st = StatsStore(url: statsURL)
+    check("stats.backfillRuns", st.backfillIfNeeded(h.all(), calendar: cal))
+    check("stats.backfillCounts", Stats.score(st.days).words == 6 && Stats.score(st.days).count == 2 && Stats.score(st.days).seconds == 5, "\(st.days)")
+    check("stats.backfillEngine", st.days.allSatisfy { $0.engine == "unknown" })
+    check("stats.backfillOnce", !st.backfillIfNeeded(h.all(), calendar: cal) && Stats.score(st.days).count == 2)
+    check("stats.backfillOnceAfterReopen", !StatsStore(url: statsURL).backfillIfNeeded(h.all(), calendar: cal))
+    // The daily store: one row a day per engine, adding up.
+    st.add(words: 100, seconds: 40, engine: "whisper", date: now, calendar: cal)
+    st.add(words: 50, seconds: 20, engine: "whisper", date: now, calendar: cal)
+    st.add(words: 30, seconds: 10, engine: "live", date: now, calendar: cal)
+    let todayKey = StatsStore.key(now, calendar: cal)
+    check("stats.key", todayKey == "2026-10-27", todayKey)
+    check("stats.onePerDayEngine", st.days.filter { $0.day == todayKey }.count == 2 && st.days.first { $0.day == todayKey && $0.engine == "whisper" }?.dictations == 2)
+    let today = Stats.today(st.days, now: now, calendar: cal)
+    check("stats.today", today.words == 180 && today.count == 3 && today.seconds == 70, "\(today)")
+    check("stats.todayWPM", today.wordsPerMinute == 154, "\(today.wordsPerMinute)")
+    check("stats.allTime", Stats.score(st.days).words == 186 && Stats.score(st.days).count == 5)
+    check("stats.last30", Stats.lastDays(30, st.days, now: now, calendar: cal).words == 186)
+    check("stats.last7", Stats.lastDays(7, st.days, now: now, calendar: cal).words == 182)
+    // Oct 27 2026 is a Tuesday: a week from Monday takes in yesterday, a week from Tuesday doesn't.
+    var mon = cal; mon.firstWeekday = 2
+    var tue = cal; tue.firstWeekday = 3
+    check("stats.thisWeek", Stats.thisWeek(st.days, now: now, calendar: mon).words == 182 && Stats.thisWeek(st.days, now: now, calendar: tue).words == 180)
+    check("stats.reopened", StatsStore(url: statsURL).days == st.days)
+    let daily = Stats.daily(st.days, n: 30, now: now, calendar: cal)
+    check("stats.dailySlots", daily.count == 30 && daily.last?.score.words == 180 && daily[28].score.words == 2 && daily[19].score.words == 4, "\(daily.map(\.score.words))")
+    let sp = Stats.speed(st.days, now: now, calendar: cal)
+    check("stats.speedDaily", !sp.weekly && sp.points.count == 30 && sp.points.last?.wpm == 154 && sp.points[28].wpm == nil, "\(sp.points.map(\.wpm))")
+    let perms = (try? FileManager.default.attributesOfItem(atPath: statsURL.path)[.posixPermissions] as? Int) ?? 0
+    check("stats.private", perms == 0o600, String(perms, radix: 8))
+    // Numbers only: no word said ever reaches the file.
+    let body = (try? String(contentsOf: statsURL, encoding: .utf8)) ?? ""
+    check("stats.numbersOnly", !body.contains("five") && !body.contains("one two") && !body.contains("Notes"))
+    // Keep a week, keep nothing, and deleting a dictation leave the stats as they were.
+    let before = st.days
+    h.apply(keep: "week", now: now)
+    check("stats.keepWeekIntact", StatsStore(url: statsURL).days == before && h.all().count == 2)
+    h.remove(h.all()[0])
+    h.apply(keep: "none", now: now)
+    check("stats.keepNoneIntact", StatsStore(url: statsURL).days == before && h.all().isEmpty)
+    // Reset: back to zero, and the history is never counted again.
+    h.append(Entry(date: now, raw: "after the reset", seconds: 2, app: "Notes", inserted: true))
+    st.reset()
+    check("stats.reset", st.days.isEmpty && StatsStore(url: statsURL).days.isEmpty && Stats.score(st.days).words == 0)
+    check("stats.resetNoBackfill", !StatsStore(url: statsURL).backfillIfNeeded(h.all(), calendar: cal) && StatsStore(url: statsURL).days.isEmpty)
+    check("stats.resetHistoryKept", h.all().count == 1)
+    // Your typing speed changes minutes saved: 180 words in 70 s against 40 wpm is 4.5 min less 1.2 = 3; against 20, 8.
+    check("stats.typing40", Stats.today(before, now: now, calendar: cal, typing: 40).minutesSaved == 3)
+    check("stats.typing20", Stats.today(before, now: now, calendar: cal, typing: 20).minutesSaved == 8)
+    check("stats.typing120", Stats.today(before, now: now, calendar: cal, typing: 120).minutesSaved == 0)
+    check("stats.savedText", Score.savedText(9) == "9 min" && Score.savedText(65) == "1 h 5 min" && Score.savedText(120) == "2 h" && Score.savedText(1_010) == "17 h")
+    // Speed by week once there is more than six weeks of counts; a short day is left out.
+    let s2 = StatsStore(url: dir.appendingPathComponent("stats2.json"))
+    s2.add(words: 500, seconds: 240, engine: "whisper", date: cal.date(byAdding: .day, value: -60, to: now)!, calendar: cal)
+    s2.add(words: 5, seconds: 2, engine: "whisper", date: now, calendar: cal)
+    let sw = Stats.speed(s2.days, now: now, calendar: cal)
+    check("stats.speedWeekly", sw.weekly && sw.points.count >= 9 && sw.points.count <= 10 && sw.points.first?.wpm == 125 && sw.points.last?.wpm == nil, "\(sw.points.map(\.wpm))")
+    try? FileManager.default.removeItem(at: dir)
+}
+
 // Words worth a second look, where the engines disagree (D-817 test).
 let rk = RiskyWords.find(final: "So we should not ship it on Friday with three fixes", other: "So we should now ship it on Friday with free fixes", names: [])
 check("risky.negationFirst", rk.first?.kind == "negation" && rk.first?.heard == "not" && rk.first?.other == "now", "\(rk)")
