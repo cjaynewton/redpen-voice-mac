@@ -23,8 +23,10 @@ enum Insert {
         }
         let el = focusedRef as! AXUIElement
         wakeElectron(el)
-        let padded = spaced(text, before: el)
-        typedPadding = padded.utf16.count - text.utf16.count
+        // A whole dictation fits the sentence it lands in; pieces typed while you talk keep their exact text.
+        let fitted = joining == nil ? fit(text, in: el) : text
+        let padded = spaced(fitted, before: el)
+        typedPadding = padded.utf16.count - fitted.utf16.count
         if let before = selectedRange(el), AXUIElementSetAttributeValue(el, kAXSelectedTextAttribute as CFString, padded as CFString) == .success {
             // Moved by the length of the text: it landed. Otherwise the app said yes and did nothing.
             if let after = selectedRange(el), after.location == before.location + (padded as NSString).length || after.location > before.location {
@@ -180,6 +182,32 @@ enum Insert {
         // Some apps (Messages) answer "not found", a huge number; adding to it crashed the app (Oct 22 2026).
         guard r.location >= 0, r.location < 100_000_000, r.length >= 0, r.length < 100_000_000 else { return nil }
         return NSRange(location: r.location, length: r.length)
+    }
+
+    /// Names from the word list, spelled as they must stay when a dictation lands mid-sentence.
+    nonisolated(unsafe) static var keepNames: Set<String> = []
+
+    /// The text fitted to where it lands (D-817): lowercase start mid-sentence, no full stop right before a word.
+    /// Left alone when the box won't say what is around the cursor.
+    private static func fit(_ text: String, in el: AXUIElement) -> String {
+        guard let r = selectedRange(el) else { return text }
+        func string(_ location: Int, _ length: Int) -> String? {
+            guard length > 0 else { return "" }
+            var cf = CFRange(location: location, length: length)
+            guard let param = AXValueCreate(.cfRange, &cf) else { return nil }
+            var v: CFTypeRef?
+            guard AXUIElementCopyParameterizedAttributeValue(el, kAXStringForRangeParameterizedAttribute as CFString, param, &v) == .success else { return nil }
+            return v as? String
+        }
+        let from = max(0, r.location - 3)
+        guard let before = string(from, r.location - from) else { return text }
+        let total = (value(el) as NSString?)?.length
+        let afterChar: Character?
+        if let total, r.location + r.length >= total { afterChar = nil }
+        else { guard let a = string(r.location + r.length, 1) else { return text }; afterChar = a.first }
+        let out = Fit.text(text, before: before, after: afterChar, keep: keepNames)
+        if out != text { Log.note("insert: fitted to the sentence around the cursor") }
+        return out
     }
 
     /// A space before the text when the cursor sits right after a word, so two dictations do not run together.

@@ -249,8 +249,8 @@ struct SettingsView: View {
             engineRow(on: model.usesInstant, dashed: !Transcriber.liveOnDisk, action: { model.config.engine = "live" }) {
                 title("Instant", "Parakeet")
                 note(Transcriber.liveOnDisk
-                     ? "Your words show in the bar as you talk and go in the moment you stop. About 1 more word in 100 wrong than Whisper. English only."
-                     : "Your words show in the bar as you talk and go in the moment you stop. About 1 more word in 100 wrong than Whisper. English only. A one-time 600 MB download the first time you pick it.")
+                     ? "Your words show in the bar as you talk and go in right after you let go, with no wait for writing. About 1 more word in 100 wrong than Whisper. English only."
+                     : "Your words show in the bar as you talk and go in right after you let go, with no wait for writing. About 1 more word in 100 wrong than Whisper. English only. A one-time 600 MB download the first time you pick it.")
             }
             Divider().overlay(Ink.line)
             engineRow(on: !model.usesWhisper && !model.usesInstant, dashed: false, action: { model.config.engine = "dictation" }) {

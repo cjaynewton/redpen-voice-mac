@@ -1,5 +1,6 @@
 import Foundation
 import FoundationModels
+import VoiceCore
 
 /// The optional rewrite, on Apple's on-device model. It takes out "um", false starts and repeated words and adds
 /// punctuation. It is told to keep every word choice, and the raw text always wins when the model wanders.
@@ -24,6 +25,8 @@ enum Cleanup {
         // Half the words gone or half again added means it rewrote, not tidied.
         let rw = Double(raw.split(separator: " ").count), tw = Double(t.split(separator: " ").count)
         guard tw >= rw * 0.5, tw <= rw * 1.3, !t.isEmpty else { Log.note("cleanup: rejected (\(Int(rw)) -> \(Int(tw)) words)"); return nil }
+        // A "not" added or dropped, or a number changed, changes what you meant: the raw words go in (D-817).
+        if let why = Meaning.changed(raw, t) { Log.note("cleanup: rejected, a \(why) changed"); return nil }
         return t
     }
 }

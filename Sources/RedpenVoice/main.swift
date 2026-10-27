@@ -72,7 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         Config.ensureNamesFile()
         history.trim()
-        names = Names(text: Config.loadNames())
+        names = Names(text: Config.loadNames()); Insert.keepNames = Set(names.spellings)
         engine.onState = { [weak self] s in
             self?.refreshMenu()
             self?.firstRun?.refresh()
@@ -463,7 +463,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Where this dictation's words go back to, if you move away while they are written.
         if Insert.focus().kind == .text, let (el, pid) = Insert.focusedElement() {
             startBox = StartBox(pid: pid, element: el, app: NSRunningApplication(processIdentifier: pid)?.localizedName ?? "that app",
-                                window: Self.windowTitle(pid))
+                                window: Self.windowTitle(pid), print: Self.boxPrint(el, withText: true))
         } else { startBox = nil }
         fixWatch.finish()
         delivery += 1
@@ -526,7 +526,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         session = s
         if holdForMedia { s.holdForMedia(); holdForMedia = false }
         startedAt = Date()
-        names = Names(text: Config.loadNames())
+        names = Names(text: Config.loadNames()); Insert.keepNames = Set(names.spellings)
         if config.sounds { NSSound(named: "Pop")?.play() }
         if recorder.inputName.isEmpty {
             do { try recorder.start(format: format) } catch {
@@ -561,7 +561,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.hud.caption(self.names.apply(text))
                 }
             }
-            s.streamLive()
         }
         recorder.begin(onBuffer: { buf in s.push(buf) },
                        onLevel: { [weak self] v in DispatchQueue.main.async { self?.hud.level(v) } })
@@ -808,7 +807,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The text box you were in when you started talking. The words go back there, even if you moved to another app
     /// while they were being written ("like Monologue"): straight in if that app allows it, or the moment you are
     /// back in that box. Never into some other box.
-    struct StartBox { let pid: pid_t; let element: AXUIElement; let app: String; let window: String? }
+    struct StartBox { let pid: pid_t; let element: AXUIElement; let app: String; let window: String?; let print: BoxPrint }
     private var startBox: StartBox?
 
     private static func windowTitle(_ pid: pid_t) -> String? {
@@ -818,12 +817,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return t as? String
     }
 
-    /// True when the cursor is back in that box: the same element, or (Electron apps can hand back a new element for
-    /// the same box) the same app and window with a text box in focus.
+    /// A box's fingerprint: role, Accessibility id, place on screen, and (at key-down) the start of its text.
+    private static func boxPrint(_ el: AXUIElement, withText: Bool) -> BoxPrint {
+        func attr(_ k: String) -> CFTypeRef? { var v: CFTypeRef?; return AXUIElementCopyAttributeValue(el, k as CFString, &v) == .success ? v : nil }
+        var p = CGPoint.zero, sz = CGSize.zero
+        var frame: CGRect?
+        if let pv = attr(kAXPositionAttribute), let sv = attr(kAXSizeAttribute), CFGetTypeID(pv) == AXValueGetTypeID(), CFGetTypeID(sv) == AXValueGetTypeID(),
+           AXValueGetValue(pv as! AXValue, .cgPoint, &p), AXValueGetValue(sv as! AXValue, .cgSize, &sz) { frame = CGRect(origin: p, size: sz) }
+        let prefix = withText ? Insert.value(el).map { String($0.prefix(BoxMatch.prefixLength)) } : nil
+        return BoxPrint(role: attr(kAXRoleAttribute) as? String, identifier: attr(kAXIdentifierAttribute) as? String, frame: frame, prefix: prefix)
+    }
+
+    /// True when the cursor is back in that very box (D-817): the same element, or one that is clearly the same box
+    /// (same role and place, or same id), and its text still starts as it did at key-down. Another box in the same
+    /// window never counts; a sent and cleared box never counts.
     private func isAt(_ b: StartBox) -> Bool {
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == b.pid, let (now, _) = Insert.focusedElement() else { return false }
-        if CFEqual(now, b.element) { return true }
-        return Insert.focus().kind == .text && Self.windowTitle(b.pid) == b.window
+        return BoxMatch.same(start: b.print, now: Self.boxPrint(now, withText: false), nowText: Insert.value(now), sameElement: CFEqual(now, b.element))
+    }
+
+    /// The box you started in still holds what it held at key-down, so writing into it in the background is safe.
+    private func unchanged(_ b: StartBox) -> Bool {
+        BoxMatch.same(start: b.print, now: b.print, nowText: Insert.value(b.element), sameElement: true)
     }
 
     /// Words waiting for the box you started in.
@@ -832,7 +847,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func holdForBox(_ b: StartBox, _ text: String) {
         stopWaiting()
         waitingText = text; waitingBox = b
-        hud.flash("Saved for \(b.app). It goes in when you're back in that box.", for: 2.5)
+        hud.flash("Saved for \(b.app). It goes in when you're back in that box, or press ⌃⌥V.", for: 3)
         let until = Date().addingTimeInterval(600)
         waitTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.checkWaiting(until: until) }
@@ -859,7 +874,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let text = waitingText, session == nil else { return }
         if let b = waitingBox {
             if Date() > until { stopWaiting(); Log.note("insert: you didn't go back to the box in 10 minutes, kept for paste"); return }
-            guard isAt(b) else { return }
+            guard isAt(b) else {
+                // Back in that box, but it was sent or changed: never type into it. Paste last has the words.
+                if NSWorkspace.shared.frontmostApplication?.processIdentifier == b.pid, let (now, _) = Insert.focusedElement(), CFEqual(now, b.element) {
+                    stopWaiting()
+                    hud.flash("That box changed since you started. Press ⌃⌥V to paste", for: 3)
+                    Log.note("insert: the box you started in changed, kept for paste")
+                }
+                return
+            }
             stopWaiting()
             let ok = Insert.text(text)
             hud.flash(ok ? "Typed where you started" : "Couldn't type it here. Press ⌃⌥V to paste", ok: ok, for: ok ? 1.2 : 2.5)
@@ -1004,7 +1027,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let newer = self.delivery != gen  // you pressed again while these words were being written
                 if let b = box, !newer, !rest.isEmpty, !self.isAt(b) {
                     // You moved away while the words were written: they go back to the box you started in.
-                    if Insert.textInto(b.element, rest) {
+                    if self.unchanged(b), Insert.textInto(b.element, rest) {
                         inserted = true
                         self.hud.flash("Typed into \(b.app), where you started", ok: true, for: 1.5)
                         Log.note("insert: typed into the box you started in, without bringing it forward")

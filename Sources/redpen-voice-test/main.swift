@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import VoiceCore
 
@@ -135,6 +136,43 @@ check("fillers.mid", Fillers.strip("Is it uh ready? Uh, yes.") == "Is it ready? 
 check("fillers.words", Fillers.strip("I mean, you know, I like the umbrella and Uhura.") == "I mean, you know, I like the umbrella and Uhura.")
 check("fillers.only", Fillers.strip("Um.") == "")
 check("fillers.trailing", Fillers.strip("Let me think, hmm") == "Let me think", Fillers.strip("Let me think, hmm"))
+
+// Tidy it up: a dropped "not" or a changed number means the raw words go in (D-817).
+check("meaning.same", Meaning.changed("um so we don't ship it on Friday", "So we don't ship it on Friday.") == nil)
+check("meaning.notDropped", Meaning.changed("we do not ship it", "We ship it.") == "negation")
+check("meaning.ntDropped", Meaning.changed("I don't think so", "I think so.") == "negation")
+check("meaning.number", Meaning.changed("send three copies", "Send two copies.") == "number")
+check("meaning.numberWordToDigit", Meaning.changed("send three copies", "Send 3 copies.") == nil)
+check("meaning.neverAdded", Meaning.changed("it works", "It never works.") == "negation")
+
+// Fitting the sentence it lands in (D-817).
+check("fit.midSentence", Fit.text("And we go.", before: "and then ", after: nil, keep: []) == "and we go.", Fit.text("And we go.", before: "and then ", after: nil, keep: []))
+check("fit.afterStop", Fit.text("And we go.", before: "Done. ", after: nil, keep: []) == "And we go.")
+check("fit.startOfBox", Fit.text("And we go.", before: "", after: nil, keep: []) == "And we go.")
+check("fit.newLine", Fit.text("And we go.", before: "Hi\n", after: nil, keep: []) == "And we go.")
+check("fit.keepI", Fit.text("I think so.", before: "and ", after: nil, keep: []) == "I think so.")
+check("fit.keepName", Fit.text("Sowell said it.", before: "as ", after: nil, keep: ["Sowell"]) == "Sowell said it.")
+check("fit.keepAcronym", Fit.text("NASA did.", before: "and ", after: nil, keep: []) == "NASA did.")
+check("fit.beforeWord", Fit.text("We should go.", before: "Then ", after: "t", keep: []) == "we should go ", Fit.text("We should go.", before: "Then ", after: "t", keep: []))
+check("fit.beforeSpace", Fit.text("We should go.", before: "Done. ", after: " ", keep: []) == "We should go.")
+check("fit.keepQuestion", Fit.text("Should we go?", before: "", after: "t", keep: []) == "Should we go? ")
+
+// The box a dictation started in (D-817): same box only, and its text must still start the same.
+let f0 = CGRect(x: 100, y: 800, width: 600, height: 40)
+let start = BoxPrint(role: "AXTextArea", identifier: nil, frame: f0, prefix: "Hello the")
+check("box.sameElement", BoxMatch.same(start: start, now: start, nowText: "Hello there", sameElement: true))
+check("box.sentAndCleared", !BoxMatch.same(start: start, now: start, nowText: "", sameElement: true))
+check("box.otherBoxSameWindow", !BoxMatch.same(start: start, now: BoxPrint(role: "AXTextArea", identifier: nil, frame: CGRect(x: 100, y: 200, width: 300, height: 40), prefix: nil), nowText: "Hello there", sameElement: false))
+check("box.newElementSameBoxGrew", BoxMatch.same(start: start, now: BoxPrint(role: "AXTextArea", identifier: nil, frame: CGRect(x: 100, y: 760, width: 600, height: 80), prefix: nil), nowText: "Hello there", sameElement: false))
+check("box.sameId", BoxMatch.same(start: BoxPrint(role: "AXTextArea", identifier: "composer", frame: nil, prefix: ""), now: BoxPrint(role: "AXTextArea", identifier: "composer", frame: nil, prefix: nil), nowText: "x", sameElement: false))
+check("box.unreadableOther", !BoxMatch.same(start: BoxPrint(role: "AXTextArea", identifier: "c", frame: f0, prefix: nil), now: BoxPrint(role: "AXTextArea", identifier: "c", frame: f0, prefix: nil), nowText: nil, sameElement: false))
+
+// The video's words come off the start; yours stay (D-817).
+check("echo.strip", MediaEcho.strip("Please tell me what. Why is listening to horror music so comfortable?", video: "please tell me what") == "Why is listening to horror music so comfortable?", MediaEcho.strip("Please tell me what. Why is listening to horror music so comfortable?", video: "please tell me what"))
+check("echo.misheard", MediaEcho.strip("Please tel me what so we ship it", video: "please tell me what the") == "So we ship it", MediaEcho.strip("Please tel me what so we ship it", video: "please tell me what the"))
+check("echo.nothingPlayed", MediaEcho.strip("So we ship it", video: "") == "So we ship it")
+check("echo.noMatch", MediaEcho.strip("So we ship it", video: "the weather tomorrow") == "So we ship it")
+check("echo.laterRepeatKept", MediaEcho.strip("Tell me more. Then tell me what you think about tell me", video: "tell me") == "More. Then tell me what you think about tell me", MediaEcho.strip("Tell me more. Then tell me what you think about tell me", video: "tell me"))
 
 print("\(pass) passed, \(fail) failed")
 exit(fail == 0 ? 0 : 1)
