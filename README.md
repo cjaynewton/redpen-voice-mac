@@ -63,18 +63,18 @@ Tap the key twice to keep talking with your hands free, and tap once more to fin
 
 ## The menu
 
-Click the Voice icon in the menu bar for today's words and the minutes they saved you, the two switches, Paste last dictation, Transcribe a file, Settings and Check for updates.
+Click the Voice icon in the menu bar for today's words, your speed and the minutes they saved you, with an all-time line under them; the two switches; Paste last dictation, History, Stats, Transcribe a file, Settings and Check for updates.
 
 <p align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/menu-dark.png">
-  <img src="docs/screenshots/menu-light.png" alt="The menu bar panel: status, words today and minutes saved, two switches, paste last dictation, transcribe a file, settings, check for updates" width="300">
+  <img src="docs/screenshots/menu-light.png" alt="The menu bar panel: status, words today, speed and minutes saved, an all-time line, two switches, paste last dictation, history, stats, transcribe a file, settings, check for updates" width="300">
 </picture>
 </p>
 
 ## Settings
 
-Every choice on one page: the engine, how your words come out, the key you talk with, your microphone, the bar, and your list of words it gets wrong. Each engine shows a real sentence it heard, so you can judge before you download.
+Every choice on one page: the engine, how your words come out, the key you talk with, your microphone, the bar, your list of words it gets wrong, and your typing speed for time saved. Each engine shows a real sentence it heard, so you can judge before you download.
 
 <p align="center">
 <picture>
@@ -114,6 +114,17 @@ Every dictation, newest first: search them, copy one, delete one. Choose how lon
 </picture>
 </p>
 
+## Stats
+
+This week, the last 30 days and all time: words, minutes saved, your average speed and how many dictations. Below them, your words a day for the last 30 days and your speed over time. Minutes saved are compared with typing at 40 words a minute; set your own typing speed in Settings. Open it from the menu. Stats are numbers only and stay when the history is cleared; Reset stats sets them back to zero.
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/stats-dark.png">
+  <img src="docs/screenshots/stats-light.png" alt="The stats window, shown with sample numbers: this week, the last 30 days and all time, words a day for 30 days, and speed week by week" width="480">
+</picture>
+</p>
+
 ## How accurate is it
 
 All three engines were run on [WildSpeech-Bench](https://huggingface.co/datasets/tencent/WildSpeech-Bench), 1,100 public recordings of people asking questions: some in quiet rooms, some on the street, some with others talking.
@@ -146,6 +157,7 @@ On [TORGO](https://www.cs.toronto.edu/~complingweb/data/TORGO/torgo.html), recor
 - Speech is turned into text on your Mac, by every engine. Nothing you say or write is sent anywhere.
 - **What is kept, and where.** All in `~/Library/Application Support/Redpen Voice/`, readable only by your account on this Mac:
   - `history.jsonl`: the text of your last 2,000 dictations (what was heard and, if you use a tidy option, what went in), with when, how long and which app. Never the sound. This is what Paste last reads. You can delete it any time.
+  - `stats.json`: numbers only, never your words. For each day and engine: how many words, how many seconds of talking, and how many dictations. Kept whatever you choose for the history; Reset stats in the Stats window clears it.
   - Your word list (a plain text file), `talk.json` (your pace and pauses, numbers only) and `learned.json` (counts of the name fixes it has seen, stored as fingerprints, not words).
   - The log in `~/Library/Logs/RedpenVoice.log` holds timings, app names and counts, never your words.
 - **The microphone stays on while Voice is open**, so the Mac's orange microphone dot stays lit. It holds only the last 0.6 seconds in memory, so the word you say as the key goes down isn't cut, and that is overwritten continuously. Nothing is kept until you press the key.
@@ -181,7 +193,7 @@ To keep Accessibility permission across rebuilds, sign with your own certificate
 swift run redpen-voice-test
 ```
 
-Runs the checks for the parts that need no microphone: the word list, history, the ums filter, silence handling, the media pause, where a recording is cut while you talk, how-you-talk numbers, learning fixed names and screen hints.
+Runs the checks for the parts that need no microphone: the word list, history, stats, the ums filter, silence handling, the media pause, where a recording is cut while you talk, how-you-talk numbers, learning fixed names and screen hints.
 
 `"Redpen Voice.app/Contents/MacOS/RedpenVoice" --stream-test files.txt out.jsonl` writes each audio file whole and streamed, with the wait after release, for checking streaming against long recordings.
 
