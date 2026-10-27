@@ -28,6 +28,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settings: SettingsWindow?
     private var session: Transcriber.Session?
     private var startedAt = Date()
+    /// The engine the dictation in progress started with, for its day's numbers (D-837).
+    private var sessionEngine = "dictation"
     private var pausedMedia = false
     private var settleWork: DispatchWorkItem?
     private var busy = false
@@ -798,6 +800,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: settle)
         let (s, module) = engine.session(config)
         session = s
+        sessionEngine = config.engine
         pendingMedia.session = s
         if holdForMedia { s.holdForMedia(); holdForMedia = false }
         startedAt = Date()
@@ -1285,8 +1288,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let releasedAt = Date()
         let handsFree = wasHandsFree
         wasHandsFree = false
-        // The engine this dictation used, for its day's numbers, even if Settings changes it while the words are written.
-        let engineName = config.engine
+        // The engine this dictation started with, for its day's numbers, even if Settings changes it before it's written.
+        let engineName = sessionEngine
         Task { [weak self] in
             guard let self else { return }
             // More audio after the key comes up, for a last syllable still in the air: half a second, or a tenth
