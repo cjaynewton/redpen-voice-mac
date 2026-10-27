@@ -3,6 +3,7 @@ import Carbon.HIToolbox
 import CoreText
 import SwiftUI
 import ServiceManagement
+import VoiceCore
 
 @MainActor
 final class SettingsModel: ObservableObject {
@@ -22,6 +23,8 @@ final class SettingsModel: ObservableObject {
     var back: () -> Void = {}
     /// Opens the history window (D-825).
     var showHistory: () -> Void = { NSWorkspace.shared.activateFileViewerSelecting([Config.historyURL]) }
+    /// All-time words and talking seconds from the stats, for the time-saved line (D-837).
+    var statsTotal: () -> (words: Int, seconds: Double) = { (0, 0) }
     private let engine: Transcriber
     private var fetchTask: Task<Void, Never>?
 
@@ -186,6 +189,8 @@ struct SettingsView: View {
                 talking
                 heading("Words it gets wrong")
                 wordsRow
+                heading("Time saved")
+                typingRow
                 footer
             }
             .padding(.horizontal, 36).padding(.top, 14).padding(.bottom, 26)
@@ -419,6 +424,19 @@ struct SettingsView: View {
             }
             Divider().overlay(Ink.line)
             row("Click at start and stop") { Toggle("", isOn: $model.config.sounds).labelsHidden().toggleStyle(.switch).tint(Ink.red) }
+        }
+    }
+
+    /// Your typing speed, next to the line it changes (D-837).
+    private var typingRow: some View {
+        let t = model.statsTotal()
+        let speed = Int(model.config.typingSpeed)
+        let saved = Score(words: t.words, seconds: t.seconds, typing: model.config.typingSpeed).minutesSaved
+        let choices = Array(stride(from: 20, through: 120, by: 10)) + (speed % 10 == 0 ? [] : [speed])
+        return row("Your typing speed", "\(Score.savedText(saved)) saved so far, compared with typing at \(speed) words a minute.") {
+            Picker("", selection: Binding(get: { speed }, set: { model.config.typingWPM = $0 })) {
+                ForEach(choices.sorted(), id: \.self) { Text("\($0) words a minute").tag($0) }
+            }.labelsHidden().frame(width: 220, alignment: .trailing)
         }
     }
 

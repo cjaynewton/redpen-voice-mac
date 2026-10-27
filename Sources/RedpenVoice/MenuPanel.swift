@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import VoiceCore
 
 /// What the menu bar panel shows. Rebuilt by the app whenever something changes; the panel just draws it.
 struct MenuState {
@@ -34,6 +35,7 @@ final class MenuModel: ObservableObject {
     var words: () -> Void = {}
     var settings: () -> Void = {}
     var history: () -> Void = {}
+    var stats: () -> Void = {}
     var updates: () -> Void = {}
 }
 
@@ -51,6 +53,7 @@ struct MenuPanel: View {
             rule
             action("Paste last dictation", keys: "⌃⌥V", model.paste).disabled(s.last == nil)
             action("History…", model.history)
+            action("Stats…", model.stats)
             action("Transcribe a file…", model.file)
             action("Settings…", keys: "⌘,", model.settings).keyboardShortcut(",", modifiers: .command)
             action(s.update.map { "Install version \($0)…" } ?? "Check for updates…", red: s.update != nil, model.updates)
@@ -72,8 +75,10 @@ struct MenuPanel: View {
                     Text(s.ready ? "Ready on \(s.engine)" : s.status).font(.system(size: 12)).foregroundStyle(Ink.mid)
                 }
             }
-            Text("\(s.todayWords.formatted()) words today, \(s.todaySaved) min saved")
-                .font(.system(size: 12.5)).foregroundStyle(Ink.dim)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(todayLine).foregroundStyle(Ink.mid)
+                Text("All time: \(s.totalWords.formatted()) words, \(Score.savedText(s.totalSaved)) saved").foregroundStyle(Ink.dim)
+            }.font(.system(size: 12.5)).monospacedDigit()
             if let w = s.warning {
                 Text(w).font(.system(size: 12, weight: .medium)).foregroundStyle(Ink.red).fixedSize(horizontal: false, vertical: true)
             }
@@ -81,6 +86,12 @@ struct MenuPanel: View {
                 Text(s.talk).font(.system(size: 12)).foregroundStyle(Ink.dim).fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    /// "412 words today · 128 wpm · 9 min saved"; the speed is left out until there is one.
+    private var todayLine: String {
+        let words = "\(s.todayWords.formatted()) \(s.todayWords == 1 ? "word" : "words") today"
+        return ([words] + (s.todayWPM > 0 ? ["\(s.todayWPM) wpm"] : []) + ["\(Score.savedText(s.todaySaved)) saved"]).joined(separator: " · ")
     }
 
     private var switches: some View {

@@ -20,6 +20,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let history = History(url: Config.historyURL)
     private var firstRun: FirstRunWindow?
     private var historyWindow: HistoryWindow?
+    /// Daily counts, numbers only (D-837), in their own file: the history's keep choice never touches them.
+    private let stats = StatsStore(url: Config.statsURL)
+    private var statsWindow: StatsWindow?
     /// The last dictation, in memory, for Paste last when nothing is kept on disk (D-825).
     private var lastSaid: Entry?
     private var settings: SettingsWindow?
@@ -82,6 +85,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         Config.ensureNamesFile()
+        // Once, before the history is trimmed: the counts from before stats.json existed carry over.
+        if stats.backfillIfNeeded(history.all()) { Log.note("stats: counted \(stats.days.reduce(0) { $0 + $1.dictations }) dictations from the history") }
         history.trim()
         history.apply(keep: config.historyKeep ?? "all")
         names = Names(text: Config.loadNames()); Insert.keepNames = Set(names.spellings)
@@ -391,6 +396,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Ink.registerFonts()
             NSApp.appearance = NSAppearance(named: CommandLine.arguments.contains("dark") ? .darkAqua : .aqua)
             let model = SettingsModel(config: config, engine: engine) { _ in }
+            model.statsTotal = { [stats] in let s = Stats.score(stats.days); return (s.words, s.seconds) }
             // `ready`: drawn as a Mac where the chosen engine has finished loading (for the README pictures).
             if CommandLine.arguments.contains("ready") { model.engineState = .ready }
             let v = NSHostingView(rootView: SettingsView(model: model).buttonBorderShape(.roundedRectangle(radius: 4)))
@@ -419,6 +425,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if CommandLine.arguments.contains("ready") { menu.state.ready = true; menu.state.status = "Ready"; menu.state.warning = nil }
             let v = NSHostingView(rootView: MenuPanel(model: menu))
             v.frame = NSRect(origin: .zero, size: v.fittingSize)
+            Self.shoot(v, to: CommandLine.arguments[i + 1])
+            return
+        }
+        // `--stats-shot out.png [dark]` draws the Stats window with made-up sample numbers, never the ones on this Mac.
+        if let i = CommandLine.arguments.firstIndex(of: "--stats-shot"), i + 1 < CommandLine.arguments.count {
+            Ink.registerFonts()
+            NSApp.appearance = NSAppearance(named: CommandLine.arguments.contains("dark") ? .darkAqua : .aqua)
+            let now = Date()
+            let sample = StatsModel.sample(now: now)
+            let model = StatsModel(typing: 40) { sample }; model.now = { now }
+            let v = NSHostingView(rootView: StatsView(model: model).buttonBorderShape(.roundedRectangle(radius: 4)))
+            v.frame = NSRect(x: 0, y: 0, width: StatsView.width, height: 728)
             Self.shoot(v, to: CommandLine.arguments[i + 1])
             return
         }
@@ -1351,6 +1369,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let keep = self.config.historyKeep ?? "all"
                 if keep != "none" { self.history.append(entry) }
                 if keep == "week" { self.history.apply(keep: keep) }
+                // The day's numbers are counted whatever is kept (D-837).
+                self.stats.add(words: entry.words, seconds: entry.seconds, engine: self.config.engine)
             }
             self.writing -= 1
             self.resumeMedia()
@@ -1377,6 +1397,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.setMode = { [weak self] m in self?.setMode(m) }
         menu.paste = { [weak self] in self?.fromPanel { $0.pasteLastNow() } }
         menu.history = { [weak self] in self?.panel.close(); self?.openHistory() }
+        menu.stats = { [weak self] in self?.panel.close(); self?.openStats() }
         menu.takeBack = { [weak self] in self?.fromPanel { $0.takeBack() } }
         menu.show = { [weak self] in self?.panel.close(); self?.showLast() }
         menu.file = { [weak self] in self?.panel.close(); self?.transcribeAFile() }
@@ -1406,7 +1427,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in if let self { act(self) } }
     }
 
-    private func refreshMenu() { menu.state = menuState() }
+    private func refreshMenu() {
+        menu.state = menuState()
+        if let m = statsWindow?.model { m.typing = config.typingSpeed; m.reload() }
+    }
 
     private func menuState() -> MenuState {
         var m = MenuState()
@@ -1425,7 +1449,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.talk = talk.summary ?? (talk.dictations > 0 ? "Learning how you talk: \(min(talk.dictations, TalkProfile.learnAfter)) of \(TalkProfile.learnAfter) dictations" : "")
         m.keyLine = "Hold \(keyNames) to talk." + ((config.doubleTap ?? true) ? " Tap twice to keep talking." : "")
         let all = history.all()
-        let today = Score.today(all), total = Score(all)
+        let today = Stats.today(stats.days, typing: config.typingSpeed), total = Stats.score(stats.days, typing: config.typingSpeed)
         m.todayWords = today.words; m.todayWPM = today.wordsPerMinute; m.todaySaved = today.minutesSaved
         m.totalWords = total.words; m.totalSaved = total.minutesSaved
         m.mode = config.mode
@@ -1611,6 +1635,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         historyWindow?.show()
     }
 
+    /// The Stats window (D-837), made once and kept.
+    private func openStats() {
+        if statsWindow == nil {
+            let m = StatsModel(typing: config.typingSpeed) { [weak self] in self?.stats.days ?? [] }
+            m.onReset = { [weak self] in
+                self?.stats.reset()
+                Log.note("stats: reset")
+                self?.refreshMenu()
+            }
+            m.openSettings = { [weak self] in self?.openSettings() }
+            statsWindow = StatsWindow(model: m)
+        }
+        statsWindow?.model.typing = config.typingSpeed
+        statsWindow?.show()
+    }
+
     /// Settings keeps its own copy and saves all of it on any change: give it the saved file as it is now, so a change
     /// made in the first window or the history window is never written back over.
     private func syncSettings() { settings?.model.config = Config.load() }
@@ -1634,6 +1674,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model.recordTest = { [weak self] in self?.toggleTestRecording() }
             model.back = { [weak self] in DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { self?.togglePanel() } }
             model.showHistory = { [weak self] in self?.openHistory() }
+            model.statsTotal = { [weak self] in let s = Stats.score(self?.stats.days ?? []); return (s.words, s.seconds) }
             settings = SettingsWindow(model: model)
         }
         settings?.show()

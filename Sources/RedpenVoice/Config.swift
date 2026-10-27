@@ -8,6 +8,8 @@ struct Config: Codable {
     static let url = dir.appendingPathComponent("config.json")
     static let namesURL = dir.appendingPathComponent("names.txt")
     static let historyURL = dir.appendingPathComponent("history.jsonl")
+    /// Daily counts, numbers only (D-837): its own file, so the history's keep choice never changes them.
+    static let statsURL = dir.appendingPathComponent("stats.json")
 
     /// "raw": your words as spoken. "noUms": only sounds like "um" and "uh" taken out, every word kept.
     /// "rewrite": filler and false starts removed and punctuation added by Apple's on-device model.
@@ -42,6 +44,10 @@ struct Config: Codable {
     var riskMarks: Bool?
     /// How long dictations are kept (D-825): "all" (the newest 2,000), "week", or "none". "all" when missing.
     var historyKeep: String?
+    /// Your typing speed in words a minute, the clock "minutes saved" is measured against (D-837). 40 when missing.
+    var typingWPM: Int?
+    /// Kept between 10 and 200 words a minute, whatever a hand-edited file says.
+    var typingSpeed: Double { Double(min(200, max(10, typingWPM ?? 40))) }
     /// "dictation" (Apple's dictation model, tuned for talking to a text field), "transcription" (Apple's general
     /// model), "whisper" (OpenAI's Whisper, downloaded once and run on this Mac, the most accurate), "live" (Instant:
     /// NVIDIA's Parakeet Unified, downloaded once, writes while you talk) or "parakeet" (Parakeet v2 on the whole
