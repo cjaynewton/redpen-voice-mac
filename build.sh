@@ -28,6 +28,8 @@ cp "$OUT/RedpenVoice" "$APP/Contents/MacOS/RedpenVoice"
 cp -R "$OUT/Sparkle.framework" "$APP/Contents/Frameworks/"
 rm -rf "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices" "$APP/Contents/Frameworks/Sparkle.framework/XPCServices"
 cp -R Resources/Fonts "$APP/Contents/Resources/Fonts"
+# The approved Gloock "r" and three bars (Resources/Icon/icon-source.html is the drawing).
+cp Resources/Icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -35,6 +37,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
   <key>CFBundleName</key><string>Redpen Voice</string>
   <key>CFBundleExecutable</key><string>RedpenVoice</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.11</string>
   <key>CFBundleVersion</key><string>11</string>

@@ -500,7 +500,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        status.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Redpen Voice")
+        status.button?.image = VoiceMenuBarIcon.image()
         status.button?.target = self
         status.button?.action = #selector(togglePanel)
         setUpPanel()

@@ -1,3 +1,5 @@
+<img src="docs/icon.png" alt="Redpen Voice app icon" width="96" height="96">
+
 # Redpen Voice for Mac
 
 A free, private dictation app for macOS, from the Redpen family of writing tools. Hold a key, talk, let go, and your words land where the cursor is, in almost any app.
