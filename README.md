@@ -19,7 +19,7 @@ Everything runs on your Mac. Your voice is never sent anywhere.
 
 3. **Moved somewhere else while it wrote?** The words never go into the wrong box. They wait until you're back in the one you started in, and Control-Option-V pastes them anywhere.
 
-   <img src="docs/screenshots/bar-saved.png" alt="The bar saying the words are saved for Chrome and go in when you are back in that box, or with Control-Option-V" width="460">
+   <img src="docs/screenshots/bar-saved.png" alt="The bar saying the words are saved for Chrome and go in when you are back in that box, or with Control-Option-V" width="612">
 
 Tap the key twice to keep talking with your hands free, and tap once more to finish.
 
