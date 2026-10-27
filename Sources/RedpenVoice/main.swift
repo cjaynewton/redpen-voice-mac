@@ -19,6 +19,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hud = HUD()
     private let history = History(url: Config.historyURL)
     private var firstRun: FirstRunWindow?
+    private var historyWindow: HistoryWindow?
+    /// The last dictation, in memory, for Paste last when nothing is kept on disk (D-825).
+    private var lastSaid: Entry?
     private var settings: SettingsWindow?
     private var session: Transcriber.Session?
     private var startedAt = Date()
@@ -80,6 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         Config.ensureNamesFile()
         history.trim()
+        history.apply(keep: config.historyKeep ?? "all")
         names = Names(text: Config.loadNames()); Insert.keepNames = Set(names.spellings)
         engine.onState = { [weak self] s in
             self?.refreshMenu()
@@ -332,6 +336,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } else { print("box-test: not the rv-box-test page, the box is left as it is") }
             exit(0)
         }
+        // `--paste-test out.txt` checks the backup route on a real app (D-825): a new TextEdit document in front, the
+        // text pasted in, read back, and the clipboard checked to be exactly what it was before.
+        if let i = CommandLine.arguments.firstIndex(of: "--paste-test"), i + 1 < CommandLine.arguments.count {
+            let out = CommandLine.arguments[i + 1]
+            let before = NSWorkspace.shared.frontmostApplication
+            let clip = ClipboardSnapshot.take()
+            let doc = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("rv-paste-test-\(UUID().uuidString.prefix(6)).txt")
+            try? "".write(to: doc, atomically: true, encoding: .utf8)
+            NSWorkspace.shared.open([doc], withApplicationAt: URL(fileURLWithPath: "/System/Applications/TextEdit.app"), configuration: NSWorkspace.OpenConfiguration())
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                var lines: [String] = []
+                let te = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.TextEdit").first
+                te?.activate()
+                usleep(600_000)
+                // Only into the test document: anything else in front and nothing is pasted.
+                func attr(_ e: AXUIElement, _ k: String) -> CFTypeRef? { var v: CFTypeRef?; return AXUIElementCopyAttributeValue(e, k as CFString, &v) == .success ? v : nil }
+                var ok = false
+                if let pid = te?.processIdentifier, NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+                   let f = attr(AXUIElementCreateApplication(pid), kAXFocusedUIElementAttribute),
+                   let w = attr(f as! AXUIElement, kAXWindowAttribute), ((attr(w as! AXUIElement, kAXTitleAttribute) as? String) ?? "").contains("rv-paste-test") {
+                    let el = f as! AXUIElement
+                    lines.append("pasted: \(Insert.paste("Pasted by the backup route."))")
+                    usleep(400_000)
+                    lines.append("box now: \((Insert.value(el) ?? "?").debugDescription)")
+                    ok = true
+                } else { lines.append("refused: the test document wasn't in front") }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    lines.append("clipboard back exactly as before: \(clip.matches())")
+                    let close = NSAppleScript(source: "tell application \"TextEdit\" to close (every document whose name starts with \"rv-paste-test\") saving no")
+                    close?.executeAndReturnError(nil)
+                    try? FileManager.default.removeItem(at: doc)
+                    before?.activate()
+                    lines.append(ok ? "done" : "not run")
+                    try? lines.joined(separator: "\n").write(toFile: out, atomically: true, encoding: .utf8)
+                    exit(0)
+                }
+            }
+            return
+        }
         if CommandLine.arguments.contains("--media-check") {
             let players = Media.playingApps()
             SoundTap.loudness(of: players.map(\.object), for: 0.25) { peak in
@@ -376,14 +419,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Self.shoot(v, to: CommandLine.arguments[i + 1])
             return
         }
+        // `--history-shot out.png [dark]` draws the history window with the history in the folder in use (README).
+        if let i = CommandLine.arguments.firstIndex(of: "--history-shot"), i + 1 < CommandLine.arguments.count {
+            Ink.registerFonts()
+            NSApp.appearance = NSAppearance(named: CommandLine.arguments.contains("dark") ? .darkAqua : .aqua)
+            let model = HistoryModel(history: history, keep: config.historyKeep ?? "all"); model.reload()
+            model.entries = Array(model.entries.prefix(5))
+            let v = NSHostingView(rootView: HistoryView(model: model, eager: true).buttonBorderShape(.roundedRectangle(radius: 4)))
+            v.frame = NSRect(x: 0, y: 0, width: 560, height: 600)
+            Self.shoot(v, to: CommandLine.arguments[i + 1])
+            return
+        }
         // `--firstrun-shot out.png [dark]` draws the first-run window as a new Mac sees it, nothing allowed yet.
         if let i = CommandLine.arguments.firstIndex(of: "--firstrun-shot"), i + 1 < CommandLine.arguments.count {
             Ink.registerFonts()
             NSApp.appearance = NSAppearance(named: CommandLine.arguments.contains("dark") ? .darkAqua : .aqua)
-            let model = FirstRunModel(config: config, engineState: { "ready" })
-            model.mic = false; model.access = false; model.fnOK = true
+            // Drawn after a newcomer has set up and said the practice sentence (`fresh`: before anything is allowed).
+            let host = FirstRunHost(engineState: { "ready" }, micName: { "MacBook Pro Microphone" }, watchLevel: { _ in }, stopLevel: {},
+                                    setMic: { _ in }, setTalkKey: { _ in }, restartKeys: {}, relaunch: {}, openSettings: {})
+            let model = FirstRunModel(config: config, host: host)
+            model.fnProblem = nil; model.micName = "MacBook Pro Microphone"; model.engine = "ready"
+            if CommandLine.arguments.contains("fresh") {
+                model.mic = .notDetermined; model.access = false
+            } else if CommandLine.arguments.contains("fn") {
+                model.mic = .authorized; model.access = true; model.level = 0.4; model.fnProblem = "Fn also starts Apple's dictation"
+            } else {
+                model.mic = .authorized; model.access = true; model.level = 0.62; model.keySeen = true
+                model.practice = "Redpen Voice is ready to go."; model.practiced = true
+            }
             let v = NSHostingView(rootView: FirstRunView(model: model).buttonBorderShape(.roundedRectangle(radius: 4)))
-            v.frame = NSRect(origin: .zero, size: v.fittingSize)
+            v.frame = NSRect(x: 0, y: 0, width: 540, height: 700)
             Self.shoot(v, to: CommandLine.arguments[i + 1])
             return
         }
@@ -431,6 +496,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pasteKey = Shortcut(id: 1, keyCode: kVK_ANSI_V, name: "Control-Option-V") { [weak self] in self?.pasteLastNow() }
         undoKey = Shortcut(id: 2, keyCode: kVK_ANSI_Z, name: "Control-Option-Z") { [weak self] in self?.takeBack() }
         updateSwapKey()
+        installWatches()
+        if !config.firstRunDone || !AXIsProcessTrusted() {
+            let w = FirstRunWindow(config: config, host: firstRunHost())
+            w.onDone = { [weak self] in guard let self else { return }; self.config = Config.load(); self.syncSettings(); self.refreshMenu(); self.warmMic() }
+            firstRun = w
+            w.show()
+        }
+        // One copy at a time: a second one (opened by hand while the watchdog reopens it) goes quietly.
+        // The loser leaves no quit note: the note is per copy, and the running copy's watchdog must still guard it.
+        if !Watchdog.takeLock() { Log.note("another copy is running, this one quits"); exit(0) }
+        Watchdog.start()
+        restarted = CommandLine.arguments.contains("--restarted")
+        Updates.shared.start()
+        updateWatch = Updates.shared.$waiting.sink { [weak self] _ in DispatchQueue.main.async { self?.refreshMenu() } }
+        Log.note("launched")
+    }
+
+    /// Watches for your own typing and clicks. Set up again when Accessibility arrives (watchers made before it can
+    /// stay deaf).
+    private func installWatches() {
+        if let t = typingWatch { NSEvent.removeMonitor(t) }
+        if let c = clickWatch { NSEvent.removeMonitor(c) }
         // Any key you type yourself after a dictation means take-back must not guess. Our own typing is skipped.
         let me = Int64(ProcessInfo.processInfo.processIdentifier)
         typingWatch = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] e in
@@ -445,20 +532,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         clickWatch = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             MainActor.assumeIsolated { self?.userActedAt = Date() }
         }
-        if !config.firstRunDone || !AXIsProcessTrusted() {
-            let w = FirstRunWindow(config: config, engineState: { [weak self] in self?.engineWord ?? "" })
-            w.onDone = { [weak self] in guard let self else { return }; self.config = Config.load(); self.refreshMenu(); self.warmMic() }
-            firstRun = w
-            w.show()
-        }
-        // One copy at a time: a second one (opened by hand while the watchdog reopens it) goes quietly.
-        // The loser leaves no quit note: the note is per copy, and the running copy's watchdog must still guard it.
-        if !Watchdog.takeLock() { Log.note("another copy is running, this one quits"); exit(0) }
-        Watchdog.start()
-        restarted = CommandLine.arguments.contains("--restarted")
-        Updates.shared.start()
-        updateWatch = Updates.shared.$waiting.sink { [weak self] _ in DispatchQueue.main.async { self?.refreshMenu() } }
-        Log.note("launched")
+    }
+
+    /// What the first window needs (D-825).
+    private func firstRunHost() -> FirstRunHost {
+        FirstRunHost(
+            engineState: { [weak self] in self?.engineWord ?? "" },
+            micName: { [weak self] in self?.recorder.inputName ?? "" },
+            watchLevel: { [weak self] f in
+                guard let self else { return }
+                if self.recorder.inputName.isEmpty {
+                    let fmt = self.engine.audioFormat ?? AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
+                    do { try self.recorder.start(format: fmt) } catch { Log.note("first run: mic failed \(error.localizedDescription)") }
+                }
+                self.recorder.watchLevel(f)
+            },
+            stopLevel: { [weak self] in self?.recorder.watchLevel(nil) },
+            setMic: { [weak self] uid in
+                guard let self else { return }
+                self.config.inputDevice = uid; self.recorder.deviceUID = uid; self.syncSettings()
+                let fmt = self.engine.audioFormat ?? AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
+                do { try self.recorder.start(format: fmt) } catch { Log.note("first run: mic failed \(error.localizedDescription)") }
+            },
+            setTalkKey: { [weak self] choice in
+                guard let self else { return }
+                self.config.talkKey = choice; self.keys.keys = HoldKey.keys(for: choice); self.syncSettings(); self.refreshMenu()
+            },
+            restartKeys: { [weak self] in
+                guard let self else { return }
+                self.keys.restart(); self.installWatches()
+                Log.note("first run: Accessibility arrived, key watchers set up again")
+            },
+            relaunch: { [weak self] in self?.relaunch() },
+            openSettings: { [weak self] in self?.openSettings() }
+        )
+    }
+
+    /// Opens a fresh copy and quits this one: a clean quit (the watchdog stays quiet), the new copy starts after.
+    private func relaunch() {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        // The app's path goes in as an argument, never inside the command text.
+        p.arguments = ["-c", "sleep 1.5; /usr/bin/open \"$0\"", Bundle.main.bundlePath]
+        try? p.run()
+        Log.note("first run: restarting")
+        NSApp.terminate(nil)
     }
 
     /// Quit asked while you are talking: finish the dictation and write the words first, then go.
@@ -554,6 +672,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func begin() {
         guard !busy, session == nil, testFile == nil else { return }
+        if firstRun?.isOpen == true { firstRun?.keySeen() }
         guard engine.state == .ready, let format = engine.audioFormat else { hud.flash(engineWord == "ready" ? "Not ready" : "Engine " + engineWord); return }
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { hud.flash("Allow the microphone"); return }
         remicIfDefaultMoved(reason: "input moved before this press")
@@ -1168,6 +1287,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if draftHandled {}
             else if text.isEmpty, self.delivery != gen { Log.note("no words, a new press began") }
             else if text.isEmpty { self.hud.flash(self.recorder.peak < 0.005 ? "No sound from \(self.recorder.inputName)" : "Didn't catch that", for: 2.5) }
+            else if self.firstRun?.isOpen == true, Insert.ownWindowInFront {
+                // Said into the first window: the practice sentence goes straight into it.
+                self.firstRun?.practiced(text); inserted = true; self.hud.hide()
+                Log.note("first run: practice sentence, \(text.split(separator: " ").count) words")
+            }
             else if s.echoFailed {
                 // A video was playing and its words couldn't be written down to take them off: nothing is typed.
                 self.hud.flash("A video was playing and its words couldn't be checked. Press ⌃⌥V to paste", for: 3.5)
@@ -1211,7 +1335,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.talk.save(AppDelegate.talkURL)
             }
             // A press that caught no words (a stray tap, a shortcut) leaves no history entry: 163 of 553 were empty.
-            if !text.isEmpty { self.history.append(Entry(raw: raw, cleaned: cleaned, seconds: seconds, app: app, inserted: inserted)) }
+            if !text.isEmpty {
+                let entry = Entry(raw: raw, cleaned: cleaned, seconds: seconds, app: app, inserted: inserted)
+                self.lastSaid = entry
+                // How long it's kept is your choice (D-825): nothing at all, the last week, or the newest 2,000.
+                let keep = self.config.historyKeep ?? "all"
+                if keep != "none" { self.history.append(entry) }
+                if keep == "week" { self.history.apply(keep: keep) }
+            }
             self.writing -= 1
             self.resumeMedia()
             Log.note("dictation \(Log.int(seconds))s, \(raw.split(separator: " ").count) words, write \(Log.ms(Date().timeIntervalSince(t0)))ms, engine \(engineMs)ms, key up to done \(Log.ms(Date().timeIntervalSince(releasedAt)))ms, into \(app), inserted \(inserted)")
@@ -1236,6 +1367,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.contentViewController = host
         menu.setMode = { [weak self] m in self?.setMode(m) }
         menu.paste = { [weak self] in self?.fromPanel { $0.pasteLastNow() } }
+        menu.history = { [weak self] in self?.panel.close(); self?.openHistory() }
         menu.takeBack = { [weak self] in self?.fromPanel { $0.takeBack() } }
         menu.show = { [weak self] in self?.panel.close(); self?.showLast() }
         menu.file = { [weak self] in self?.panel.close(); self?.transcribeAFile() }
@@ -1288,7 +1420,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.todayWords = today.words; m.todayWPM = today.wordsPerMinute; m.todaySaved = today.minutesSaved
         m.totalWords = total.words; m.totalSaved = total.minutesSaved
         m.mode = config.mode
-        m.last = all.last.map(\.text)
+        m.last = (all.last ?? lastSaid).map(\.text)
         m.canTakeBack = Insert.last != nil
         m.testing = testFile != nil
         return m
@@ -1305,7 +1437,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Control-Option-V: the last dictation again, at the cursor.
     private func pasteLastNow() {
-        guard session == nil, let e = history.lastSpoken() else { hud.flash("Nothing to paste yet"); return }
+        guard session == nil, let e = history.lastSpoken() ?? lastSaid else { hud.flash("Nothing to paste yet"); return }
         stopWaiting()
         delivery += 1  // a dictation still being written won't start its own wait after this
         // Never type into a page or a video: there, letters are shortcuts.
@@ -1315,7 +1447,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Log.note("paste last: cursor not in a text box (\(focus.role))")
             return
         }
-        let ok = Insert.text(e.text)
+        // The backup route: a paste that puts your clipboard back, so it works where typing just failed (D-825).
+        let ok = Insert.paste(e.text)
         hud.flash(ok ? "Pasted" : "Could not paste", ok: ok)
         Log.note("paste last: \(ok)")
     }
@@ -1399,7 +1532,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showLast() {
-        guard let e = history.lastSpoken() else { return }
+        guard let e = history.lastSpoken() ?? lastSaid else { return }
         let a = NSAlert()
         a.messageText = "Last dictation"
         a.informativeText = (e.cleaned.map { "Rewrite:\n\($0)\n\nRaw:\n" } ?? "") + e.raw
@@ -1452,7 +1585,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func editNames() { Config.ensureNamesFile(); NSWorkspace.shared.open(Config.namesURL) }
 
+    /// The history window (D-825), made once and kept.
+    private func openHistory() {
+        if historyWindow == nil {
+            let m = HistoryModel(history: history, keep: config.historyKeep ?? "all")
+            m.onKeep = { [weak self] k in
+                guard let self else { return }
+                var c = Config.load(); c.historyKeep = k; c.save(); self.config.historyKeep = k; self.syncSettings()
+                self.history.apply(keep: k)
+                Log.note("history: keep \(k)")
+                self.refreshMenu()
+            }
+            historyWindow = HistoryWindow(model: m)
+        }
+        historyWindow?.show()
+    }
+
+    /// Settings keeps its own copy and saves all of it on any change: give it the saved file as it is now, so a change
+    /// made in the first window or the history window is never written back over.
+    private func syncSettings() { settings?.model.config = Config.load() }
+
     @objc private func openSettings() {
+        syncSettings()
         if settings == nil {
             let model = SettingsModel(config: config, engine: engine) { [weak self] c in
                 guard let self else { return }
@@ -1468,6 +1622,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             model.recordTest = { [weak self] in self?.toggleTestRecording() }
             model.back = { [weak self] in DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { self?.togglePanel() } }
+            model.showHistory = { [weak self] in self?.openHistory() }
             settings = SettingsWindow(model: model)
         }
         settings?.show()

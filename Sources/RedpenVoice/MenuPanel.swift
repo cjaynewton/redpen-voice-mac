@@ -33,6 +33,7 @@ final class MenuModel: ObservableObject {
     var test: () -> Void = {}
     var words: () -> Void = {}
     var settings: () -> Void = {}
+    var history: () -> Void = {}
     var updates: () -> Void = {}
 }
 
@@ -49,6 +50,7 @@ struct MenuPanel: View {
             switches.padding(.top, 16)
             rule
             action("Paste last dictation", keys: "⌃⌥V", model.paste).disabled(s.last == nil)
+            action("History…", model.history)
             action("Transcribe a file…", model.file)
             action("Settings…", keys: "⌘,", model.settings).keyboardShortcut(",", modifiers: .command)
             action(s.update.map { "Install version \($0)…" } ?? "Check for updates…", red: s.update != nil, model.updates)

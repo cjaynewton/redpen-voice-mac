@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 import VoiceCore
@@ -186,6 +187,48 @@ check("meaning.hyphenNumbers", Meaning.changed("send twenty-one copies today", "
 check("meaning.hyphenSame", Meaning.changed("send twenty-one copies", "Send twenty-one copies.") == nil)
 check("meaning.date", Meaning.changed("ship on 2026-10-11", "Ship on 2026-11-10.") == "number")
 check("meaning.dateSame", Meaning.changed("ship on 2026-10-11", "Ship on 2026-10-11.") == nil)
+
+// The clipboard, borrowed for a paste, comes back exactly: every item, every format, the same bytes (D-825).
+do {
+    let pb = NSPasteboard(name: NSPasteboard.Name("redpen-voice-test-\(UUID().uuidString)"))
+    pb.clearContents()
+    let a = NSPasteboardItem(); a.setString("first item", forType: .string); a.setData(Data([1, 2, 3, 255]), forType: NSPasteboard.PasteboardType("com.example.custom"))
+    let b = NSPasteboardItem(); b.setString("second", forType: .string); b.setData(Data("{\\rtf1 hi}".utf8), forType: .rtf)
+    pb.writeObjects([a, b])
+    let saved = ClipboardSnapshot.take(pb)
+    pb.clearContents(); pb.setString("the dictation", forType: .string)
+    check("clipboard.borrowed", !saved.matches(pb))
+    saved.restore(to: pb)
+    check("clipboard.restoredExactly", saved.matches(pb) && pb.pasteboardItems?.count == 2 && pb.pasteboardItems?.first?.data(forType: NSPasteboard.PasteboardType("com.example.custom")) == Data([1, 2, 3, 255]))
+    pb.clearContents()
+    let empty = ClipboardSnapshot.take(pb)
+    pb.setString("x", forType: .string); empty.restore(to: pb)
+    check("clipboard.emptyStaysEmpty", (pb.pasteboardItems ?? []).isEmpty)
+    pb.releaseGlobally()
+}
+
+// History window (D-825): keep a week, keep nothing, delete one, and the file stays readable only by you.
+do {
+    let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("rv-history-test-\(UUID().uuidString).jsonl")
+    let h = History(url: url)
+    let now = Date()
+    let old = Entry(date: now.addingTimeInterval(-9 * 24 * 3600), raw: "old one", seconds: 2, app: "Notes", inserted: true)
+    let recent = Entry(date: now.addingTimeInterval(-3600), raw: "recent one", seconds: 2, app: "Notes", inserted: true)
+    let newest = Entry(date: now, raw: "newest one", seconds: 2, app: "Mail", inserted: true)
+    for e in [old, recent, newest] { h.append(e) }
+    check("history.keepWeek", History.kept(h.all(), keep: "week", now: now).map(\.raw) == ["recent one", "newest one"])
+    check("history.keepNone", History.kept(h.all(), keep: "none", now: now).isEmpty)
+    check("history.keepAll", History.kept(h.all(), keep: "all", now: now).count == 3)
+    h.remove(recent)
+    check("history.removeOne", h.all().map(\.raw) == ["old one", "newest one"])
+    h.apply(keep: "week", now: now)
+    check("history.applyWeek", h.all().map(\.raw) == ["newest one"])
+    let perms = (try? FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int) ?? 0
+    check("history.private", perms == 0o600, String(perms, radix: 8))
+    h.apply(keep: "none", now: now)
+    check("history.applyNone", h.all().isEmpty)
+    try? FileManager.default.removeItem(at: url)
+}
 
 // Words worth a second look, where the engines disagree (D-817 test).
 let rk = RiskyWords.find(final: "So we should not ship it on Friday with three fixes", other: "So we should now ship it on Friday with free fixes", names: [])

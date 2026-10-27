@@ -20,6 +20,8 @@ final class SettingsModel: ObservableObject {
     var close: () -> Void = {}
     /// Back to the menu bar panel.
     var back: () -> Void = {}
+    /// Opens the history window (D-825).
+    var showHistory: () -> Void = { NSWorkspace.shared.activateFileViewerSelecting([Config.historyURL]) }
     private let engine: Transcriber
     private var fetchTask: Task<Void, Never>?
 
@@ -432,7 +434,7 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("\(model.dictationCount) dictations: their text is kept on this Mac (the last 2,000), never the sound.").foregroundStyle(Ink.dim)
-                Button("Show") { NSWorkspace.shared.activateFileViewerSelecting([Config.historyURL]) }.buttonStyle(.plain).foregroundStyle(Ink.red)
+                Button("Show") { model.showHistory() }.buttonStyle(.plain).foregroundStyle(Ink.red)
                 Spacer()
                 Text("Open at login").foregroundStyle(Ink.dim)
                 Toggle("", isOn: $model.openAtLogin).labelsHidden().toggleStyle(.switch).tint(Ink.red)

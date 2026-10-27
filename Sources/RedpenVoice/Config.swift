@@ -40,6 +40,8 @@ struct Config: Codable {
     /// Point out words to check (D-817, a test): where a second engine hears a "not", a number, a name or the first
     /// or last words differently, the bar shows it and ⌃⌥S swaps. Off when missing.
     var riskMarks: Bool?
+    /// How long dictations are kept (D-825): "all" (the newest 2,000), "week", or "none". "all" when missing.
+    var historyKeep: String?
     /// "dictation" (Apple's dictation model, tuned for talking to a text field), "transcription" (Apple's general
     /// model), "whisper" (OpenAI's Whisper, downloaded once and run on this Mac, the most accurate), "live" (Instant:
     /// NVIDIA's Parakeet Unified, downloaded once, writes while you talk) or "parakeet" (Parakeet v2 on the whole

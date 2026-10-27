@@ -71,6 +71,13 @@ final class HoldKey {
         Log.note("hold key watching (\(self.keys.map(\.name).joined(separator: ", ")), double tap \(doubleTap))")
     }
 
+    /// Sets the watchers up again. Watchers made before Accessibility was allowed can stay deaf after it is.
+    func restart() {
+        for m in monitors { NSEvent.removeMonitor(m) }
+        monitors.removeAll(); held.removeAll(); active = false
+        start()
+    }
+
     private func isTalkKey(_ code: Int) -> Bool { keys.contains { $0.code == code } }
 
     private func flagsChanged(_ e: NSEvent) {

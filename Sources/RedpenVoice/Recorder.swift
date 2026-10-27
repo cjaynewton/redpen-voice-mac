@@ -14,6 +14,9 @@ final class Recorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     private var ringFrames: AVAudioFrameCount = 0
     private var preRollFrames: AVAudioFrameCount = 0
     private var live: ((AVAudioPCMBuffer) -> Void)?
+    /// The level while nobody is talking, for the first window's microphone check. Called on the mic queue.
+    private var watcher: ((Float) -> Void)?
+    func watchLevel(_ f: ((Float) -> Void)?) { lock.lock(); watcher = f; lock.unlock() }
     private var level: ((Float) -> Void)?
     private var firstBuffer = true
     private(set) var inputName = ""
@@ -62,6 +65,8 @@ final class Recorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
         guard let target, let (buf, ch) = Recorder.pcm(sb, format: target, channels: channels) else { return }
         if firstBuffer { firstBuffer = false; Log.note("mic: first buffer \(buf.frameLength) frames, reading channel \(ch + 1) of \(channels)") }
         if let level { level(Recorder.loudness(buf)) }
+        lock.lock(); let watching = watcher; lock.unlock()
+        watching?(Recorder.loudness(buf))
         lock.lock()
         if let live {
             pushedFrames += buf.frameLength

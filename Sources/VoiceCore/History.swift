@@ -47,9 +47,39 @@ public struct History {
     public func trim(to cap: Int = History.cap) {
         let items = all()
         guard items.count > cap else { return }
-        let keep = items.suffix(cap)
+        rewrite(Array(items.suffix(cap)))
+    }
+
+    /// Writes the file anew with these entries, readable only by you (the same as when it was first made).
+    public func rewrite(_ items: [Entry]) {
         let enc = JSONEncoder()
-        let body = keep.compactMap { try? enc.encode($0) }.map { String(decoding: $0, as: UTF8.self) }.joined(separator: "\n") + "\n"
-        try? body.write(to: url, atomically: true, encoding: .utf8)
+        let body = items.compactMap { try? enc.encode($0) }.map { String(decoding: $0, as: UTF8.self) }.joined(separator: "\n")
+        let data = Data((body.isEmpty ? "" : body + "\n").utf8)
+        try? data.write(to: url, options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    /// Removes one dictation (D-825, the history window).
+    public func remove(_ e: Entry) {
+        var items = all()
+        guard let i = items.firstIndex(of: e) else { return }
+        items.remove(at: i)
+        rewrite(items)
+    }
+
+    /// How long dictations are kept (D-825): "all" (the newest 2,000), "week" (the last seven days) or "none".
+    public static func kept(_ items: [Entry], keep: String, now: Date = Date()) -> [Entry] {
+        switch keep {
+        case "none": return []
+        case "week": return items.filter { now.timeIntervalSince($0.date) <= 7 * 24 * 3600 }
+        default: return Array(items.suffix(cap))
+        }
+    }
+
+    /// Applies the choice to the file now, rewriting it only when something goes.
+    public func apply(keep: String, now: Date = Date()) {
+        let items = all()
+        let k = History.kept(items, keep: keep, now: now)
+        if k.count != items.count { rewrite(k) }
     }
 }
