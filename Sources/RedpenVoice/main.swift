@@ -529,7 +529,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // history is trimmed to what you chose to keep.
         stats.reload()
         if let p = stats.problem { Log.note("stats: \(p)") }
-        if stats.backfillIfNeeded(history.all()) { Log.note("stats: counted \(stats.days.reduce(0) { $0 + $1.dictations }) dictations from the history") }
+        if !stats.backfilled {
+            let saved = stats.backfillIfNeeded(history.all())
+            Log.note("stats: counted \(stats.days.reduce(0) { $0 + $1.dictations }) dictations from the history" + (saved ? "" : ", not saved yet (stats.json couldn't be written)"))
+        }
         history.trim()
         history.apply(keep: config.historyKeep ?? "all")
         refreshMenu()
@@ -1282,6 +1285,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let releasedAt = Date()
         let handsFree = wasHandsFree
         wasHandsFree = false
+        // The engine this dictation used, for its day's numbers, even if Settings changes it while the words are written.
+        let engineName = config.engine
         Task { [weak self] in
             guard let self else { return }
             // More audio after the key comes up, for a last syllable still in the air: half a second, or a tenth
@@ -1373,7 +1378,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.lastSaid = entry
                 // How long it's kept is your choice (D-825): nothing at all, the last week, or the newest 2,000.
                 // The day's numbers are counted whatever is kept (D-837).
-                Dictations.record(entry, keep: self.config.historyKeep ?? "all", history: self.history, stats: self.stats, engine: self.config.engine)
+                Dictations.record(entry, keep: self.config.historyKeep ?? "all", history: self.history, stats: self.stats, engine: engineName)
             }
             self.writing -= 1
             self.resumeMedia()
