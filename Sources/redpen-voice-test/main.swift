@@ -328,7 +328,24 @@ do {
     let lsBackfill = ls.backfillIfNeeded(h.all(), calendar: cal)
     try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: lockedURL.path)
     check("stats.unreadableNotWritten", !ls.writable && !lsReset && (try? String(contentsOf: lockedURL, encoding: .utf8)) == "{\"backfilled\":true,\"days\":[],\"version\":1}")
-    check("stats.unreadableBackfillNotMarked", !lsBackfill && !ls.backfilled)
+    check("stats.unreadableBackfillNotSaved", !lsBackfill)
+    // A backfill that can't be saved stays in memory and lands with the next count; reopened, nothing is counted twice.
+    let ro = dir.appendingPathComponent("readonly"); try? FileManager.default.createDirectory(at: ro, withIntermediateDirectories: true)
+    let roURL = ro.appendingPathComponent("stats.json")
+    let roHistory = [Entry(date: yesterday, raw: "one two three", seconds: 2, app: "Notes", inserted: true)]
+    try? FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: ro.path)
+    let rs = StatsStore(url: roURL)
+    let roSaved = rs.backfillIfNeeded(roHistory, calendar: cal)
+    try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: ro.path)
+    check("stats.backfillUnsaved", !roSaved && !FileManager.default.fileExists(atPath: roURL.path) && Stats.score(rs.days).words == 3)
+    rs.add(words: 4, seconds: 2, engine: "whisper", date: now, calendar: cal)
+    let roReopened = StatsStore(url: roURL)
+    check("stats.backfillLandsWithNextCount", roReopened.backfilled && Stats.score(roReopened.days).words == 7 && !roReopened.backfillIfNeeded(roHistory, calendar: cal) && Stats.score(roReopened.days).words == 7)
+    // Not loaded yet: writes nothing until read.
+    let deferredURL = dir.appendingPathComponent("deferred.json")
+    let deferred = StatsStore(url: deferredURL, load: false)
+    deferred.add(words: 3, seconds: 1, engine: "whisper", date: now, calendar: cal)
+    check("stats.deferredWritesNothing", !FileManager.default.fileExists(atPath: deferredURL.path))
     try? FileManager.default.removeItem(at: dir)
 }
 

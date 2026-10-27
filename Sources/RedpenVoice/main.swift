@@ -21,7 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var firstRun: FirstRunWindow?
     private var historyWindow: HistoryWindow?
     /// Daily counts, numbers only (D-837), in their own file: the history's keep choice never touches them.
-    private let stats = StatsStore(url: Config.statsURL)
+    private let stats = StatsStore(url: Config.statsURL, load: false)
     private var statsWindow: StatsWindow?
     /// The last dictation, in memory, for Paste last when nothing is kept on disk (D-825).
     private var lastSaid: Entry?
@@ -97,10 +97,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         Config.ensureNamesFile()
-        // Once, before the history is trimmed: the counts from before stats.json existed carry over.
-        if stats.backfillIfNeeded(history.all()) { Log.note("stats: counted \(stats.days.reduce(0) { $0 + $1.dictations }) dictations from the history") }
-        history.trim()
-        history.apply(keep: config.historyKeep ?? "all")
         names = Names(text: Config.loadNames()); Insert.keepNames = Set(names.spellings)
         engine.onState = { [weak self] s in
             self?.refreshMenu()
@@ -408,6 +404,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Ink.registerFonts()
             NSApp.appearance = NSAppearance(named: CommandLine.arguments.contains("dark") ? .darkAqua : .aqua)
             let model = SettingsModel(config: config, engine: engine) { _ in }
+            stats.reload()
             model.statsTotal = { [stats] in let s = Stats.score(stats.days); return (s.words, s.seconds) }
             // `ready`: drawn as a Mac where the chosen engine has finished loading (for the README pictures).
             if CommandLine.arguments.contains("ready") { model.engineState = .ready }
@@ -432,6 +429,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let i = CommandLine.arguments.firstIndex(of: "--menu-shot"), i + 1 < CommandLine.arguments.count {
             Ink.registerFonts()
             NSApp.appearance = NSAppearance(named: CommandLine.arguments.contains("dark") ? .darkAqua : .aqua)
+            stats.reload()
             menu.state = menuState()
             // `ready`: drawn as a set-up Mac (engine loaded, Fn key already set), for the README pictures.
             if CommandLine.arguments.contains("ready") { menu.state.ready = true; menu.state.status = "Ready"; menu.state.warning = nil }
@@ -527,9 +525,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // One copy at a time: a second one (opened by hand while the watchdog reopens it) goes quietly.
         // The loser leaves no quit note: the note is per copy, and the running copy's watchdog must still guard it.
         if !Watchdog.takeLock() { Log.note("another copy is running, this one quits"); exit(0) }
-        // Read again now that this is the only copy: another may have counted a dictation since launch began.
+        // Stats are read only now that this is the only copy (D-837), and counted from the history once, before the
+        // history is trimmed to what you chose to keep.
         stats.reload()
         if let p = stats.problem { Log.note("stats: \(p)") }
+        if stats.backfillIfNeeded(history.all()) { Log.note("stats: counted \(stats.days.reduce(0) { $0 + $1.dictations }) dictations from the history") }
+        history.trim()
+        history.apply(keep: config.historyKeep ?? "all")
+        refreshMenu()
         Watchdog.start()
         restarted = CommandLine.arguments.contains("--restarted")
         Updates.shared.start()

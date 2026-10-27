@@ -32,9 +32,11 @@ public final class StatsStore {
     /// What went wrong with the file, said plainly, for the log.
     public private(set) var problem: String?
 
-    public init(url: URL) {
+    /// `load: false` makes an empty store that writes nothing until `reload()`: the app reads it only once it knows
+    /// it's the one copy running.
+    public init(url: URL, load: Bool = true) {
         self.url = url
-        reload()
+        if load { reload() } else { writable = false }
     }
 
     public var days: [DayStats] { file.days }
@@ -72,18 +74,17 @@ public final class StatsStore {
     }
 
     /// The first time only: counts the dictations already in the history, so today's and all-time numbers carry over.
-    /// Presses that caught no words are skipped, the same as a new dictation. Returns whether it ran.
+    /// Presses that caught no words are skipped, the same as a new dictation. Returns whether it ran and was saved.
     @discardableResult
     public func backfillIfNeeded(_ entries: [Entry], calendar: Calendar = .current) -> Bool {
         guard !file.backfilled else { return false }
-        let before = file
         for e in entries where !e.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             tally(&file.days, day: StatsStore.key(e.date, calendar: calendar), engine: "unknown", words: e.words, seconds: e.seconds)
         }
         file.backfilled = true
-        // Not saved: counted again next time rather than marked done and lost.
-        if !save() { file = before; return false }
-        return true
+        // Not saved yet: kept in memory and written with the next dictation's count, so the two land together. Until
+        // then nothing on disk says it was done, and the next launch counts the history afresh.
+        return save()
     }
 
     /// Every count back to zero. The history is never counted again. False, and nothing changed, if it can't be saved.
