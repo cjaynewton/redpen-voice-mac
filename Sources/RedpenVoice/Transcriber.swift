@@ -105,7 +105,7 @@ final class Transcriber {
         set(.checking)
         if config.engine == "whisper" {
             await prepareWhisper()
-            if config.draftMode == true { await loadDraftEngine() }
+            if config.draftMode == true || config.riskMarks == true { await loadDraftEngine() }
             return
         }
         if config.engine == "parakeet" { await prepareParakeet(); return }
@@ -200,6 +200,12 @@ final class Transcriber {
             set(.checking)
             Task { await prepareLive() }
         }
+    }
+
+    /// A second hearing of the same audio, for pointing out words to check (D-817): Parakeet, about 0.15 s.
+    func otherHearing(_ audio: [Float]) async -> String? {
+        guard let parakeet else { return nil }
+        return try? await Self.parakeetText(parakeet, audio)
     }
 
     /// Fast draft, Whisper checks: Parakeet loaded beside Whisper, without changing the engine in use.
@@ -501,7 +507,7 @@ final class Transcriber {
                     // The cut moves only once the piece is written: a failed piece stays in the audio still to do,
                     // so the ending picks it up instead of losing it.
                     do {
-                        let text = try await Transcriber.whisperText(whisper, Array(audio[cut..<c]), prompt: Transcriber.prompt(hints, carry ? pieces.last : nil))
+                        let text = await echoStripped(try await Transcriber.whisperText(whisper, Array(audio[cut..<c]), prompt: Transcriber.prompt(hints, carry ? pieces.last : nil)))
                         cut = c
                         if !text.isEmpty { pieces.append(text); onPiece?(text) }
                     } catch { Log.note("engine: a piece failed, it will be written with the ending") }
@@ -518,6 +524,37 @@ final class Transcriber {
         var recorded: [Float] { lock.withLock { samples } }
 
         private let parakeet: AsrManager?
+
+        // MARK: The video's words (D-817)
+        /// What the paused app played, written down; its words come off the start of the dictation, once, instead
+        /// of blanking the first second (which lost your first words when you started over the video).
+        private var echoTask: Task<String, Never>?
+        private var echoAudio: [Float]?
+        private var echoDone = false
+
+        /// Hands over what the paused app played, as 16 kHz mono.
+        func mediaEcho(_ played: [Float]) {
+            if live != nil { lock.withLock { echoAudio = played }; return }
+            let task: Task<String, Never>?
+            if let whisper { task = Task { (try? await Transcriber.whisperText(whisper, played)) ?? "" } }
+            else if let parakeet { task = Task { (try? await Transcriber.parakeetText(parakeet, played)) ?? "" } }
+            else { task = nil }
+            lock.withLock { echoTask = task }
+        }
+
+        /// The first words written lose the video's words, once.
+        fileprivate func echoStripped(_ text: String) async -> String {
+            guard !text.isEmpty, let task = lock.withLock({ echoDone ? nil : echoTask }) else { return text }
+            lock.withLock { echoDone = true }
+            return Self.logStrip(text, video: await task.value)
+        }
+
+        fileprivate static func logStrip(_ text: String, video: String) -> String {
+            let out = MediaEcho.strip(text, video: video)
+            let gone = text.split(separator: " ").count - out.split(separator: " ").count
+            Log.note("media: \(gone) of the video's words taken off the start (it said \(video.split(separator: " ").count))")
+            return out
+        }
 
         // MARK: Instant engine (D-816)
         /// Writes while you talk: new audio goes in about every 80 ms and its words go to the bar (`onPartial`), so
@@ -603,7 +640,13 @@ final class Transcriber {
                         }
                         try await feedLive(live)
                         let text = try await live.finish()
-                        if lock.withLock({ audioGeneration == generation }) { return text }
+                        if lock.withLock({ audioGeneration == generation }) {
+                            guard let played = lock.withLock({ echoAudio }), !played.isEmpty else { return text }
+                            // What the paused app played, written with the same engine, then taken off the start.
+                            try await live.reset()
+                            try await feedArray(live, played)
+                            return Self.logStrip(text, video: try await live.finish())
+                        }
                         lock.withLock { liveBroken = true }
                     } catch {
                         lock.withLock { liveBroken = true }
@@ -613,6 +656,15 @@ final class Transcriber {
                     if tries >= 3 { return try await live.finish() }
                 }
             }
+        }
+
+        private func feedArray(_ live: StreamingUnifiedAsrManager, _ a: [Float]) async throws {
+            guard !a.isEmpty, let f = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false),
+                  let b = AVAudioPCMBuffer(pcmFormat: f, frameCapacity: AVAudioFrameCount(a.count)) else { return }
+            b.frameLength = AVAudioFrameCount(a.count)
+            a.withUnsafeBufferPointer { b.floatChannelData![0].update(from: $0.baseAddress!, count: a.count) }
+            try await live.appendAudio(b)
+            try await live.processBufferedAudio()
         }
 
         /// Hands the audio not yet given to the Instant engine over to it.
@@ -676,7 +728,7 @@ final class Transcriber {
         /// and whatever it had is returned, so the app never hangs on "Writing".
         func finish() async throws -> String {
             feed.finish()
-            if let parakeet { return try await Transcriber.parakeetText(parakeet, lock.withLock { samples }) }
+            if let parakeet { return await echoStripped(try await Transcriber.parakeetText(parakeet, lock.withLock { samples })) }
             if live != nil {
                 lock.withLock { stopped = true; liveNap?.cancel() }
                 onPartial = nil
@@ -703,6 +755,9 @@ final class Transcriber {
                 return Silence.clean(text, peak: peak)
             }
             if let whisper {
+                // A quick release before Voice decided about a video: wait for that (2 s at most), so the video's
+                // words are still taken off.
+                while !settledForLoops { try? await Task.sleep(for: .milliseconds(20)) }
                 let (nap, guess, dnap) = lock.withLock { stopped = true; return (napping, guessing, draftNap) }
                 nap?.cancel(); guess?.cancel(); dnap?.cancel()
                 let f0 = Date()
@@ -725,8 +780,9 @@ final class Transcriber {
                         endingLost = true
                     }
                 }
-                if !tail.isEmpty { pieces.append(tail) }
-                lastTail = tail
+                let ending = await echoStripped(tail)
+                if !ending.isEmpty { pieces.append(ending) }
+                lastTail = ending
                 onPiece = nil; onDraft = nil; onCheck = nil
                 Log.note("engine finish: waited \(loopWait)ms for the stream, ending \(Log.ms(Date().timeIntervalSince(t0)))ms, \(pieces.count) pieces")
                 return pieces.joined(separator: " ")
@@ -806,7 +862,12 @@ final class Transcriber {
             s.push(buf)
             i += n
             if let t = silenceAt, Double(i) / 16000 >= t, Double(i - n) / 16000 < t {
-                s.silence(upTo: s.sampleAt(Date().addingTimeInterval(0.15)))
+                // VOICE_TAP=video.wav: what the paused app played; its words come off the start instead of blanking.
+                if let tap = ProcessInfo.processInfo.environment["VOICE_TAP"] {
+                    s.mediaEcho(try AudioProcessor.loadAudioAsFloatArray(fromPath: tap))
+                } else {
+                    s.silence(upTo: s.sampleAt(Date().addingTimeInterval(0.15)))
+                }
                 s.mediaSettled()
             }
             try await Task.sleep(for: .milliseconds(100))

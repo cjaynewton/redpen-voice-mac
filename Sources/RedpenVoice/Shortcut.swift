@@ -10,6 +10,9 @@ final class Shortcut {
     nonisolated(unsafe) private static var installed = false
     private var ref: EventHotKeyRef?
 
+    /// Lets go of the key, so a shortcut that's switched off stops taking it from other apps.
+    deinit { if let ref { UnregisterEventHotKey(ref) } }
+
     init(id: UInt32, keyCode: Int, modifiers: Int = controlKey | optionKey, name: String,
          action: @escaping () -> Void) {
         Shortcut.actions[id] = action

@@ -28,6 +28,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var press = 0
     private var pasteKey: Shortcut?
     private var undoKey: Shortcut?
+    /// ⌃⌥S, only while "Point out words to check" is on: swaps in the other engine's hearing of the marked word.
+    private var swapKey: Shortcut?
+    private var riskSwap: (swapped: String, gen: Int)?
     private var typingWatch: Any?
     private var clickWatch: Any?
     /// The last time you typed a key or clicked, to know that the end of the box is still Voice's own typing.
@@ -267,6 +270,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         // `--media-check` logs which apps hold the speakers and how loud the Mac is playing right now.
+        // `--tap-test pid seconds out.wav` records what one app plays through the same tap a dictation uses and writes
+        // the 16 kHz copy the engines hear, for checking that the video's words can be written down (D-817).
+        if let i = CommandLine.arguments.firstIndex(of: "--tap-test"), i + 3 < CommandLine.arguments.count,
+           var pid = pid_t(CommandLine.arguments[i + 1]), let secs = Double(CommandLine.arguments[i + 2]) {
+            let out = URL(fileURLWithPath: CommandLine.arguments[i + 3])
+            var obj = AudioObjectID(0), size = UInt32(MemoryLayout<AudioObjectID>.size)
+            var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyTranslatePIDToProcessObject,
+                                                  mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+            AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, UInt32(MemoryLayout<pid_t>.size), &pid, &size, &obj)
+            let rec = SoundTap.Recording()
+            SoundTap.loudness(of: [obj], for: secs, record: rec) { peak in
+                let a = rec.mono16k()
+                let fmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
+                if let f = try? AVAudioFile(forWriting: out, settings: fmt.settings), let b = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(max(1, a.count))) {
+                    b.frameLength = AVAudioFrameCount(a.count)
+                    a.withUnsafeBufferPointer { if let base = $0.baseAddress { b.floatChannelData![0].update(from: base, count: a.count) } }
+                    try? f.write(from: b)
+                }
+                print("tap-test: process \(obj), peak \(peak.map { String(format: "%.3f", $0) } ?? "none"), \(String(format: "%.2f", Double(a.count) / 16000)) s kept")
+                exit(0)
+            }
+            return
+        }
         if CommandLine.arguments.contains("--media-check") {
             let players = Media.playingApps()
             SoundTap.loudness(of: players.map(\.object), for: 0.25) { peak in
@@ -284,7 +310,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let w = NSWindow(contentRect: v.frame, styleMask: [.borderless], backing: .buffered, defer: false)
             w.contentView = v; v.layoutSubtreeIfNeeded(); v.display()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                if let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) {
+                // Twice the size, as a Retina screen shows it.
+                if let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(v.bounds.width * 2), pixelsHigh: Int(v.bounds.height * 2),
+                                              bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                              bytesPerRow: 0, bitsPerPixel: 0) {
+                    rep.size = v.bounds.size
                     v.cacheDisplay(in: v.bounds, to: rep)
                     try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: CommandLine.arguments[i + 1]))
                 }
@@ -353,6 +383,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         keys.start()
         pasteKey = Shortcut(id: 1, keyCode: kVK_ANSI_V, name: "Control-Option-V") { [weak self] in self?.pasteLastNow() }
         undoKey = Shortcut(id: 2, keyCode: kVK_ANSI_Z, name: "Control-Option-Z") { [weak self] in self?.takeBack() }
+        updateSwapKey()
         // Any key you type yourself after a dictation means take-back must not guess. Our own typing is skipped.
         let me = Int64(ProcessInfo.processInfo.processIdentifier)
         typingWatch = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] e in
@@ -401,9 +432,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var holdForMedia = false
 
     /// Calls back once the apps' sound has gone quiet (checked every tenth of a second), or after `tries` checks.
-    nonisolated static func waitForQuiet(_ apps: [AudioObjectID], tries: Int, done: @escaping @Sendable (Date) -> Void) {
-        SoundTap.loudness(of: apps, for: 0.1) { peak in
-            if !MediaGate.isPlaying(peak: peak) || tries <= 0 { done(Date()) } else { waitForQuiet(apps, tries: tries - 1, done: done) }
+    nonisolated static func waitForQuiet(_ apps: [AudioObjectID], tries: Int, record: SoundTap.Recording? = nil, done: @escaping @Sendable (Date) -> Void) {
+        SoundTap.loudness(of: apps, for: 0.1, record: record) { peak in
+            if !MediaGate.isPlaying(peak: peak) || tries <= 0 { done(Date()) } else { waitForQuiet(apps, tries: tries - 1, record: record, done: done) }
         }
     }
     /// Reopened by the watchdog after a crash: the bar says so once the engine is ready.
@@ -494,7 +525,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 holdForMedia = true
                 // Listen from the moment the key goes down; press pause no sooner than 0.3 s in, so a tap never does.
                 let pressedAt = Date()
-                SoundTap.loudness(of: players.map(\.object), for: 0.25) { peak in
+                // What the app plays from here until it goes quiet is kept, so its words can come off the start.
+                let played = SoundTap.Recording()
+                SoundTap.loudness(of: players.map(\.object), for: 0.25, record: played) { peak in
                     DispatchQueue.main.async { [weak self] in
                         let wait = max(0, 0.3 - Date().timeIntervalSince(pressedAt))
                         DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
@@ -507,8 +540,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             let pausedAt = Date()
                             // The video's own sound reached the mic until the pause took hold: listen for that app going
                             // quiet, then leave out everything before it, plus 0.15 s for the speakers and the room.
-                            Self.waitForQuiet(players.map(\.object), tries: 8) { quietAt in
+                            Self.waitForQuiet(players.map(\.object), tries: 8, record: played) { quietAt in
                                 DispatchQueue.main.async {
+                                    // Every word you said is kept and the video's words come off the start (D-817),
+                                    // when Voice heard the video and the engine can write it down. Otherwise the
+                                    // start is left out as before: the Mac's own engine, drafts typed as you talk,
+                                    // nothing heard, or Instant, which drops the rest of a dictation when two voices
+                                    // overlap (6 of 211 WildSpeech clips with other people talking, Oct 26 2026).
+                                    let audio = played.mono16k()
+                                    let canTakeOff = ["whisper", "parakeet"].contains(self.config.engine) && s.drafter == nil
+                                    if canTakeOff, played.peak > 0, audio.count > 1600 {
+                                        s.mediaEcho(audio)
+                                        s.mediaSettled()
+                                        Log.note("media: kept every word; the video's \(String(format: "%.1f", Double(audio.count) / 16000)) s will come off the start, quiet \(Log.ms(quietAt.timeIntervalSince(pausedAt)))ms after the pause")
+                                        return
+                                    }
                                     let cut = s.sampleAt(quietAt.addingTimeInterval(0.15))
                                     s.silence(upTo: cut)
                                     s.mediaSettled()
@@ -1041,6 +1087,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 } else {
                     inserted = rest.isEmpty ? true : Insert.text(rest, joining: typedLive > 0 ? gen : nil)
                     if inserted, !newer { self.fixWatch.watch(text) }
+                    if inserted, !newer, draftHandled == false { self.pointOutWords(text, audio: s.recorded, gen: gen) }
                     if !newer {
                         if inserted { if handsFree { self.hud.flash("Hands-free done", ok: true) } else { self.hud.hide() } }
                         else { self.hud.flash("Couldn't type it here. Press ⌃⌥V to paste", for: 2.5) }
@@ -1164,6 +1211,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.note("paste last: \(ok)")
     }
 
+    /// Point out words to check (D-817 test): a second engine hears the same audio after the words went in, so nothing
+    /// waits. Only a "not", a number, a name or the first or last three words, heard differently, is shown.
+    private func pointOutWords(_ text: String, audio: [Float], gen: Int) {
+        riskSwap = nil
+        guard config.engine == "whisper", config.riskMarks == true else { return }
+        Task { [weak self] in
+            guard let self, let other = await self.engine.otherHearing(audio) else { return }
+            let marks = RiskyWords.find(final: text, other: self.names.apply(other), names: Set(self.names.spellings))
+            self.fixWatch.marked = Set(marks.flatMap { $0.heard.lowercased().split(separator: " ").map(String.init) })
+            guard self.delivery == gen, self.session == nil, let m = marks.first else { Log.note("risk: nothing to check"); return }
+            self.riskSwap = (m.swapped, gen)
+            self.hud.flash("Check “\(m.heard)”, also heard “\(m.other)”. ⌃⌥S swaps", for: 4)
+            Log.note("risk: \(marks.count) to check (\(marks.map(\.kind).joined(separator: ", ")))")
+        }
+    }
+
+    /// ⌃⌥S: the last dictation out, the other hearing in, only while it is still the last thing typed.
+    private func swapRisky() {
+        guard session == nil, let r = riskSwap, r.gen == delivery else { hud.flash("Nothing to swap"); return }
+        riskSwap = nil
+        if let why = Insert.undoLast() { hud.flash(why, for: 2.5); Log.note("risk swap: \(why)"); return }
+        let ok = Insert.text(r.swapped)
+        hud.flash(ok ? "Swapped" : "Couldn't type it. Press ⌃⌥V to paste", ok: ok, for: ok ? 1.0 : 2.5)
+        Log.note("risk swap: \(ok)")
+    }
+
+    private func updateSwapKey() {
+        if config.riskMarks == true, config.engine == "whisper" {
+            if swapKey == nil { swapKey = Shortcut(id: 3, keyCode: kVK_ANSI_S, name: "Control-Option-S") { [weak self] in self?.swapRisky() } }
+        } else { swapKey = nil }
+    }
+
     /// Control-Option-Z: takes the last dictation back out, only when it is provably still the last thing typed.
     @objc private func takeBack() {
         guard session == nil else { return }
@@ -1260,13 +1339,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if settings == nil {
             let model = SettingsModel(config: config, engine: engine) { [weak self] c in
                 guard let self else { return }
-                let engineChanged = c.engine != self.config.engine || c.locale != self.config.locale || c.draftMode != self.config.draftMode
+                let engineChanged = c.engine != self.config.engine || c.locale != self.config.locale || c.draftMode != self.config.draftMode || c.riskMarks != self.config.riskMarks
                 let micChanged = c.inputDevice != self.config.inputDevice
                 self.config = c
                 Self.applyAppearance(c)
                 if micChanged { self.recorder.deviceUID = c.inputDevice; self.warmMic() }
                 self.keys.keys = HoldKey.keys(for: c.talkKeyChoice); self.keys.doubleTap = c.doubleTap ?? true
                 if engineChanged { Task { await self.engine.prepare(c) } }
+                self.updateSwapKey()
                 self.refreshMenu()
             }
             model.recordTest = { [weak self] in self?.toggleTestRecording() }

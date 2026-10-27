@@ -240,6 +240,10 @@ struct SettingsView: View {
                 }
             }
             if model.usesWhisper {
+                row("Point out words to check (test)", "When a second engine hears a “not”, a number, a name or your first or last words differently, the bar shows that word for a few seconds and ⌃⌥S swaps in the other version. Off while we test whether it helps.") {
+                    Toggle("", isOn: Binding(get: { model.config.riskMarks ?? false }, set: { model.config.riskMarks = $0 }))
+                        .labelsHidden().toggleStyle(.switch).tint(Ink.red)
+                }
                 row("Quick draft while Whisper works", "A rough draft types into the box as you talk; a moment later Whisper fixes any words it heard differently. It stops fixing the moment you click or type.") {
                     Toggle("", isOn: Binding(get: { model.config.draftMode ?? false }, set: { model.config.draftMode = $0 }))
                         .labelsHidden().toggleStyle(.switch).tint(Ink.red)
@@ -249,8 +253,8 @@ struct SettingsView: View {
             engineRow(on: model.usesInstant, dashed: !Transcriber.liveOnDisk, action: { model.config.engine = "live" }) {
                 title("Instant", "Parakeet")
                 note(Transcriber.liveOnDisk
-                     ? "Your words show in the bar as you talk and go in right after you let go, with no wait for writing. About 1 more word in 100 wrong than Whisper. English only."
-                     : "Your words show in the bar as you talk and go in right after you let go, with no wait for writing. About 1 more word in 100 wrong than Whisper. English only. A one-time 600 MB download the first time you pick it.")
+                     ? "Your words show in the bar as you talk and go in right after you let go, with no wait for writing. About 1 more word in 100 wrong than Whisper, and weaker when other people talk over you. English only."
+                     : "Your words show in the bar as you talk and go in right after you let go, with no wait for writing. About 1 more word in 100 wrong than Whisper, and weaker when other people talk over you. English only. A one-time 600 MB download the first time you pick it.")
             }
             Divider().overlay(Ink.line)
             engineRow(on: !model.usesWhisper && !model.usesInstant, dashed: false, action: { model.config.engine = "dictation" }) {
@@ -425,12 +429,16 @@ struct SettingsView: View {
     }
 
     private var footer: some View {
-        HStack {
-            Text("\(model.dictationCount) dictations, kept only on this Mac.").foregroundStyle(Ink.dim)
-            Button("Show") { NSWorkspace.shared.activateFileViewerSelecting([Config.historyURL]) }.buttonStyle(.plain).foregroundStyle(Ink.red)
-            Spacer()
-            Text("Open at login").foregroundStyle(Ink.dim)
-            Toggle("", isOn: $model.openAtLogin).labelsHidden().toggleStyle(.switch).tint(Ink.red)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("\(model.dictationCount) dictations: their text is kept on this Mac (the last 2,000), never the sound.").foregroundStyle(Ink.dim)
+                Button("Show") { NSWorkspace.shared.activateFileViewerSelecting([Config.historyURL]) }.buttonStyle(.plain).foregroundStyle(Ink.red)
+                Spacer()
+                Text("Open at login").foregroundStyle(Ink.dim)
+                Toggle("", isOn: $model.openAtLogin).labelsHidden().toggleStyle(.switch).tint(Ink.red)
+            }
+            Text("The microphone stays on while Voice is open (the orange dot) so your first word isn't cut. It holds only the last 0.6 s in memory, and keeps nothing until you press the key.")
+                .foregroundStyle(Ink.dim).fixedSize(horizontal: false, vertical: true)
         }
         .font(.system(size: 12.5))
         .padding(.top, 14)

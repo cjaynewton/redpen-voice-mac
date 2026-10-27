@@ -2,7 +2,9 @@ import Foundation
 
 /// Settings live in ~/Library/Application Support/Redpen Voice/config.json so they can be read and edited by hand.
 struct Config: Codable {
-    static let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Redpen Voice")
+    /// REDPEN_VOICE_DIR points a test run at another folder (sample settings for screenshots); never set in use.
+    static let dir = ProcessInfo.processInfo.environment["REDPEN_VOICE_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+        ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Redpen Voice")
     static let url = dir.appendingPathComponent("config.json")
     static let namesURL = dir.appendingPathComponent("names.txt")
     static let historyURL = dir.appendingPathComponent("history.jsonl")
@@ -35,6 +37,9 @@ struct Config: Codable {
     /// Fast draft, Whisper checks (D-764): Parakeet types a draft as you talk and Whisper quietly fixes it a moment
     /// later. Whisper only; off when missing, so Whisper alone stays as it was.
     var draftMode: Bool?
+    /// Point out words to check (D-817, a test): where a second engine hears a "not", a number, a name or the first
+    /// or last words differently, the bar shows it and ⌃⌥S swaps. Off when missing.
+    var riskMarks: Bool?
     /// "dictation" (Apple's dictation model, tuned for talking to a text field), "transcription" (Apple's general
     /// model), "whisper" (OpenAI's Whisper, downloaded once and run on this Mac, the most accurate), "live" (Instant:
     /// NVIDIA's Parakeet Unified, downloaded once, writes while you talk) or "parakeet" (Parakeet v2 on the whole
