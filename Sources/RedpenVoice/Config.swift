@@ -36,8 +36,9 @@ struct Config: Codable {
     /// later. Whisper only; off when missing, so Whisper alone stays as it was.
     var draftMode: Bool?
     /// "dictation" (Apple's dictation model, tuned for talking to a text field), "transcription" (Apple's general
-    /// model), "whisper" (OpenAI's Whisper, downloaded once and run on this Mac) or "parakeet" (NVIDIA's Parakeet v2,
-    /// the Fast engine: downloaded once, words in well under a second, a few more mistakes than Whisper).
+    /// model), "whisper" (OpenAI's Whisper, downloaded once and run on this Mac, the most accurate), "live" (Instant:
+    /// NVIDIA's Parakeet Unified, downloaded once, writes while you talk) or "parakeet" (Parakeet v2 on the whole
+    /// dictation at release; the old Fast engine, kept for tests and loaded as Instant from a saved setting).
     var engine = "dictation"
     var locale = "en-CA"
     /// Off by default: a click at every start gets old fast.
@@ -52,7 +53,12 @@ struct Config: Codable {
     var levelLook: String { showLevel ? (levelStyle ?? "pen") : "off" }
 
     static func load() -> Config {
-        if let d = try? Data(contentsOf: url), let c = try? JSONDecoder().decode(Config.self, from: d) { return c }
+        if let d = try? Data(contentsOf: url), var c = try? JSONDecoder().decode(Config.self, from: d) {
+            // The Fast engine (Parakeet v2, whole dictation at release) became Instant on Oct 26 2026: fewer mistakes
+            // and no wait (D-816).
+            if c.engine == "parakeet" { c.engine = "live" }
+            return c
+        }
         return Config()
     }
 

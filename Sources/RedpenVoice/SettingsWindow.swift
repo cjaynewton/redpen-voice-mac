@@ -71,7 +71,7 @@ final class SettingsModel: ObservableObject {
     }
 
     var usesWhisper: Bool { config.engine == "whisper" }
-    var usesFast: Bool { config.engine == "parakeet" }
+    var usesInstant: Bool { config.engine == "live" || config.engine == "parakeet" }
     var whisperOnDisk: Bool { Transcriber.whisperOnDisk }
 
     /// Downloads and loads Whisper while the built-in engine keeps working, then switches to it.
@@ -220,7 +220,7 @@ struct SettingsView: View {
     private var engineSection: some View {
         VStack(alignment: .leading, spacing: 0) {
             engineRow(on: model.usesWhisper, dashed: !model.whisperOnDisk, action: model.chooseWhisper) {
-                Text("Whisper").font(.system(size: 15, weight: .semibold))
+                title("Most accurate", "Whisper")
                 if let p = model.fetch {
                     note(p < 1 ? "Downloading. Keep talking, the built-in engine handles your words until Whisper is ready."
                                : "Getting Whisper ready. This takes a minute or two, once.")
@@ -231,42 +231,42 @@ struct SettingsView: View {
                         Button("Cancel") { model.cancelWhisper() }.buttonStyle(.plain).foregroundStyle(Ink.red)
                     }.padding(.top, 4)
                 } else if model.whisperOnDisk {
-                    note("Fewest mistakes, best with noise and other voices. On this Mac.")
+                    note("Fewest mistakes, best with noise and other voices. Your words go in about 2 seconds after you stop.")
                 } else {
-                    note("Fewest mistakes, best with noise and other voices. A one-time 626 MB download.")
+                    note("Fewest mistakes, best with noise and other voices. Your words go in about 2 seconds after you stop. A one-time 626 MB download.")
                     heard("Whisper heard", whisperLine)
                     if let e = model.fetchError { Text("Download stopped: \(e)").font(.system(size: 12.5)).foregroundStyle(Ink.red).padding(.top, 6) }
                     Button("Download Whisper") { model.getWhisper() }.controlSize(.large).padding(.top, 10)
                 }
             }
             if model.usesWhisper {
-                row("Fast draft, Whisper checks", "A quick draft types as you talk; a moment later Whisper quietly fixes any words it hears differently. Stops fixing the moment you click or type.") {
+                row("Quick draft while Whisper works", "A rough draft types into the box as you talk; a moment later Whisper fixes any words it heard differently. It stops fixing the moment you click or type.") {
                     Toggle("", isOn: Binding(get: { model.config.draftMode ?? false }, set: { model.config.draftMode = $0 }))
                         .labelsHidden().toggleStyle(.switch).tint(Ink.red)
                 }.padding(.bottom, 10)
             }
             Divider().overlay(Ink.line)
-            engineRow(on: model.usesFast, dashed: !Transcriber.parakeetOnDisk, action: { model.config.engine = "parakeet" }) {
-                Text("Fast").font(.system(size: 15, weight: .semibold))
-                note(Transcriber.parakeetOnDisk
-                     ? "Parakeet, from NVIDIA. Words land in well under a second. On your own voice it got about 1 more word in 20 wrong than Whisper. English only."
-                     : "Parakeet, from NVIDIA. Words land in well under a second, with a few more mistakes than Whisper. A one-time download of about 600 MB the first time you pick it.")
+            engineRow(on: model.usesInstant, dashed: !Transcriber.liveOnDisk, action: { model.config.engine = "live" }) {
+                title("Instant", "Parakeet")
+                note(Transcriber.liveOnDisk
+                     ? "Your words show in the bar as you talk and go in the moment you stop. About 1 more word in 100 wrong than Whisper. English only."
+                     : "Your words show in the bar as you talk and go in the moment you stop. About 1 more word in 100 wrong than Whisper. English only. A one-time 600 MB download the first time you pick it.")
             }
             Divider().overlay(Ink.line)
-            engineRow(on: !model.usesWhisper && !model.usesFast, dashed: false, action: { model.config.engine = "dictation" }) {
-                Text("Mac built-in").font(.system(size: 15, weight: .semibold))
-                note("Already on your Mac, ready now. Words appear a little sooner.")
+            engineRow(on: !model.usesWhisper && !model.usesInstant, dashed: false, action: { model.config.engine = "dictation" }) {
+                title("Mac built-in", "Apple")
+                note("Already on your Mac, nothing to download. Gets the most words wrong of the three.")
                 if !model.whisperOnDisk && model.fetch == nil { heard("Mac built-in heard", builtInLine) }
             }
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(model.whisperOnDisk || model.fetch != nil
-                     ? "Whisper gets about a third fewer words wrong than the built-in engine."
-                     : "That sentence was recorded with people talking nearby. Across 1,100 test recordings, Whisper got about 1 word in 13 wrong, the built-in engine about 1 in 8.")
+                     ? "Words wrong in 1,100 test recordings: Most accurate 7.8%, Instant 9.2%, Mac built-in 12.0%."
+                     : "That sentence was recorded with people talking nearby. Words wrong in 1,100 test recordings: Most accurate 7.8%, Instant 9.2%, Mac built-in 12.0%.")
                     .font(.system(size: 12.5)).foregroundStyle(Ink.dim).fixedSize(horizontal: false, vertical: true)
             }.padding(.top, 12)
             Button("How we tested") { showTest.toggle() }.buttonStyle(.plain).foregroundStyle(Ink.red).font(.system(size: 12.5))
                 .popover(isPresented: $showTest, arrowEdge: .bottom) {
-                    Text("Both engines ran on WildSpeech-Bench, 1,100 public recordings of people asking questions: some in quiet rooms, some on the street, some with others talking. Whisper got 7.8% of words wrong, the built-in engine 12.0%.")
+                    Text("All three ran on WildSpeech-Bench, 1,100 public recordings of people asking questions: some in quiet rooms, some on the street, some with others talking. Whisper got 7.8% of words wrong, Instant 9.2%, the Mac's built-in engine 12.0%. On 44 clips of one person's own talking, Whisper got 13.8% wrong and Instant 14.8%. Instant's text was ready about 0.03 s after the audio ended; Whisper's last piece took about 1.2 s.")
                         .font(.system(size: 13)).frame(width: 300).fixedSize(horizontal: false, vertical: true).padding(14)
                 }
         }
@@ -284,6 +284,14 @@ struct SettingsView: View {
         .padding(.vertical, 14)
         .contentShape(Rectangle())
         .onTapGesture(perform: action)
+    }
+
+    /// An engine's plain name, and the model behind it in grey.
+    private func title(_ name: String, _ model: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(name).font(.system(size: 15, weight: .semibold))
+            Text(model).font(.system(size: 12.5)).foregroundStyle(Ink.dim)
+        }
     }
 
     private func note(_ s: String) -> some View {
@@ -379,7 +387,7 @@ struct SettingsView: View {
             Divider().overlay(Ink.line)
             row("Pause music and video while I talk") { Toggle("", isOn: $model.config.pauseMedia).labelsHidden().toggleStyle(.switch).tint(Ink.red) }
             Divider().overlay(Ink.line)
-            row("Words appear as I talk", "Hands-free: typed into the box as you go. Holding the key: shown in the bar. Whisper only.") {
+            row("Words appear as I talk", "Instant: shown in the bar. Most accurate: typed into the box as you go when you're in one, otherwise shown in the bar.") {
                 Toggle("", isOn: Binding(get: { model.config.liveWords ?? true }, set: { model.config.liveWords = $0 }))
                     .labelsHidden().toggleStyle(.switch).tint(Ink.red)
             }

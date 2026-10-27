@@ -163,11 +163,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let list = (try? String(contentsOfFile: CommandLine.arguments[i + 1], encoding: .utf8))?.split(separator: "\n").map(String.init) ?? []
             let pause = i + 2 < CommandLine.arguments.count ? Double(CommandLine.arguments[i + 2]) ?? 0.4 : 0.4
             var config = config
-            config.engine = "whisper"
+            // `--engine live` runs the Instant engine instead of Whisper.
+            config.engine = CommandLine.arguments.firstIndex(of: "--engine").flatMap { $0 + 1 < CommandLine.arguments.count ? CommandLine.arguments[$0 + 1] : nil } ?? "whisper"
             Task { [config, engine] in
                 await engine.prepare(config)
                 for path in list where !path.isEmpty {
-                    do { let r = try await engine.sessionTest(URL(fileURLWithPath: path), pause: pause); print("\((path as NSString).lastPathComponent): \(r.ms) ms after release: \(r.text)") }
+                    do { let r = try await engine.sessionTest(URL(fileURLWithPath: path), pause: pause, engine: config.engine); print("\((path as NSString).lastPathComponent): \(r.ms) ms after release: \(r.text)") }
                     catch { print("failed: \(error)") }
                     fflush(stdout)
                 }
@@ -552,6 +553,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             s.hints = (config.screenHints ?? false) ? Hints.line(names: names.spellings, screen: screenWords()) : ""
             s.onPiece = { [weak self, weak s] piece in DispatchQueue.main.async { if let s { self?.piece(piece, from: s) } } }
             s.stream(Chunker(pauseSeconds: talk.pauseSeconds))
+        } else if config.engine == "live" {
+            // Instant (D-816): its words show in the bar as you talk; the box gets the text once, at the end.
+            s.onPartial = { [weak self, weak s] text in
+                DispatchQueue.main.async {
+                    guard let self, let s, self.session === s, self.config.liveWords ?? true, !text.isEmpty else { return }
+                    self.hud.caption(self.names.apply(text))
+                }
+            }
+            s.streamLive()
         }
         recorder.begin(onBuffer: { buf in s.push(buf) },
                        onLevel: { [weak self] v in DispatchQueue.main.async { self?.hud.level(v) } })
@@ -1017,7 +1027,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             if typedLive > 0 { Log.note("live: \(typedLive) of \(s.written.count) pieces typed while talking") }
             if s.endingLost { self.hud.flash("The last few words didn't come through. Say them again.", for: 3.5) }
-            if !raw.isEmpty, self.config.engine == "whisper" || self.config.engine == "parakeet" {
+            if !raw.isEmpty, ["whisper", "parakeet", "live"].contains(self.config.engine) {
                 self.talk.add(s.recorded, words: raw.split(separator: " ").count)
                 self.talk.save(AppDelegate.talkURL)
             }
@@ -1087,7 +1097,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .unsupported: m.status = "Not available"
         case .failed: m.status = "Engine failed"
         }
-        m.engine = ["whisper": "Whisper", "parakeet": "Fast"][config.engine] ?? "Mac built-in"
+        m.engine = ["whisper": "Most accurate (Whisper)", "parakeet": "Fast", "live": "Instant"][config.engine] ?? "Mac built-in"
         m.mic = recorder.inputName
         m.update = Updates.shared.waiting
         let fnTalks = config.talkKeyChoice == "fn" || config.talkKeyChoice == "fnOrOption"

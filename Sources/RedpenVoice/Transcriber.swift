@@ -18,6 +18,13 @@ final class Transcriber {
     private var parakeet: AsrManager?
     static let parakeetMarker = Config.dir.appendingPathComponent("parakeet-ready")
     static var parakeetOnDisk: Bool { FileManager.default.fileExists(atPath: parakeetMarker.path) }
+    /// Parakeet Unified 0.6B (NVIDIA, English), the Instant engine (D-816): it writes while you talk, so the text is
+    /// ready about 0.03 s after the audio ends. Oct 26 2026: 9.2% of words wrong on WildSpeech-Bench (Whisper 7.8%),
+    /// 14.8% on Cedric's judged clips (Whisper 13.8%). One dictation uses it at a time (`liveGate`).
+    private var live: StreamingUnifiedAsrManager?
+    private let liveGate = Gate()
+    static let liveMarker = Config.dir.appendingPathComponent("instant-ready")
+    static var liveOnDisk: Bool { FileManager.default.fileExists(atPath: liveMarker.path) }
 
     /// Whisper large-v3 turbo, compressed by Argmax to 626 MB. 8.3% words wrong on WildSpeech-Bench (Apple 12.0%).
     static let whisperModel = "openai_whisper-large-v3-v20240930_626MB"
@@ -99,6 +106,7 @@ final class Transcriber {
             return
         }
         if config.engine == "parakeet" { await prepareParakeet(); return }
+        if config.engine == "live" { await prepareLive(); return }
         let wanted = Locale(identifier: config.locale)
         let supported = await DictationTranscriber.supportedLocale(equivalentTo: wanted)
         guard let supported else { set(.unsupported); Log.note("engine: locale \(config.locale) unsupported"); return }
@@ -149,6 +157,28 @@ final class Transcriber {
             Log.note("engine: ready, parakeet")
         } catch {
             set(.failed(error.localizedDescription)); Log.note("engine: parakeet failed \(error.localizedDescription)")
+        }
+    }
+
+    /// Downloads the Instant engine the first time (about 600 MB), then loads it. Later launches load it from disk.
+    private func prepareLive() async {
+        do {
+            if live == nil {
+                if !Self.liveOnDisk { set(.downloading(0)) }
+                let t = Date()
+                let m = StreamingUnifiedAsrManager(config: UnifiedConfig(leftFrames: 70, chunkFrames: 7, rightFrames: 7))
+                try await m.loadModels(to: nil, configuration: nil) { [weak self] p in
+                    if !Self.liveOnDisk { self?.set(.downloading(min(99, Int(p.fractionCompleted * 100)))) }
+                }
+                live = m
+                FileManager.default.createFile(atPath: Self.liveMarker.path, contents: nil)
+                Log.note("engine: instant (parakeet unified) loaded in \(Log.int(Date().timeIntervalSince(t)))s")
+            }
+            format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)
+            set(.ready)
+            Log.note("engine: ready, instant")
+        } catch {
+            set(.failed(error.localizedDescription)); Log.note("engine: instant failed \(error.localizedDescription)")
         }
     }
 
@@ -351,6 +381,7 @@ final class Transcriber {
             lock.withLock {
                 silenceUntil = max(silenceUntil, i)
                 for k in 0..<min(silenceUntil, samples.count) { samples[k] = 0 }
+                if live != nil, fed > 0 { refeed = true }
             }
         }
 
@@ -468,16 +499,89 @@ final class Transcriber {
 
         private let parakeet: AsrManager?
 
-        init(whisper: WhisperKit? = nil, parakeet: AsrManager? = nil) {
+        // MARK: Instant engine (D-816)
+        /// Writes while you talk: new audio goes in about every 80 ms and its words go to the bar (`onPartial`), so
+        /// at the end only the last fraction of a second is left. The text goes into the box once, at the end.
+        private let live: StreamingUnifiedAsrManager?
+        private let liveGate: Gate?
+        var onPartial: ((String) -> Void)?
+        private var liveRun: Task<String, Error>?
+        private var fed = 0
+        private var cancelled = false
+        /// Set when the video's sound is blanked after the Instant engine already heard some of it: it starts over
+        /// from the cleaned audio (about 0.04 s per second of audio).
+        private var refeed = false
+        private var liveNap: Task<Void, Error>?
+
+        init(whisper: WhisperKit? = nil, parakeet: AsrManager? = nil, live: StreamingUnifiedAsrManager? = nil, liveGate: Gate? = nil) {
             self.whisper = whisper
             self.parakeet = parakeet
+            self.live = live
+            self.liveGate = liveGate
             var c: AsyncStream<AnalyzerInput>.Continuation!
             input = AsyncStream<AnalyzerInput> { c = $0 }
             feed = c
         }
 
+        /// Starts the Instant engine for this dictation. It waits for a dictation still finishing (about 0.03 s), then
+        /// catches up from this one's saved audio, so nothing is lost. Like Whisper's pieces, it waits while Voice
+        /// decides whether a video was playing, so the video's words are never written.
+        func streamLive() {
+            guard let live, let liveGate else { return }
+            liveRun = Task.detached(priority: .userInitiated) { [self] in
+                try await liveGate.acquire()
+                do {
+                    try await live.reset()
+                    var shown = ""
+                    while true {
+                        let (done, again) = lock.withLock { () -> (Bool, Bool) in
+                            defer { refeed = false }
+                            if refeed { fed = 0 }
+                            return (stopped, refeed)
+                        }
+                        if again { try await live.reset(); shown = ""; Log.note("engine: instant started over after the video's sound was left out") }
+                        if done || settledForLoops {
+                            try await feedLive(live)
+                            if !done {
+                                let partial = await live.getPartialTranscript()
+                                if partial != shown { shown = partial; onPartial?(partial) }
+                            }
+                        }
+                        if done { break }
+                        // A nap letting go cuts short, so the ending never waits out the rest of it.
+                        let nap = Task { try await Task.sleep(for: .milliseconds(80)) }
+                        if !lock.withLock({ if stopped { return false }; liveNap = nap; return true }) { nap.cancel() }
+                        _ = try? await nap.value
+                    }
+                    let quit = lock.withLock { cancelled }
+                    let text = quit ? "" : try await live.finish()
+                    try? await live.reset()
+                    await liveGate.release()
+                    return text
+                } catch {
+                    try? await live.reset()
+                    await liveGate.release()
+                    throw error
+                }
+            }
+        }
+
+        /// Hands the audio not yet given to the Instant engine over to it.
+        private func feedLive(_ live: StreamingUnifiedAsrManager) async throws {
+            let chunk: [Float] = lock.withLock {
+                defer { fed = samples.count }
+                return fed < samples.count ? Array(samples[fed...]) : []
+            }
+            guard !chunk.isEmpty, let f = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false),
+                  let b = AVAudioPCMBuffer(pcmFormat: f, frameCapacity: AVAudioFrameCount(chunk.count)) else { return }
+            b.frameLength = AVAudioFrameCount(chunk.count)
+            chunk.withUnsafeBufferPointer { b.floatChannelData![0].update(from: $0.baseAddress!, count: chunk.count) }
+            try await live.appendAudio(b)
+            try await live.processBufferedAudio()
+        }
+
         func push(_ buffer: AVAudioPCMBuffer) {
-            guard whisper != nil || parakeet != nil else { feed.yield(AnalyzerInput(buffer: buffer)); return }
+            guard whisper != nil || parakeet != nil || live != nil else { feed.yield(AnalyzerInput(buffer: buffer)); return }
             guard let ch = buffer.floatChannelData?[0] else { return }
             lock.withLock {
                 let start = samples.count
@@ -523,6 +627,15 @@ final class Transcriber {
         func finish() async throws -> String {
             feed.finish()
             if let parakeet { return try await Transcriber.parakeetText(parakeet, lock.withLock { samples }) }
+            if live != nil {
+                lock.withLock { stopped = true; liveNap?.cancel() }
+                let f0 = Date()
+                let text = try await liveRun?.value ?? ""
+                onPartial = nil
+                let peak = lock.withLock { samples.map { abs($0) }.max() ?? 0 }
+                Log.note("engine finish: instant \(Log.ms(Date().timeIntervalSince(f0)))ms")
+                return Silence.clean(text, peak: peak)
+            }
             if let whisper {
                 let (nap, guess, dnap) = lock.withLock { stopped = true; return (napping, guessing, draftNap) }
                 nap?.cancel(); guess?.cancel(); dnap?.cancel()
@@ -572,7 +685,8 @@ final class Transcriber {
         }
 
         func cancel() {
-            onPiece = nil; onDraft = nil; onCheck = nil
+            onPiece = nil; onDraft = nil; onCheck = nil; onPartial = nil
+            lock.withLock { cancelled = true }
             draftLoop?.cancel()
             lock.withLock { stopped = true }
             loop?.cancel()
@@ -589,6 +703,7 @@ final class Transcriber {
             return (s, nil)
         }
         if config.engine == "parakeet" { return (Session(parakeet: parakeet), nil) }
+        if config.engine == "live" { return (Session(live: live, liveGate: liveGate), nil) }
         return (Session(), module(config))
     }
 
@@ -598,14 +713,16 @@ final class Transcriber {
 
     /// The live path, timed: a recording fed in at talking speed (with `pause` seconds of quiet at the end, as when
     /// you stop talking before letting go), then released. Returns how long finish() took, which is what you wait for.
-    func sessionTest(_ url: URL, pause: Double) async throws -> (ms: Int, text: String) {
-        guard let whisper, let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false) else { return (0, "") }
+    func sessionTest(_ url: URL, pause: Double, engine: String = "whisper") async throws -> (ms: Int, text: String) {
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false) else { return (0, "") }
         let audio = try AudioProcessor.loadAudioAsFloatArray(fromPath: url.path) + [Float](repeating: 0.0003, count: Int(pause * 16000))
-        let s = Session(whisper: whisper)
+        let s: Session
+        if engine == "live" { guard live != nil else { return (0, "") }; s = Session(live: live, liveGate: liveGate) }
+        else { guard let whisper else { return (0, "") }; s = Session(whisper: whisper) }
         // VOICE_SILENCE_AT=1.3: act as if a video was paused and went quiet at that second (the live path's cut).
         let silenceAt = ProcessInfo.processInfo.environment["VOICE_SILENCE_AT"].flatMap(Double.init)
         if silenceAt != nil { s.holdForMedia() }
-        s.stream(Chunker())
+        if engine == "live" { s.streamLive() } else { s.stream(Chunker()) }
         let step = 1600  // a tenth of a second
         var i = 0
         while i < audio.count {
@@ -690,6 +807,21 @@ final class Transcriber {
     func transcribeFile(_ url: URL, config: Config) async throws -> String {
         if config.engine == "parakeet", let parakeet {
             return try await Self.parakeetText(parakeet, try AudioProcessor.loadAudioAsFloatArray(fromPath: url.path))
+        }
+        if config.engine == "live" {
+            // Fed in 160 ms pieces as a microphone would, through a session, so the check runs the live path.
+            let audio = try AudioProcessor.loadAudioAsFloatArray(fromPath: url.path)
+            let s = Session(live: live, liveGate: liveGate)
+            s.streamLive()
+            let f = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
+            for i in stride(from: 0, to: audio.count, by: 2560) {
+                let n = min(2560, audio.count - i)
+                let b = AVAudioPCMBuffer(pcmFormat: f, frameCapacity: AVAudioFrameCount(n))!
+                b.frameLength = AVAudioFrameCount(n)
+                audio.withUnsafeBufferPointer { b.floatChannelData![0].update(from: $0.baseAddress! + i, count: n) }
+                s.push(b)
+            }
+            return try await s.finish()
         }
         if config.engine == "whisper" {
             guard let whisper else { throw NSError(domain: "RedpenVoice", code: 4, userInfo: [NSLocalizedDescriptionKey: "Whisper is not loaded"]) }
