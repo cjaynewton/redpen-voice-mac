@@ -45,8 +45,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // `--hud-demo [style]` shows the talking bar for four seconds with a fake voice, then two of writing, so its
         // look can be checked on screen.
         if let i = CommandLine.arguments.firstIndex(of: "--hud-demo") {
-            if i + 1 < CommandLine.arguments.count { hud.style = CommandLine.arguments[i + 1] }
+            if i + 1 < CommandLine.arguments.count, !CommandLine.arguments[i + 1].hasPrefix("--") { hud.style = CommandLine.arguments[i + 1] }
             hud.show("", level: true)
+            // `--hud-caption "text"`: words in the bar as you talk (Instant).
+            if let k = CommandLine.arguments.firstIndex(of: "--hud-caption"), k + 1 < CommandLine.arguments.count {
+                let text = CommandLine.arguments[k + 1]
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [hud] in hud.caption(text) }
+            }
             var t = 0.0
             Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [hud] _ in
                 t += 0.05
@@ -339,7 +344,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let i = CommandLine.arguments.firstIndex(of: "--settings-shot"), i + 1 < CommandLine.arguments.count {
             Ink.registerFonts()
             NSApp.appearance = NSAppearance(named: CommandLine.arguments.contains("dark") ? .darkAqua : .aqua)
-            let v = NSHostingView(rootView: SettingsView(model: SettingsModel(config: config, engine: engine) { _ in }))
+            let model = SettingsModel(config: config, engine: engine) { _ in }
+            // `ready`: drawn as a Mac where the chosen engine has finished loading (for the README pictures).
+            if CommandLine.arguments.contains("ready") { model.engineState = .ready }
+            let v = NSHostingView(rootView: SettingsView(model: model).buttonBorderShape(.roundedRectangle(radius: 4)))
             v.frame = NSRect(x: 0, y: 0, width: 540, height: 2000)
             let w = NSWindow(contentRect: v.frame, styleMask: [.borderless], backing: .buffered, defer: false)
             w.contentView = v; v.layoutSubtreeIfNeeded(); v.display()
@@ -361,17 +369,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Ink.registerFonts()
             NSApp.appearance = NSAppearance(named: CommandLine.arguments.contains("dark") ? .darkAqua : .aqua)
             menu.state = menuState()
+            // `ready`: drawn as a set-up Mac (engine loaded, Fn key already set), for the README pictures.
+            if CommandLine.arguments.contains("ready") { menu.state.ready = true; menu.state.status = "Ready"; menu.state.warning = nil }
             let v = NSHostingView(rootView: MenuPanel(model: menu))
             v.frame = NSRect(origin: .zero, size: v.fittingSize)
-            let w = NSWindow(contentRect: v.frame, styleMask: [.borderless], backing: .buffered, defer: false)
-            w.contentView = v; v.layoutSubtreeIfNeeded(); v.display()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                if let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) {
-                    v.cacheDisplay(in: v.bounds, to: rep)
-                    try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: CommandLine.arguments[i + 1]))
-                }
-                exit(0)
-            }
+            Self.shoot(v, to: CommandLine.arguments[i + 1])
+            return
+        }
+        // `--firstrun-shot out.png [dark]` draws the first-run window as a new Mac sees it, nothing allowed yet.
+        if let i = CommandLine.arguments.firstIndex(of: "--firstrun-shot"), i + 1 < CommandLine.arguments.count {
+            Ink.registerFonts()
+            NSApp.appearance = NSAppearance(named: CommandLine.arguments.contains("dark") ? .darkAqua : .aqua)
+            let model = FirstRunModel(config: config, engineState: { "ready" })
+            model.mic = false; model.access = false; model.fnOK = true
+            let v = NSHostingView(rootView: FirstRunView(model: model).buttonBorderShape(.roundedRectangle(radius: 4)))
+            v.frame = NSRect(origin: .zero, size: v.fittingSize)
+            Self.shoot(v, to: CommandLine.arguments[i + 1])
             return
         }
         if CommandLine.arguments.contains("--mics") {
@@ -470,6 +483,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pendingMedia = PendingMedia()
 
     /// Calls back once the apps' sound has gone quiet (checked every tenth of a second), or after `tries` checks.
+    /// Draws a view to a PNG at twice its size, as a Retina screen shows it, then quits. For the README pictures.
+    static func shoot(_ v: NSView, to path: String) {
+        let w = NSWindow(contentRect: v.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        w.contentView = v; v.layoutSubtreeIfNeeded(); v.display()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            if let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(v.bounds.width * 2), pixelsHigh: Int(v.bounds.height * 2),
+                                          bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                          bytesPerRow: 0, bitsPerPixel: 0) {
+                rep.size = v.bounds.size
+                v.cacheDisplay(in: v.bounds, to: rep)
+                try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+            }
+            exit(0)
+        }
+    }
+
     nonisolated static func waitForQuiet(_ apps: [AudioObjectID], tries: Int, record: SoundTap.Recording? = nil, done: @escaping @Sendable (Date) -> Void) {
         SoundTap.loudness(of: apps, for: 0.1, record: record) { peak in
             if !MediaGate.isPlaying(peak: peak) || tries <= 0 { done(Date()) } else { waitForQuiet(apps, tries: tries - 1, record: record, done: done) }

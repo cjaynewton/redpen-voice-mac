@@ -78,7 +78,7 @@ struct FirstRunView: View {
             HStack(spacing: 12) {
                 choice("Raw words", "What you said, as you said it.", "raw")
                 choice("Ums taken out", "Only sounds like “um” and “uh” go. Every word stays.", "noUms")
-                choice("Rewrite it", "Ums and false starts out, punctuation in. Your words stay.", "rewrite")
+                choice("Tidy it up", "Repeats and false starts out, punctuation in. It can change a word now and then.", "rewrite")
             }
             Text("You can flip this any time from the menu bar.").font(.system(size: 12)).foregroundStyle(.secondary)
 

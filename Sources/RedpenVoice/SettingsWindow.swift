@@ -202,7 +202,7 @@ struct SettingsView: View {
     private var status: some View {
         let (word, live): (String, Bool) = {
             switch model.engineState {
-            case .ready: return ("Ready on " + (model.usesWhisper ? "Whisper" : "Mac built-in"), true)
+            case .ready: return ("Ready on " + (model.usesWhisper ? "Most accurate" : model.usesInstant ? "Instant" : "Mac built-in"), true)
             case .checking: return ("Getting ready", false)
             case .downloading(let p): return ("Downloading \(p)%", false)
             case .unsupported: return ("Language not supported", false)

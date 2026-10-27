@@ -4,17 +4,45 @@ A free, private dictation app for macOS, from the Redpen family of writing tools
 
 Everything runs on your Mac. Your voice is never sent anywhere.
 
+**[Download Redpen Voice for Mac](https://github.com/cjaynewton/redpen-voice-mac/releases/latest)** (free, macOS 26, Apple silicon)
+
 <p align="center">
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/menu-dark.png">
-  <img src="docs/screenshots/menu-light.png" alt="The menu bar panel: status, two switches, paste last dictation, transcribe a file, settings" width="300">
-</picture>
+  <img src="docs/screenshots/bar-live.png" alt="The talking bar at the bottom of the screen: a red pen line moving with your voice, the time, and your words as you say them" width="514">
 </p>
+
+## How it works
+
+1. **Hold Fn or right Option and talk.** A small bar at the bottom of the screen moves with your voice, so you know it's listening. With the Instant engine, your words show in it as you talk.
+2. **Let go.** The words go into the box you were typing in, in any app, without touching your clipboard.
+
+   <img src="docs/screenshots/bar-typed.png" alt="The bar after letting go: a green tick and Typed into Notes, where you started" width="287">
+
+3. **Moved somewhere else while it wrote?** The words never go into the wrong box. They wait until you're back in the one you started in, and Control-Option-V pastes them anywhere.
+
+   <img src="docs/screenshots/bar-saved.png" alt="The bar saying the words are saved for Chrome and go in when you are back in that box, or with Control-Option-V" width="460">
+
+Tap the key twice to keep talking with your hands free, and tap once more to finish.
+
+### Pick the bar you like
+
+<table>
+<tr>
+<td valign="top"><img src="docs/screenshots/bar-pen.png" alt="Red pen line" width="236"><br><b>Red pen line</b><br>A pen line that moves with your voice, and the time.</td>
+<td valign="top"><img src="docs/screenshots/bar-tape.png" alt="Rolling tape" width="270"><br><b>Rolling tape</b><br>Your voice scrolling past, with a recording dot.</td>
+</tr>
+<tr>
+<td valign="top"><img src="docs/screenshots/bar-bars.png" alt="Bars from the middle" width="162"><br><b>Bars from the middle</b><br>Bars that grow from the centre.</td>
+<td valign="top"><img src="docs/screenshots/bar-classic.png" alt="Classic bars" width="160"><br><b>Classic bars</b><br>A level meter, like a recorder.</td>
+</tr>
+<tr>
+<td valign="top"><img src="docs/screenshots/bar-dot.png" alt="Breathing dot" width="112"><br><b>Breathing dot</b><br>Just a dot that breathes, and the time.</td>
+<td valign="top">Or turn the bar off in Settings.</td>
+</tr>
+</table>
 
 ## What it does
 
-- **Hold to talk.** Hold Fn or right Option (or a key you pick), talk, let go. The words are typed at the cursor without touching your clipboard.
-- **Double-tap for hands-free.** Tap the key twice and keep talking with your hands free. Tap once more to finish.
+- **Any key you like.** Fn, right Option, or a key you pick in Settings.
 - **Words appear as you talk.** With Instant, your words show in the bar while you talk and go into the box the moment you let go. With Whisper, each stretch is written at your next pause, so a one-minute dictation lands about 2 seconds after you stop; in a text box the words are typed as you go.
 - **Your words, as said.** By default nothing is rewritten. Two switches change that:
   - **Take out ums and uhs** removes only the sounds. Every word stays.
@@ -33,10 +61,36 @@ Everything runs on your Mac. Your voice is never sent anywhere.
 - **Pauses your music and video** while you talk and starts them again after, only when something is actually playing.
 - **Transcribe a file.** Any audio or video file to text, saved beside the file.
 
+## The menu
+
+Click the Voice icon in the menu bar for today's words and the minutes they saved you, the two switches, Paste last dictation, Transcribe a file, Settings and Check for updates.
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/menu-dark.png">
+  <img src="docs/screenshots/menu-light.png" alt="The menu bar panel: status, words today and minutes saved, two switches, paste last dictation, transcribe a file, settings, check for updates" width="300">
+</picture>
+</p>
+
+## Settings
+
+Every choice on one page: the engine, how your words come out, the key you talk with, your microphone, the bar, and your list of words it gets wrong. Each engine shows a real sentence it heard, so you can judge before you download.
+
 <p align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/settings-dark.png">
-  <img src="docs/screenshots/settings-light.png" alt="Settings: engine, what you get, talking, words it gets wrong" width="360">
+  <img src="docs/screenshots/settings-light.png" alt="Settings: engines named Most accurate, Instant and Mac built-in, what you get, talking, words it gets wrong, and what is kept on this Mac" width="360">
+</picture>
+</p>
+
+## The first time you open it
+
+One window asks how your words should come out and walks you through the two permissions it needs: the microphone, and Accessibility so it can type into other apps and see the Fn key. If you talk with Fn, it also checks the Mac's own Fn setting.
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/firstrun-dark.png">
+  <img src="docs/screenshots/firstrun-light.png" alt="First run: raw words, ums taken out or tidy it up, then the microphone, Accessibility, the speech engine and the Fn key" width="480">
 </picture>
 </p>
 
