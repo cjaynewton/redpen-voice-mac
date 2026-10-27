@@ -164,7 +164,7 @@ check("box.sameElement", BoxMatch.same(start: start, now: start, nowText: "Hello
 check("box.sentAndCleared", !BoxMatch.same(start: start, now: start, nowText: "", sameElement: true))
 check("box.otherBoxSameWindow", !BoxMatch.same(start: start, now: BoxPrint(role: "AXTextArea", identifier: nil, frame: CGRect(x: 100, y: 200, width: 300, height: 40), prefix: nil), nowText: "Hello there", sameElement: false))
 check("box.newElementSameBoxGrew", BoxMatch.same(start: start, now: BoxPrint(role: "AXTextArea", identifier: nil, frame: CGRect(x: 100, y: 760, width: 600, height: 80), prefix: nil), nowText: "Hello there", sameElement: false))
-check("box.sameId", BoxMatch.same(start: BoxPrint(role: "AXTextArea", identifier: "composer", frame: nil, prefix: ""), now: BoxPrint(role: "AXTextArea", identifier: "composer", frame: nil, prefix: nil), nowText: "x", sameElement: false))
+check("box.sameId", BoxMatch.same(start: BoxPrint(role: "AXTextArea", identifier: "composer", frame: nil, prefix: "", context: "Notes"), now: BoxPrint(role: "AXTextArea", identifier: "composer", frame: nil, prefix: nil, context: "Notes"), nowText: "x", sameElement: false))
 check("box.unreadableOther", !BoxMatch.same(start: BoxPrint(role: "AXTextArea", identifier: "c", frame: f0, prefix: nil), now: BoxPrint(role: "AXTextArea", identifier: "c", frame: f0, prefix: nil), nowText: nil, sameElement: false))
 
 // The video's words come off the start; yours stay (D-817).
@@ -173,6 +173,15 @@ check("echo.misheard", MediaEcho.strip("Please tel me what so we ship it", video
 check("echo.nothingPlayed", MediaEcho.strip("So we ship it", video: "") == "So we ship it")
 check("echo.noMatch", MediaEcho.strip("So we ship it", video: "the weather tomorrow") == "So we ship it")
 check("echo.laterRepeatKept", MediaEcho.strip("Tell me more. Then tell me what you think about tell me", video: "tell me") == "More. Then tell me what you think about tell me", MediaEcho.strip("Tell me more. Then tell me what you think about tell me", video: "tell me"))
+
+// Round 2 (Codex): an empty box proves nothing by its text; scattered words never take the sentence; minus signs count.
+let emptyStart = BoxPrint(role: "AXTextArea", identifier: nil, frame: f0, prefix: "", context: "T3 Code|thread-1")
+check("box.emptySameThread", BoxMatch.same(start: emptyStart, now: BoxPrint(role: "AXTextArea", identifier: nil, frame: f0, prefix: nil, context: "T3 Code|thread-1"), nowText: "", sameElement: true))
+check("box.emptyOtherThread", !BoxMatch.same(start: emptyStart, now: BoxPrint(role: "AXTextArea", identifier: nil, frame: f0, prefix: nil, context: "T3 Code|thread-2"), nowText: "", sameElement: true))
+check("box.emptyNoContext", !BoxMatch.same(start: BoxPrint(role: "AXTextArea", identifier: nil, frame: f0, prefix: "", context: nil), now: BoxPrint(role: "AXTextArea", identifier: nil, frame: f0, prefix: nil, context: nil), nowText: "", sameElement: true))
+check("echo.scatteredKept", MediaEcho.strip("I need the report tomorrow", video: "the weather tomorrow") == "I need the report tomorrow", MediaEcho.strip("I need the report tomorrow", video: "the weather tomorrow"))
+check("echo.preRollWord", MediaEcho.strip("Wait please tell me what so we ship it", video: "please tell me what") == "So we ship it", MediaEcho.strip("Wait please tell me what so we ship it", video: "please tell me what"))
+check("meaning.minus", Meaning.changed("send -5 copies", "Send 5 copies.") == "number")
 
 // Words worth a second look, where the engines disagree (D-817 test).
 let rk = RiskyWords.find(final: "So we should not ship it on Friday with three fixes", other: "So we should now ship it on Friday with free fixes", names: [])

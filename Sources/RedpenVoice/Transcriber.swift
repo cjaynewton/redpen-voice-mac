@@ -304,6 +304,12 @@ final class Transcriber {
         return (pieces.joined(separator: " "), pieces, wait)
     }
 
+    /// Lets exactly one of several racing answers through.
+    final class Once: @unchecked Sendable {
+        private let lock = NSLock(); private var done = false
+        func claim() -> Bool { lock.lock(); defer { lock.unlock() }; if done { return false }; done = true; return true }
+    }
+
     /// Whisper's queue: one job at a time, first come first served.
     /// A cancelled job (a guess thrown away when you let go) leaves the line at once instead of holding up the ending.
     actor Gate {
@@ -391,7 +397,10 @@ final class Transcriber {
         /// words are never written. Counts as settled after 2 s whatever happens.
         private var mediaSettledFlag = true
         private var holdingSince = Date()
-        func holdForMedia() { lock.withLock { mediaSettledFlag = false; holdingSince = Date() } }
+        func holdForMedia() { lock.withLock { mediaSettledFlag = false; holdingSince = Date(); mediaHeld = true } }
+        private var mediaHeld = false
+        /// Something was playing when this dictation began (a video decision was made for it).
+        var hadMedia: Bool { lock.withLock { mediaHeld } }
         func mediaSettled() { lock.withLock { mediaSettledFlag = true } }
         fileprivate var settledForLoops: Bool {
             lock.withLock { mediaSettledFlag || Date().timeIntervalSince(holdingSince) > 2 }
@@ -528,16 +537,19 @@ final class Transcriber {
         // MARK: The video's words (D-817)
         /// What the paused app played, written down; its words come off the start of the dictation, once, instead
         /// of blanking the first second (which lost your first words when you started over the video).
-        private var echoTask: Task<String, Never>?
+        private var echoTask: Task<String?, Never>?
         private var echoAudio: [Float]?
         private var echoDone = false
+        private var echoFailedFlag = false
+        /// The video's words couldn't be written down, so they couldn't be taken off: nothing is typed (Paste last).
+        var echoFailed: Bool { lock.withLock { echoFailedFlag } }
 
         /// Hands over what the paused app played, as 16 kHz mono.
         func mediaEcho(_ played: [Float]) {
             if live != nil { lock.withLock { echoAudio = played }; return }
-            let task: Task<String, Never>?
-            if let whisper { task = Task { (try? await Transcriber.whisperText(whisper, played)) ?? "" } }
-            else if let parakeet { task = Task { (try? await Transcriber.parakeetText(parakeet, played)) ?? "" } }
+            let task: Task<String?, Never>?
+            if let whisper { task = Task { try? await Transcriber.whisperText(whisper, played) } }
+            else if let parakeet { task = Task { try? await Transcriber.parakeetText(parakeet, played) } }
             else { task = nil }
             lock.withLock { echoTask = task }
         }
@@ -546,7 +558,12 @@ final class Transcriber {
         fileprivate func echoStripped(_ text: String) async -> String {
             guard !text.isEmpty, let task = lock.withLock({ echoDone ? nil : echoTask }) else { return text }
             lock.withLock { echoDone = true }
-            return Self.logStrip(text, video: await task.value)
+            guard let video = await task.value else {
+                lock.withLock { echoFailedFlag = true }
+                Log.note("media: the video's words couldn't be written down")
+                return text
+            }
+            return Self.logStrip(text, video: video)
         }
 
         fileprivate static func logStrip(_ text: String, video: String) -> String {
@@ -728,7 +745,10 @@ final class Transcriber {
         /// and whatever it had is returned, so the app never hangs on "Writing".
         func finish() async throws -> String {
             feed.finish()
-            if let parakeet { return await echoStripped(try await Transcriber.parakeetText(parakeet, lock.withLock { samples })) }
+            if let parakeet {
+                while !settledForLoops { try? await Task.sleep(for: .milliseconds(20)) }
+                return await echoStripped(try await Transcriber.parakeetText(parakeet, lock.withLock { samples }))
+            }
             if live != nil {
                 lock.withLock { stopped = true; liveNap?.cancel() }
                 onPartial = nil
@@ -737,13 +757,13 @@ final class Transcriber {
                 let seconds = Double(lock.withLock { samples.count }) / Double(Chunker.rate)
                 // Never stuck on "Writing": a deadline well past the slowest full rewrite (0.04 s a second, twice).
                 let deadline = 4 + seconds * 0.15
-                let text: String? = try await withThrowingTaskGroup(of: String?.self) { g in
-                    g.addTask { try await run.value }
-                    g.addTask { try await Task.sleep(for: .seconds(deadline)); return nil }
-                    let first = try await g.next() ?? nil
-                    g.cancelAll()
-                    return first
+                // First of the two answers wins; a stuck engine is never waited on.
+                let first: Result<String, Error>? = await withCheckedContinuation { c in
+                    let once = Once()
+                    Task { let r: Result<String, Error>; do { r = .success(try await run.value) } catch { r = .failure(error) }; if once.claim() { c.resume(returning: r) } }
+                    Task { try? await Task.sleep(for: .seconds(deadline)); if once.claim() { c.resume(returning: nil) } }
                 }
+                let text: String? = try first.map { try $0.get() }
                 guard let text else {
                     Log.note("engine: instant stopped answering after \(Log.int(deadline))s, loading a fresh one")
                     endingLost = true

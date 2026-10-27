@@ -14,8 +14,11 @@ public enum Meaning {
 
     static func words(_ s: String) -> [String] {
         s.lowercased().replacingOccurrences(of: "’", with: "'")
-            .split(whereSeparator: { !($0.isLetter || $0.isNumber || $0 == "'" || $0 == "." || $0 == ",") }).map(String.init)
-            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: ".,'")) }.filter { !$0.isEmpty }
+            .split(whereSeparator: { !($0.isLetter || $0.isNumber || $0 == "'" || $0 == "." || $0 == "," || $0 == "-" || $0 == "−") }).map(String.init)
+            .map { $0.replacingOccurrences(of: "−", with: "-") }
+            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: ".,'")) }
+            .map { $0.hasPrefix("-") && $0.dropFirst().first?.isNumber == true ? $0 : $0.trimmingCharacters(in: CharacterSet(charactersIn: "-")) }
+            .filter { !$0.isEmpty }
     }
 
     /// How many negations: the words above plus every "n't" ("don't", "isn't", "won't").
@@ -27,8 +30,9 @@ public enum Meaning {
     static func numbers(_ s: String) -> [String] {
         words(s).compactMap { w -> String? in
             let digits = w.replacingOccurrences(of: ",", with: "")
-            if digits.first?.isNumber == true { return digits }
-            return numberWords[w]
+            // A minus sign counts: "-5" and "5" are different numbers.
+            if digits.first?.isNumber == true || (digits.hasPrefix("-") && digits.dropFirst().first?.isNumber == true) { return digits }
+            return numberWords[w.trimmingCharacters(in: CharacterSet(charactersIn: "-"))]
         }.sorted()
     }
 

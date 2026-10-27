@@ -17,15 +17,22 @@ public enum MediaEcho {
         let words = text.split(whereSeparator: \.isWhitespace)
         let window = min(words.count, v.count + 4)
         var lastMatch = -1, vi = 0
+        var matches: [Int] = []
         for i in 0..<window {
             let k = key(words[i])
             guard !k.isEmpty else { continue }
             // In order: each video word may match once, a little ahead allowed for a word the two hearings disagree on.
             if let j = (vi..<min(v.count, vi + 3)).first(where: { v[$0] == k || alike(v[$0], k) }) {
-                lastMatch = i; vi = j + 1
+                lastMatch = i; vi = j + 1; matches.append(i)
             }
         }
         guard lastMatch >= 0 else { return text }
+        // Only when the stretch removed is clearly the video: it starts within the first three words (the second
+        // before the key went down can hold a word the app's own sound didn't), and most of it matched. Scattered
+        // common words ("the", "tomorrow") never take your sentence with them.
+        let matched = matches.count
+        guard let first = matches.first, first <= 2, matched >= min(2, v.count),
+              Double(matched) >= Double(lastMatch + 1) * 0.6 else { return text }
         let rest = words.dropFirst(lastMatch + 1).joined(separator: " ")
         // A capital back on the first word kept, when the cut fell mid-sentence.
         guard let f = rest.first else { return "" }

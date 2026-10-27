@@ -30,7 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var undoKey: Shortcut?
     /// ⌃⌥S, only while "Point out words to check" is on: swaps in the other engine's hearing of the marked word.
     private var swapKey: Shortcut?
-    private var riskSwap: (swapped: String, gen: Int)?
+    private var riskSwap: (swapped: String, gen: Int, element: AXUIElement, typed: String)?
     private var typingWatch: Any?
     private var clickWatch: Any?
     /// The last time you typed a key or clicked, to know that the end of the box is still Voice's own typing.
@@ -293,6 +293,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+        // `--box-test pid` checks the start-box fingerprint on a real app (D-817): the focused box read again must
+        // match, every other text box in its window must not, and the same box emptied (a sent message) must not.
+        if let i = CommandLine.arguments.firstIndex(of: "--box-test"), i + 1 < CommandLine.arguments.count, let pid = pid_t(CommandLine.arguments[i + 1]) {
+            let app = AXUIElementCreateApplication(pid)
+            AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+            usleep(800_000)
+            func attr(_ e: AXUIElement, _ k: String) -> CFTypeRef? { var v: CFTypeRef?; return AXUIElementCopyAttributeValue(e, k as CFString, &v) == .success ? v : nil }
+            var focused: CFTypeRef?
+            for _ in 0..<20 where focused == nil { focused = attr(app, kAXFocusedUIElementAttribute); if focused == nil { usleep(250_000) } }
+            guard let f = focused else { print("box-test: no focused box"); exit(1) }
+            let el = f as! AXUIElement
+            let start = Self.boxPrint(el, withText: true)
+            print("box-test: start \(start.role ?? "?"), id \(start.identifier ?? "none"), frame \(start.frame.map { "\($0)" } ?? "none"), text \(start.prefix.map { "\($0.count) chars" } ?? "unreadable")")
+            print("box-test: same box again -> \(BoxMatch.same(start: start, now: Self.boxPrint(el, withText: false), nowText: Insert.value(el), sameElement: true))")
+            var boxes: [AXUIElement] = []
+            func walk(_ e: AXUIElement, _ depth: Int) {
+                guard depth < 40 else { return }
+                if (attr(e, kAXRoleAttribute) as? String) == "AXTextArea" || (attr(e, kAXRoleAttribute) as? String) == "AXTextField" { boxes.append(e) }
+                for c in (attr(e, kAXChildrenAttribute) as? [AXUIElement]) ?? [] { walk(c, depth + 1) }
+            }
+            if let w = attr(el, kAXWindowAttribute) { walk(w as! AXUIElement, 0) }
+            for o in boxes where !CFEqual(o, el) {
+                print("box-test: other box in the window -> \(BoxMatch.same(start: start, now: Self.boxPrint(o, withText: false), nowText: Insert.value(o), sameElement: false))")
+            }
+            AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, "" as CFString)
+            usleep(300_000)
+            print("box-test: same box after it was emptied -> \(BoxMatch.same(start: start, now: Self.boxPrint(el, withText: false), nowText: Insert.value(el), sameElement: true))")
+            exit(0)
+        }
         if CommandLine.arguments.contains("--media-check") {
             let players = Media.playingApps()
             SoundTap.loudness(of: players.map(\.object), for: 0.25) { peak in
@@ -430,6 +459,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var updateWatch: AnyCancellable?
     /// Set while Voice decides whether something was playing, so the new session holds its drafts until then.
     private var holdForMedia = false
+    /// The dictation a video decision belongs to, kept even after you let go, and how much of it came from before the
+    /// key went down. A new one for every press.
+    final class PendingMedia { weak var session: Transcriber.Session?; var preRoll = 0 }
+    private var pendingMedia = PendingMedia()
 
     /// Calls back once the apps' sound has gone quiet (checked every tenth of a second), or after `tries` checks.
     nonisolated static func waitForQuiet(_ apps: [AudioObjectID], tries: Int, record: SoundTap.Recording? = nil, done: @escaping @Sendable (Date) -> Void) {
@@ -515,6 +548,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // pause over, so the video comes back once, after this press, and is never paused or started twice.
         // The video is left alone until this is a real press: a quick tap (the first of a double tap, or a stray
         // tap) is over before 0.3 s and never presses anything, so taps can't flip a video on and off.
+        pendingMedia = PendingMedia()
         if resumeWork != nil { resumeWork?.cancel(); resumeWork = nil }  // pressed again before the video came back
         if pausedMedia {
             Log.note("media: still paused from the last press")
@@ -525,14 +559,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 holdForMedia = true
                 // Listen from the moment the key goes down; press pause no sooner than 0.3 s in, so a tap never does.
                 let pressedAt = Date()
+                let mine = pendingMedia
                 // What the app plays from here until it goes quiet is kept, so its words can come off the start.
                 let played = SoundTap.Recording()
                 SoundTap.loudness(of: players.map(\.object), for: 0.25, record: played) { peak in
                     DispatchQueue.main.async { [weak self] in
                         let wait = max(0, 0.3 - Date().timeIntervalSince(pressedAt))
                         DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
-                            guard let self else { return }
-                            guard self.press == thisPress, let s = self.session, !self.pausedMedia else { self.session?.mediaSettled(); return }
+                            guard let self, let s = mine.session else { return }
+                            // Let go (or pressed again) before Voice could decide: this dictation still gets a decision,
+                            // so the video's words can't slip through. A press that short was all video if anything played.
+                            guard self.press == thisPress, self.session === s, !self.pausedMedia else {
+                                if MediaGate.isPlaying(peak: peak) { s.silence(upTo: Int.max / 4) }
+                                s.mediaSettled(); return
+                            }
                             let playing = MediaGate.isPlaying(peak: peak)
                             Log.note("media: apps [\(players.map(\.name).joined(separator: ", "))], loudness \(peak.map { String(format: "%.4f", $0) } ?? "no tap"), paused \(playing)")
                             guard playing else { s.mediaSettled(); return }  // nothing playing: every word kept
@@ -550,6 +590,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                     let audio = played.mono16k()
                                     let canTakeOff = ["whisper", "parakeet"].contains(self.config.engine) && s.drafter == nil
                                     if canTakeOff, played.peak > 0, audio.count > 1600 {
+                                        // The second before the key went down came from the mic alone; the app's sound
+                                        // wasn't heard then, so that part is left out, all but its last 0.15 s.
+                                        if mine.preRoll > 2400 { s.silence(upTo: mine.preRoll - 2400) }
                                         s.mediaEcho(audio)
                                         s.mediaSettled()
                                         Log.note("media: kept every word; the video's \(String(format: "%.1f", Double(audio.count) / 16000)) s will come off the start, quiet \(Log.ms(quietAt.timeIntervalSince(pausedAt)))ms after the pause")
@@ -570,6 +613,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: settle)
         let (s, module) = engine.session(config)
         session = s
+        pendingMedia.session = s
         if holdForMedia { s.holdForMedia(); holdForMedia = false }
         startedAt = Date()
         names = Names(text: Config.loadNames()); Insert.keepNames = Set(names.spellings)
@@ -610,6 +654,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         recorder.begin(onBuffer: { buf in s.push(buf) },
                        onLevel: { [weak self] v in DispatchQueue.main.async { self?.hud.level(v) } })
+        pendingMedia.preRoll = Int(recorder.pushedFrames)
         micOwner = thisPress
         Log.note("recording from \(recorder.inputName)")
         busy = false
@@ -655,6 +700,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Typed as you talk, holding the key or hands-free, but only into a text box (D-763). Holding the key needs a
         // box Accessibility names as text; hands-free also takes a box it can't name (Electron apps), as at release.
         let focus = config.mode == "rewrite" ? (kind: FocusKind.notText, role: "") : Insert.focus()
+        // Moved away from the box you started in: live typing stops; the rest follows that box at the end.
+        if let b = startBox, !liveStopped, !isAt(b) { liveStopped = true; Log.note("live: you moved away from the box, live typing stopped") }
         let canType = keys.handsFree ? focus.kind != .notText : focus.kind == .text
         if canType, !liveStopped, liveTyped == livePieces - 1, waitingText == nil {
             let out = config.mode == "noUms" ? Fillers.strip(names.apply(text)) : names.apply(text)
@@ -871,7 +918,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let pv = attr(kAXPositionAttribute), let sv = attr(kAXSizeAttribute), CFGetTypeID(pv) == AXValueGetTypeID(), CFGetTypeID(sv) == AXValueGetTypeID(),
            AXValueGetValue(pv as! AXValue, .cgPoint, &p), AXValueGetValue(sv as! AXValue, .cgSize, &sz) { frame = CGRect(origin: p, size: sz) }
         let prefix = withText ? Insert.value(el).map { String($0.prefix(BoxMatch.prefixLength)) } : nil
-        return BoxPrint(role: attr(kAXRoleAttribute) as? String, identifier: attr(kAXIdentifierAttribute) as? String, frame: frame, prefix: prefix)
+        // Where the box is: its window's title and the web page's address when there is one, so a chat app's one
+        // reused box in another conversation isn't taken for the same box.
+        var title = ""
+        if let w = attr(kAXWindowAttribute), CFGetTypeID(w) == AXUIElementGetTypeID() {
+            var t: CFTypeRef?
+            if AXUIElementCopyAttributeValue(w as! AXUIElement, kAXTitleAttribute as CFString, &t) == .success { title = t as? String ?? "" }
+        }
+        var url = ""
+        var node: AXUIElement? = el
+        for _ in 0..<40 {
+            guard let n = node else { break }
+            var r: CFTypeRef?, u: CFTypeRef?, p: CFTypeRef?
+            if AXUIElementCopyAttributeValue(n, kAXRoleAttribute as CFString, &r) == .success, (r as? String) == "AXWebArea",
+               AXUIElementCopyAttributeValue(n, kAXURLAttribute as CFString, &u) == .success {
+                url = (u as? URL)?.absoluteString ?? (u as? String) ?? ""; break
+            }
+            guard AXUIElementCopyAttributeValue(n, kAXParentAttribute as CFString, &p) == .success, let p, CFGetTypeID(p) == AXUIElementGetTypeID() else { break }
+            node = (p as! AXUIElement)
+        }
+        let context = title.isEmpty && url.isEmpty ? nil : title + "|" + url
+        return BoxPrint(role: attr(kAXRoleAttribute) as? String, identifier: attr(kAXIdentifierAttribute) as? String, frame: frame, prefix: prefix, context: context)
     }
 
     /// True when the cursor is back in that very box (D-817): the same element, or one that is clearly the same box
@@ -1066,14 +1133,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if draftHandled {}
             else if text.isEmpty, self.delivery != gen { Log.note("no words, a new press began") }
             else if text.isEmpty { self.hud.flash(self.recorder.peak < 0.005 ? "No sound from \(self.recorder.inputName)" : "Didn't catch that", for: 2.5) }
+            else if s.echoFailed {
+                // A video was playing and its words couldn't be written down to take them off: nothing is typed.
+                self.hud.flash("A video was playing and its words couldn't be checked. Press ⌃⌥V to paste", for: 3.5)
+                Log.note("media: the video's words couldn't be written down, kept for paste")
+            }
             else {
                 // The words go where your cursor is now, whichever app that is. If it isn't in a text box (a web page,
                 // a video, a list), nothing is typed there: the words wait for you to click into one.
                 let focus = Insert.focus()
                 let newer = self.delivery != gen  // you pressed again while these words were being written
-                if let b = box, !newer, !rest.isEmpty, !self.isAt(b) {
-                    // You moved away while the words were written: they go back to the box you started in.
-                    if self.unchanged(b), Insert.textInto(b.element, rest) {
+                if let b = box, !rest.isEmpty, !self.isAt(b) {
+                    // You moved away while the words were written: they go back to the box you started in. When a
+                    // newer dictation has started they never go anywhere else: Paste last has them.
+                    if newer { Log.note("insert: away from the box you started in and a new press began, kept for paste") }
+                    else if self.unchanged(b), Insert.textInto(b.element, rest) {
                         inserted = true
                         self.hud.flash("Typed into \(b.app), where you started", ok: true, for: 1.5)
                         Log.note("insert: typed into the box you started in, without bringing it forward")
@@ -1087,7 +1161,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 } else {
                     inserted = rest.isEmpty ? true : Insert.text(rest, joining: typedLive > 0 ? gen : nil)
                     if inserted, !newer { self.fixWatch.watch(text) }
-                    if inserted, !newer, draftHandled == false { self.pointOutWords(text, audio: s.recorded, gen: gen) }
+                    if inserted, !newer, draftHandled == false, !s.hadMedia { self.pointOutWords(text, audio: s.recorded, gen: gen) }
                     if !newer {
                         if inserted { if handsFree { self.hud.flash("Hands-free done", ok: true) } else { self.hud.hide() } }
                         else { self.hud.flash("Couldn't type it here. Press ⌃⌥V to paste", for: 2.5) }
@@ -1215,13 +1289,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// waits. Only a "not", a number, a name or the first or last three words, heard differently, is shown.
     private func pointOutWords(_ text: String, audio: [Float], gen: Int) {
         riskSwap = nil
-        guard config.engine == "whisper", config.riskMarks == true else { return }
+        guard config.engine == "whisper", config.riskMarks == true, let (element, _) = Insert.focusedElement(), let typed = Insert.last?.text else { return }
         Task { [weak self] in
             guard let self, let other = await self.engine.otherHearing(audio) else { return }
+            // A newer dictation since: this one's check is dropped, so it can't mark or count the new one.
+            guard self.delivery == gen, self.session == nil else { return }
             let marks = RiskyWords.find(final: text, other: self.names.apply(other), names: Set(self.names.spellings))
             self.fixWatch.marked = Set(marks.flatMap { $0.heard.lowercased().split(separator: " ").map(String.init) })
-            guard self.delivery == gen, self.session == nil, let m = marks.first else { Log.note("risk: nothing to check"); return }
-            self.riskSwap = (m.swapped, gen)
+            guard let m = marks.first else { Log.note("risk: nothing to check"); return }
+            self.riskSwap = (m.swapped, gen, element, typed)
             self.hud.flash("Check “\(m.heard)”, also heard “\(m.other)”. ⌃⌥S swaps", for: 4)
             Log.note("risk: \(marks.count) to check (\(marks.map(\.kind).joined(separator: ", ")))")
         }
@@ -1230,6 +1306,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// ⌃⌥S: the last dictation out, the other hearing in, only while it is still the last thing typed.
     private func swapRisky() {
         guard session == nil, let r = riskSwap, r.gen == delivery else { hud.flash("Nothing to swap"); return }
+        // Only in the very box, and only when it can be read and still ends with what went in: never a blind delete.
+        let typed = r.typed.trimmingCharacters(in: .whitespaces)
+        guard let (now, _) = Insert.focusedElement(), CFEqual(now, r.element), let v = Insert.value(now),
+              v.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix(typed) else {
+            hud.flash("Can't swap here. Press ⌃⌥Z, then ⌃⌥V", for: 2.5); Log.note("risk swap: box changed, not swapped"); return
+        }
         riskSwap = nil
         if let why = Insert.undoLast() { hud.flash(why, for: 2.5); Log.note("risk swap: \(why)"); return }
         let ok = Insert.text(r.swapped)

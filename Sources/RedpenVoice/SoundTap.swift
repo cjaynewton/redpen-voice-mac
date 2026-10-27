@@ -61,21 +61,24 @@ enum SoundTap {
         var proc: AudioDeviceIOProcID?
         let q = DispatchQueue(label: "redpen.voice.tap")
         let ok = AudioDeviceCreateIOProcIDWithBlock(&proc, dev, q) { _, input, _, _, _ in
-            for (k, b) in UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input)).enumerated() {
+            var mono: [Float] = []
+            var parts = 0
+            for b in UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input)) {
                 guard let p = b.mData?.assumingMemoryBound(to: Float.self) else { continue }
                 let n = Int(b.mDataByteSize) / MemoryLayout<Float>.size
                 var m: Float = 0
                 for i in 0..<n { m = max(m, abs(p[i])) }
                 box.value = max(box.value, m)
                 box.frames += n
-                // The first buffer, its channels averaged to one: enough to hear the words.
-                if let record, k == 0 {
-                    let ch = max(1, Int(b.mNumberChannels))
-                    var mono = [Float](repeating: 0, count: n / ch)
-                    for f in 0..<mono.count { var sum: Float = 0; for c in 0..<ch { sum += p[f * ch + c] }; mono[f] = sum / Float(ch) }
-                    record.add(mono, rate: deviceRate)
+                // Every channel, whether they come together in one buffer or one buffer each, mixed to one.
+                if record != nil {
+                    let ch = max(1, Int(b.mNumberChannels)), frames = n / ch
+                    if mono.isEmpty { mono = [Float](repeating: 0, count: frames) }
+                    for f in 0..<min(frames, mono.count) { var sum: Float = 0; for c in 0..<ch { sum += p[f * ch + c] }; mono[f] += sum / Float(ch) }
+                    parts += 1
                 }
             }
+            if let record, parts > 0 { record.add(parts == 1 ? mono : mono.map { $0 / Float(parts) }, rate: deviceRate) }
         } == noErr
         guard ok, let proc, AudioDeviceStart(dev, proc) == noErr else {
             if let proc { AudioDeviceDestroyIOProcID(dev, proc) }

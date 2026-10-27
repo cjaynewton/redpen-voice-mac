@@ -11,8 +11,11 @@ public struct BoxPrint: Equatable, Sendable {
     public let frame: CGRect?
     /// The start of the box's text at key-down (up to 200 characters), nil when the box won't say.
     public let prefix: String?
-    public init(role: String?, identifier: String?, frame: CGRect?, prefix: String?) {
-        self.role = role; self.identifier = identifier; self.frame = frame; self.prefix = prefix
+    /// Where the box is: its window's title and, in a browser or web app, the page address. A chat app reuses one
+    /// empty box for every conversation; this tells them apart.
+    public let context: String?
+    public init(role: String?, identifier: String?, frame: CGRect?, prefix: String?, context: String? = nil) {
+        self.role = role; self.identifier = identifier; self.frame = frame; self.prefix = prefix; self.context = context
     }
 }
 
@@ -26,6 +29,10 @@ public enum BoxMatch {
             guard let t = nowText, t.hasPrefix(p) else { return false }
         } else if !sameElement {
             return false  // a different element whose text can't be compared: never guess
+        }
+        // An empty or unreadable box at key-down proves nothing by its text: the same window and page must.
+        if (start.prefix ?? "").isEmpty {
+            guard let c = start.context, !c.isEmpty, c == now.context else { return false }
         }
         if sameElement { return true }
         guard start.role != nil, start.role == now.role else { return false }
