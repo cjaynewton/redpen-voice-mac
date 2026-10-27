@@ -13,7 +13,7 @@ Everything runs on your Mac. Your voice is never sent anywhere.
 ## How it works
 
 1. **Hold Fn or right Option and talk.** A small bar at the bottom of the screen moves with your voice, so you know it's listening. With the Instant engine, your words show in it as you talk.
-2. **Let go.** The words are typed into the box you were in, in any app. If the typing doesn't land, Voice pastes them instead and puts your clipboard back exactly as it was.
+2. **Let go.** The words are typed into the box you were in, in any app, without touching your clipboard. If Voice can't see them arrive, the bar says so and Control-Option-V pastes them.
 
    <img src="docs/screenshots/bar-typed.png" alt="The bar after letting go: a green tick and Typed into Notes, where you started" width="287">
 
@@ -150,7 +150,7 @@ On [TORGO](https://www.cs.toronto.edu/~complingweb/data/TORGO/torgo.html), recor
   - The log in `~/Library/Logs/RedpenVoice.log` holds timings, app names and counts, never your words.
 - **The microphone stays on while Voice is open**, so the Mac's orange microphone dot stays lit. It holds only the last 0.6 seconds in memory, so the word you say as the key goes down isn't cut, and that is overwritten continuously. Nothing is kept until you press the key.
 - **Text boxes.** It reads the box you're dictating into, on your Mac: when you start (so the words go back to the right box) and after (to learn the names you fix). Only the fixed names are kept.
-- **Clipboard.** Voice types your words; it only borrows the clipboard when typing didn't land, and for Paste last. The text is marked so clipboard managers skip it, and what you had is put back half a second later, unless you copied something new in between.
+- **Clipboard.** Voice types your words; it only borrows the clipboard for Paste last. The text is marked so clipboard managers skip it, and what you had is put back half a second later, unless you copied something new in between. A second Paste last within 1.5 seconds waits, so an app that's slow to paste doesn't get it twice; an app frozen for longer than that is the one case this can't rule out.
 - **How long dictations are kept** is your choice in the History window: the last 2,000, the last week, or nothing (Paste last then works until Voice quits).
 - **Videos.** When it pauses a video, it listens to that app's sound for about a second, in memory only, to take the video's words off the start of your dictation.
 - **Network.** The Whisper or Instant model downloads once from Hugging Face if you choose one; Apple's speech files for your language download once from Apple if the Mac doesn't have them yet; and the app checks GitHub once a day for a newer version.
