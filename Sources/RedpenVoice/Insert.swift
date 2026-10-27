@@ -9,7 +9,7 @@ import VoiceCore
 enum Insert {
     /// `joining`: the dictation this text belongs to, when it is typed in pieces, so Take back removes all of it.
     static func text(_ text: String, joining: Int? = nil, while still: () -> Bool = { true }) -> Bool {
-        typedSome = false; typedCount = 0; typedPadding = 0
+        typedSome = false; typedCount = 0; typedPadding = 0; unconfirmed = false
         guard !text.isEmpty else { return true }  // nothing to type; replacing the selection with "" would delete it
         guard !ownWindowInFront else { Log.note("insert: a Redpen Voice window is in front, not typed"); return false }
         dictation = joining
@@ -39,19 +39,23 @@ enum Insert {
         guard focus().kind != .notText else { Log.note("insert: focus left the text box, not typed"); return false }
         let before = joining == nil ? value(el) : nil
         let ok = type(padded, while: still)
-        // A whole dictation in a box that says what it holds: if the typing didn't land, paste it instead (D-825).
-        if ok, let before, !landed(in: el, before: before) {
-            Log.note("insert: typing didn't land, pasting instead")
-            typedSome = false; typedCount = 0
-            return paste(padded)
-        }
         if ok { remember(padded) }
+        // A whole dictation in a box that says what it holds, and the box hasn't changed a second later: it may not
+        // have landed. Never pasted automatically (a busy app can still take the typing late, and then it would be
+        // there twice): the caller says so and Control-Option-V pastes it (D-825).
+        if ok, let before, !landed(in: el, before: before) {
+            unconfirmed = true
+            Log.note("insert: typing not seen in the box after a second")
+        }
         return ok
     }
 
-    /// The box's text changed within 0.3 s of typing.
+    /// True after the last insert when typing was sent but not seen in the box.
+    private(set) static var unconfirmed = false
+
+    /// The box's text changed within a second of typing.
     private static func landed(in el: AXUIElement, before: String) -> Bool {
-        for _ in 0..<6 {
+        for _ in 0..<20 {
             usleep(50_000)
             if let now = value(el), now != before { return true }
         }
@@ -66,7 +70,12 @@ enum Insert {
     static func paste(_ text: String) -> Bool {
         guard !text.isEmpty, !ownWindowInFront else { return false }
         let pb = NSPasteboard.general
-        let saved = ClipboardSnapshot.take(pb)
+        // One borrow at a time: a second paste within the half second keeps the first one's original, so what you
+        // had is what comes back, never Voice's own text.
+        let saved: ClipboardSnapshot
+        if let b = borrowed, pb.changeCount == b.mine { saved = b.original; b.restore.cancel() }
+        else { saved = ClipboardSnapshot.take(pb) }
+        borrowed = nil
         pb.clearContents()
         let item = NSPasteboardItem()
         item.setString(text, forType: .string)
@@ -81,31 +90,47 @@ enum Insert {
         // Command alone: Fn or Option held to talk would make it another shortcut.
         down.flags = .maskCommand; up.flags = .maskCommand
         down.post(tap: .cgSessionEventTap); up.post(tap: .cgSessionEventTap)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+        let restore = DispatchWorkItem {
+            borrowed = nil
             if pb.changeCount == mine { saved.restore(to: pb); Log.note("clipboard: put back") }
             else { Log.note("clipboard: something new was copied meanwhile, left as it is") }
         }
+        borrowed = (saved, mine, restore)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: restore)
         remember(text)
         return true
     }
 
-    /// The key that types "v" in the keyboard layout in use, so Command-V pastes on Dvorak and AZERTY too.
+    /// The clipboard Voice has borrowed and not yet put back: what you had, the change count of Voice's own text, and
+    /// the pending put-back.
+    nonisolated(unsafe) private static var borrowed: (original: ClipboardSnapshot, mine: Int, restore: DispatchWorkItem)?
+
+    /// The key that gives "v" with Command held in the keyboard layout in use, so Command-V pastes on Dvorak, AZERTY
+    /// and "Dvorak - QWERTY ⌘" (where Command keys follow QWERTY). Found once per layout.
     private static var vKey: CGKeyCode {
         guard let src = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
               let ptr = TISGetInputSourceProperty(src, kTISPropertyUnicodeKeyLayoutData) else { return CGKeyCode(kVK_ANSI_V) }
+        let idPtr = TISGetInputSourceProperty(src, kTISPropertyInputSourceID)
+        let id = idPtr.map { Unmanaged<CFString>.fromOpaque($0).takeUnretainedValue() as String } ?? ""
+        let cacheKey = "\(id)/\(LMGetKbdType())"
+        if let c = vKeyCache, c.key == cacheKey { return c.code }
         let data = Unmanaged<CFData>.fromOpaque(ptr).takeUnretainedValue() as Data
-        return data.withUnsafeBytes { raw -> CGKeyCode in
+        let code = data.withUnsafeBytes { raw -> CGKeyCode in
             guard let layout = raw.baseAddress?.assumingMemoryBound(to: UCKeyboardLayout.self) else { return CGKeyCode(kVK_ANSI_V) }
+            let command = UInt32((cmdKey >> 8) & 0xFF)
             for code in 0..<128 {
                 var dead: UInt32 = 0, len = 0
                 var chars = [UniChar](repeating: 0, count: 4)
-                let st = UCKeyTranslate(layout, UInt16(code), UInt16(kUCKeyActionDisplay), 0, UInt32(LMGetKbdType()),
+                let st = UCKeyTranslate(layout, UInt16(code), UInt16(kUCKeyActionDown), command, UInt32(LMGetKbdType()),
                                         OptionBits(kUCKeyTranslateNoDeadKeysBit), &dead, 4, &len, &chars)
                 if st == noErr, len == 1, chars[0] == UniChar(("v" as UnicodeScalar).value) { return CGKeyCode(code) }
             }
             return CGKeyCode(kVK_ANSI_V)
         }
+        vKeyCache = (cacheKey, code)
+        return code
     }
+    nonisolated(unsafe) private static var vKeyCache: (key: String, code: CGKeyCode)?
 
     /// What kind of place the cursor is in right now, and the focused element's role for the log.
     static func focus() -> (kind: FocusKind, role: String) {

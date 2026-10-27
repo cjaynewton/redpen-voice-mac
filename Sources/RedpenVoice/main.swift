@@ -358,6 +358,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                    let w = attr(f as! AXUIElement, kAXWindowAttribute), ((attr(w as! AXUIElement, kAXTitleAttribute) as? String) ?? "").contains("rv-paste-test") {
                     let el = f as! AXUIElement
                     lines.append("pasted: \(Insert.paste("Pasted by the backup route."))")
+                    usleep(100_000)
+                    // A second paste inside the half second: the clipboard must still come back as it was before both.
+                    lines.append("pasted again: \(Insert.paste(" Twice."))")
                     usleep(400_000)
                     lines.append("box now: \((Insert.value(el) ?? "?").debugDescription)")
                     ok = true
@@ -564,7 +567,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Log.note("first run: Accessibility arrived, key watchers set up again")
             },
             relaunch: { [weak self] in self?.relaunch() },
-            openSettings: { [weak self] in self?.openSettings() }
+            openSettings: { [weak self] in self?.openSettings() },
+            changed: { [weak self] in guard let self else { return }; self.config = Config.load(); self.syncSettings(); self.refreshMenu() }
         )
     }
 
@@ -1139,6 +1143,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func checkWaiting(until: Date) {
         guard let text = waitingText, session == nil else { return }
+        // Voice's own windows (Settings, History) are never where waiting words go.
+        if Insert.ownWindowInFront { waitSeen = 0; return }
         if let b = waitingBox {
             if Date() > until { stopWaiting(); Log.note("insert: you didn't go back to the box in 10 minutes, kept for paste"); return }
             guard isAt(b) else {
@@ -1322,7 +1328,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     if inserted, !newer { self.fixWatch.watch(text) }
                     if inserted, !newer, draftHandled == false, !s.hadMedia { self.pointOutWords(text, audio: s.recorded, gen: gen) }
                     if !newer {
-                        if inserted { if handsFree { self.hud.flash("Hands-free done", ok: true) } else { self.hud.hide() } }
+                        if inserted, Insert.unconfirmed { self.hud.flash("Didn't see it land. Press ⌃⌥V to paste it", for: 3) }
+                        else if inserted { if handsFree { self.hud.flash("Hands-free done", ok: true) } else { self.hud.hide() } }
                         else { self.hud.flash("Couldn't type it here. Press ⌃⌥V to paste", for: 2.5) }
                     }
                     Log.note("insert: focus \(focus.role), \(focus.kind.rawValue)")
@@ -1608,6 +1615,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openSettings() {
         syncSettings()
         if settings == nil {
+            config = Config.load()  // the saved file as it is now, with any change made in the first window
             let model = SettingsModel(config: config, engine: engine) { [weak self] c in
                 guard let self else { return }
                 let engineChanged = c.engine != self.config.engine || c.locale != self.config.locale || c.draftMode != self.config.draftMode || c.riskMarks != self.config.riskMarks

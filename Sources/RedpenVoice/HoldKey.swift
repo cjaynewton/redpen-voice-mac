@@ -73,6 +73,11 @@ final class HoldKey {
 
     /// Sets the watchers up again. Watchers made before Accessibility was allowed can stay deaf after it is.
     func restart() {
+        // Mid-press or hands-free: setting up again would lose the press, so it waits until the key is free.
+        if active || latched || !held.isEmpty {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.restart() }
+            return
+        }
         for m in monitors { NSEvent.removeMonitor(m) }
         monitors.removeAll(); held.removeAll(); active = false
         start()

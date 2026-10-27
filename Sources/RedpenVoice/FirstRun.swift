@@ -17,6 +17,8 @@ struct FirstRunHost {
     var restartKeys: () -> Void
     var relaunch: () -> Void
     var openSettings: () -> Void
+    /// A setting was changed here: the app and Settings take the saved file as it is now.
+    var changed: () -> Void = {}
 }
 
 /// The first window (D-825): one screen that proves it works before you leave it. It asks how your words should come
@@ -26,6 +28,7 @@ struct FirstRunHost {
 final class FirstRunWindow {
     private var window: NSWindow?
     private let model: FirstRunModel
+    private var closeWatch: Any?
     var onDone: () -> Void = {}
 
     init(config: Config, host: FirstRunHost) {
@@ -44,6 +47,10 @@ final class FirstRunWindow {
         w.center()
         w.isReleasedWhenClosed = false
         window = w
+        // The window's own close button stops the microphone check too.
+        closeWatch = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: w, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.model.stop() }
+        }
         model.start()
         NSApp.activate(ignoringOtherApps: true)
         w.makeKeyAndOrderFront(nil)
@@ -75,6 +82,8 @@ final class FirstRunModel: ObservableObject {
     let host: FirstRunHost
     var onDone: () -> Void = {}
     private var listening = false
+    /// False once the window has closed: nothing it started keeps running.
+    private var active = false
     private var lastLoud = Date()
     private var listeningSince = Date()
 
@@ -90,13 +99,15 @@ final class FirstRunModel: ObservableObject {
     var keyNames: String { HoldKey.keys(for: config.talkKeyChoice).map(\.name).joined(separator: " or ") }
     var canFinish: Bool { micOK && access && engineReady && !fnBlocking && (practiced || skipped) }
 
-    func start() { tick() }
+    func start() { active = true; tick() }
 
     func stop() {
+        active = false
         if listening { host.stopLevel(); listening = false }
     }
 
     func tick() {
+        guard active else { return }
         mic = AVCaptureDevice.authorizationStatus(for: .audio)
         config = Config.load()  // Settings may have changed the engine or the key
         let trusted = AXIsProcessTrusted()
@@ -110,7 +121,7 @@ final class FirstRunModel: ObservableObject {
             listening = true; listeningSince = Date(); lastLoud = Date()
             host.watchLevel { [weak self] v in
                 DispatchQueue.main.async {
-                    guard let self else { return }
+                    guard let self, self.active else { return }
                     self.level = v
                     if v > 0.25 { self.lastLoud = Date() }
                     self.silentFor = Date().timeIntervalSince(self.lastLoud)
@@ -141,6 +152,7 @@ final class FirstRunModel: ObservableObject {
     /// Changes one setting on the saved file as it is now, so a change made in Settings meanwhile is never undone.
     private func update(_ change: (inout Config) -> Void) {
         var c = Config.load(); change(&c); c.save(); config = c
+        host.changed()
     }
 
     func useRightOption() {
