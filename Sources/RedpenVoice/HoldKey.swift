@@ -75,7 +75,8 @@ final class HoldKey {
     func restart() {
         // Hands-free, or the key really still down: setting up again would lose the press, so it waits.
         // Whether any talk key is physically down now, modifier or not, read from the keyboard's own state.
-        let down = keys.contains { k in CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(k.code))
+        // The hardware's own state: Voice's typed keys don't change it.
+        let down = keys.contains { k in CGEventSource.keyState(.hidSystemState, key: CGKeyCode(k.code))
             || (Self.modifiers[k.code].map { NSEvent.modifierFlags.contains($0) } ?? false) }
         if latched || ((active || !held.isEmpty) && down) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.restart() }
