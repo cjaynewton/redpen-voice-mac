@@ -17,7 +17,7 @@ Everything runs on your Mac. Your voice is never sent anywhere.
 
    <img src="docs/screenshots/bar-typed.png" alt="The bar after letting go: a green tick and Typed into Notes, where you started" width="287">
 
-3. **Moved somewhere else while it wrote?** The words never go into the wrong box. They wait until you're back in the one you started in, and Control-Option-V pastes them anywhere.
+3. **Moved somewhere else while it wrote?** Before typing, Voice checks it's the same box you started in. If it can't be sure, it types nothing: the words wait until you're back in that box, and Control-Option-V pastes them anywhere.
 
    <img src="docs/screenshots/bar-saved.png" alt="The bar saying the words are saved for Chrome and go in when you are back in that box, or with Control-Option-V" width="612">
 
@@ -43,18 +43,18 @@ Tap the key twice to keep talking with your hands free, and tap once more to fin
 ## What it does
 
 - **Any key you like.** Fn, right Option, or a key you pick in Settings.
-- **Words appear as you talk.** With Instant, your words show in the bar while you talk and go into the box the moment you let go. With Whisper, each stretch is written at your next pause, so a one-minute dictation lands about 2 seconds after you stop; in a text box the words are typed as you go.
+- **Words appear as you talk.** With Instant, your words show in the bar while you talk and go into the box right after you let go. With Whisper, each stretch is written at your next pause, so a one-minute dictation lands about 2 seconds after you stop; in a text box the words are typed as you go.
 - **Your words, as said.** By default nothing is rewritten. Two switches change that:
   - **Take out ums and uhs** removes only the sounds. Every word stays.
   - **Tidy it up** also takes out repeats and false starts and fixes punctuation, using Apple's on-device model. It can change a word now and then.
 - **Three engines, named for what they do.**
   - **Most accurate** is Whisper, OpenAI's model: the fewest mistakes, words about 2 seconds after you stop, a one-time 626 MB download.
-  - **Instant** is Parakeet Unified, NVIDIA's model: it writes while you talk, so your words are ready about 0.05 seconds after you let go, with about 1 more word in 100 wrong than Whisper. English only, a one-time 600 MB download.
-  - **Mac built-in** is already on your Mac, with the most mistakes of the three.
+  - **Instant** is Parakeet Unified, NVIDIA's model: it writes while you talk, so there's no wait for writing (about 0.05 seconds), with about 1 more word in 100 wrong than Whisper. English only, a one-time 600 MB download.
+  - **Mac built-in** is Apple's engine, built into macOS (if the speech files for your language aren't on the Mac yet, they download from Apple once), with the most mistakes of the three.
 - **Words it gets wrong.** A plain list, one per line: `claw code = Claude Code` fixes what it hears, a single name tells it to listen for that name.
 - **Learns your names.** Fix a name by hand after a dictation ("so well" to "Sowell") and the second time you make the same fix, it goes into your list. Only names and terms are learned, never everyday words, and the list stays a plain file you can edit.
 - **Learns how you talk.** Like a driving app that learns how you drive, it learns your pace and how long you pause, and uses that to decide where a thought ends. Only the numbers are kept.
-- **Goes back to the box you started in.** If you move to another app or box while the words are being written, they go into the box you started in, never into the one you moved to. When that app allows it they go straight in; otherwise they wait until you're back in that box. If that box was sent or changed meanwhile, nothing is typed and Paste last has the words. If you started on a web page or a video instead of a text box, nothing is typed there (on a video page, letters are shortcuts): the words wait for you to click into a box.
+- **Goes back to the box you started in.** If you move to another app or box while the words are being written, Voice only types into the box you started in, after checking it's the same box: same place, and its text still starting the way it did. When that app allows it they go straight in; otherwise they wait until you're back in that box. If that box was sent or changed meanwhile, or Voice can't tell, nothing is typed and Paste last has the words. If you started on a web page or a video instead of a text box, nothing is typed there (on a video page, letters are shortcuts): the words wait for you to click into a box.
 - **Fits the sentence.** Dictate into the middle of a sentence and the first word starts lowercase ("and then and we go"), except "I" and names from your list; right before a word, the closing full stop goes. Only in boxes that tell Voice what's around the cursor.
 - **Nothing lost.** Every dictation is kept in a history file on your Mac. Press Control-Option-V to paste the last one again.
 - **Take it back.** Control-Option-Z removes the last dictation, only when it is still the last thing typed.
@@ -85,7 +85,10 @@ Every choice on one page: the engine, how your words come out, the key you talk 
 
 ## The first time you open it
 
-One window asks how your words should come out and walks you through the two permissions it needs: the microphone, and Accessibility so it can type into other apps and see the Fn key. If you talk with Fn, it also checks the Mac's own Fn setting.
+One window asks how your words should come out and walks you through the microphone and Accessibility (so it can type into other apps and see the Fn key). If you talk with Fn, it also checks the Mac's own Fn setting. macOS also asks for:
+
+- **Speech Recognition**, when the app first opens, for Apple's own engine.
+- **System audio**, the first time a video or song is playing when you start talking, so Voice can tell it's playing and take its words off the start of your dictation.
 
 <p align="center">
 <picture>
@@ -98,13 +101,13 @@ One window asks how your words should come out and walks you through the two per
 
 All three engines were run on [WildSpeech-Bench](https://huggingface.co/datasets/tencent/WildSpeech-Bench), 1,100 public recordings of people asking questions: some in quiet rooms, some on the street, some with others talking.
 
-| Engine | Words wrong | Ready after you let go |
+| Engine | Words wrong | Engine's part after the audio ends |
 |---|---|---|
 | Most accurate (Whisper) | 7.8% | about 2 s |
 | Instant (Parakeet Unified) | 9.2% | about 0.05 s |
 | Mac built-in | 12.0% | |
 
-The Instant figure is the model fed in pieces as a microphone would, the way the app runs it. "Ready after you let go" is the engine's part, measured on an M1 Max; Voice also listens a moment longer for a last syllable before it finishes.
+The Instant figure is the model fed in pieces as a microphone would, the way the app runs it. The last column is only the engine's part, measured on an M1 Max. On top of it, Voice keeps listening 0.1 seconds after you let go (0.5 seconds if you were still talking) and then types the words: across 19 real dictations that part took a median 0.58 seconds (0.17 seconds when you'd already stopped talking). So with Instant, words land about 0.6 seconds after you let go.
 
 On [TORGO](https://www.cs.toronto.edu/~complingweb/data/TORGO/torgo.html), recordings of slurred speech from people with dysarthria, Whisper got 32.2% of words wrong and the built-in engine 39.4%. On the clear speech in the same set, 2.2% and 7.7%.
 
@@ -118,13 +121,13 @@ On [TORGO](https://www.cs.toronto.edu/~complingweb/data/TORGO/torgo.html), recor
 - **The microphone stays on while Voice is open**, so the Mac's orange microphone dot stays lit. It holds only the last 0.6 seconds in memory, so the word you say as the key goes down isn't cut, and that is overwritten continuously. Nothing is kept until you press the key.
 - **Text boxes.** It reads the box you're dictating into, on your Mac: when you start (so the words go back to the right box) and after (to learn the names you fix). Only the fixed names are kept.
 - **Videos.** When it pauses a video, it listens to that app's sound for about a second, in memory only, to take the video's words off the start of your dictation.
-- **Network.** The Whisper or Instant model downloads once from Hugging Face if you choose one, and the app checks GitHub once a day for a newer version.
+- **Network.** The Whisper or Instant model downloads once from Hugging Face if you choose one; Apple's speech files for your language download once from Apple if the Mac doesn't have them yet; and the app checks GitHub once a day for a newer version.
 
 ## Install
 
 Download `Redpen-Voice-0.11.dmg` from the [latest release](https://github.com/cjaynewton/redpen-voice-mac/releases/latest), open it and drag Redpen Voice to Applications. It needs macOS 26 on a Mac with Apple silicon, and updates itself.
 
-First run asks for the microphone and Accessibility (to type into other apps and see the Fn key). If you talk with Fn, set "Press 🌐 key to" to Do Nothing in Keyboard settings, or the Mac also opens its own dictation or the emoji picker.
+First run asks for the microphone and Accessibility (to type into other apps and see the Fn key); macOS also asks for Speech Recognition, and for system audio the first time a video is playing when you talk. If you talk with Fn, set "Press 🌐 key to" to Do Nothing in Keyboard settings, or the Mac also opens its own dictation or the emoji picker.
 
 ### Build from source
 
@@ -152,6 +155,7 @@ Runs the checks for the parts that need no microphone: the word list, history, t
 
 ## Credits
 
+- [Whisper](https://github.com/openai/whisper) by OpenAI (MIT), the Most accurate engine's model.
 - [WhisperKit](https://github.com/argmaxinc/argmax-oss-swift) by Argmax runs Whisper on the Mac.
 - [FluidAudio](https://github.com/FluidInference/FluidAudio) by Fluid Inference (Apache 2.0) runs Parakeet on the Mac.
 - [Parakeet Unified 0.6B](https://huggingface.co/nvidia/parakeet-unified-en-0.6b) by NVIDIA, the Instant engine's model, under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), converted for the Mac by [Fluid Inference](https://huggingface.co/FluidInference/parakeet-unified-en-0.6b-coreml).

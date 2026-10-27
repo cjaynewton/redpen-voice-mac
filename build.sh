@@ -43,8 +43,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>SUFeedURL</key><string>https://github.com/cjaynewton/redpen-voice-mac/releases/latest/download/appcast.xml</string>
   <key>SUPublicEDKey</key><string>$SPARKLE_PUBLIC_KEY</string>
   <key>SUEnableAutomaticChecks</key><true/>
-  <key>NSMicrophoneUsageDescription</key><string>Redpen Voice listens while you hold the key, and only then.</string>
-  <key>NSAudioCaptureUsageDescription</key><string>Redpen Voice checks for a split second whether a video or song is playing, so it can pause it while you talk. Nothing is recorded or kept.</string>
+  <key>NSMicrophoneUsageDescription</key><string>Redpen Voice keeps the microphone on while it's open, holding only the last 0.6 seconds in memory so your first word isn't cut. Nothing is kept until you press the talk key.</string>
+  <key>NSAudioCaptureUsageDescription</key><string>When a video or song is playing as you start talking, Redpen Voice listens to that app for about a second, to pause it and to take its words off the start of your dictation. It's held in memory only and never saved.</string>
   <key>NSSpeechRecognitionUsageDescription</key><string>Redpen Voice turns your speech into text on this Mac.</string>
 </dict></plist>
 PLIST

@@ -259,7 +259,7 @@ struct SettingsView: View {
             Divider().overlay(Ink.line)
             engineRow(on: !model.usesWhisper && !model.usesInstant, dashed: false, action: { model.config.engine = "dictation" }) {
                 title("Mac built-in", "Apple")
-                note("Already on your Mac, nothing to download. Gets the most words wrong of the three.")
+                note("Built into macOS. If the Mac's speech files for your language aren't there yet, they download from Apple once. Gets the most words wrong of the three.")
                 if !model.whisperOnDisk && model.fetch == nil { heard("Mac built-in heard", builtInLine) }
             }
             HStack(alignment: .firstTextBaseline, spacing: 4) {

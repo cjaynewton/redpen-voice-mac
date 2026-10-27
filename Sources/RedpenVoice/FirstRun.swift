@@ -107,7 +107,9 @@ struct FirstRunView: View {
         switch model.engine {
         case "ready": return "Downloaded and ready. Runs on this Mac only."
         case "unsupported": return "This Mac or language is not supported."
-        case let s where s.hasPrefix("downloading"): return "Downloading Apple's speech model " + s.dropFirst(11) + "%…"
+        case let s where s.hasPrefix("downloading"):
+            let name = ["whisper": "Whisper", "live": "Instant", "parakeet": "Instant"][model.config.engine] ?? "Apple's speech model"
+            return "Downloading \(name) " + s.dropFirst(11) + "%…"
         case let s where s.hasPrefix("failed"): return s
         default: return "Checking…"
         }
