@@ -68,7 +68,7 @@ On [TORGO](https://www.cs.toronto.edu/~complingweb/data/TORGO/torgo.html), recor
 
 ## Install
 
-A signed download is coming with version 0.11; until then, build it from source as below. It needs macOS 26 on a Mac with Apple silicon.
+Download `Redpen-Voice-0.11.dmg` from the [latest release](https://github.com/cjaynewton/redpen-voice-mac/releases/latest), open it and drag Redpen Voice to Applications. It needs macOS 26 on a Mac with Apple silicon, and updates itself.
 
 First run asks for the microphone and Accessibility (to type into other apps and see the Fn key). If you talk with Fn, set "Press 🌐 key to" to Do Nothing in Keyboard settings, or the Mac also opens its own dictation or the emoji picker.
 
