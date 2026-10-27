@@ -88,6 +88,18 @@ final class HUD {
         place()
     }
 
+    /// Saves the bar as it looks now, at 2x, for checking its shape without a screen recording (--hud-snapshot).
+    func snapshot(to url: URL) {
+        guard let layer = box.layer else { return }
+        let size = box.bounds.size, scale: CGFloat = 2
+        guard let ctx = CGContext(data: nil, width: Int(size.width * scale), height: Int(size.height * scale), bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return }
+        ctx.scaleBy(x: scale, y: scale)
+        layer.render(in: ctx)
+        if let img = ctx.makeImage() { try? NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:])?.write(to: url) }
+    }
+
     func flash(_ text: String, ok: Bool = false, for seconds: Double = 1.2) {
         show(text, level: false, ok: ok)
         let w = DispatchWorkItem { [weak self] in self?.panel.orderOut(nil) }
@@ -150,7 +162,8 @@ final class HUD {
         var width = x + (classic ? 14 : 16)
         if classic { width = text.isEmpty ? 160 : 240 }
         panel.setContentSize(NSSize(width: width, height: height))
-        box.layer?.cornerRadius = !classic && !(level && style == "tape") ? height / 2 : 4
+        // Square-ish corners in every style and state, never a pill (D-813).
+        box.layer?.cornerRadius = 3
     }
 
     // Above where chat apps put their typing box, so it never hides inside one. On the screen with the pointer:

@@ -118,7 +118,7 @@ final class SettingsWindow {
             Ink.registerFonts()
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 720), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
             w.title = "Redpen Voice"
-            w.contentView = NSHostingView(rootView: SettingsView(model: model))
+            w.contentView = NSHostingView(rootView: SettingsView(model: model).buttonBorderShape(.roundedRectangle(radius: 4)))
             w.contentMinSize = NSSize(width: 540, height: 420)
             w.center(); w.isReleasedWhenClosed = false
             window = w

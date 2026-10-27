@@ -49,6 +49,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 t += 0.05
                 MainActor.assumeIsolated {
                     if t < 4 { hud.level(Float(0.45 + 0.35 * sin(t * 9) * sin(t * 2.3))) } else if t < 4.06 { hud.writing() }
+                    // `--hud-snapshot dir` also saves the talking and writing bars as PNGs.
+                    if let k = CommandLine.arguments.firstIndex(of: "--hud-snapshot"), k + 1 < CommandLine.arguments.count,
+                       abs(t - 2) < 0.026 || abs(t - 5) < 0.026 {
+                        hud.snapshot(to: URL(fileURLWithPath: CommandLine.arguments[k + 1]).appendingPathComponent("\(hud.style)-\(t < 4 ? "talking" : "writing").png"))
+                    }
                 }
                 if t > 6 { exit(0) }
             }
@@ -57,6 +62,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // `--hud-message "text" [ok]` shows a message in the talking bar for three seconds, so its look can be checked.
         if let i = CommandLine.arguments.firstIndex(of: "--hud-message"), i + 1 < CommandLine.arguments.count {
             hud.flash(CommandLine.arguments[i + 1], ok: CommandLine.arguments.contains("ok"), for: 3)
+            if let k = CommandLine.arguments.firstIndex(of: "--hud-snapshot"), k + 1 < CommandLine.arguments.count {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [hud] in
+                    hud.snapshot(to: URL(fileURLWithPath: CommandLine.arguments[k + 1]).appendingPathComponent("message.png"))
+                }
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.2) { exit(0) }
             return
         }

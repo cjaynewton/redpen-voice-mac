@@ -17,7 +17,7 @@ final class FirstRunWindow {
         model.onDone = { [weak self] in self?.window?.close(); self?.onDone() }
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 560), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         w.title = "Redpen Voice"
-        w.contentView = NSHostingView(rootView: FirstRunView(model: model))
+        w.contentView = NSHostingView(rootView: FirstRunView(model: model).buttonBorderShape(.roundedRectangle(radius: 4)))
         w.center()
         w.isReleasedWhenClosed = false
         window = w
