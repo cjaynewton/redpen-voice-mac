@@ -1457,6 +1457,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         // The backup route: a paste that puts your clipboard back, so it works where typing just failed (D-825).
+        if Insert.pasteBusy { hud.flash("Still pasting. Press ⌃⌥V again in a second", for: 2); return }
         let ok = Insert.paste(e.text)
         hud.flash(ok ? "Pasted" : "Could not paste", ok: ok)
         Log.note("paste last: \(ok)")

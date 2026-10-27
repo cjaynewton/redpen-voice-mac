@@ -70,12 +70,10 @@ enum Insert {
     static func paste(_ text: String) -> Bool {
         guard !text.isEmpty, !ownWindowInFront else { return false }
         let pb = NSPasteboard.general
-        // One paste at a time: a second one waits until the first has been read and the clipboard put back, so a slow
-        // app can never read the second text for the first paste, and what comes back is always what you had.
-        if borrowed != nil {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { _ = paste(text) }
-            return true
-        }
+        // One paste at a time, never queued: while the clipboard is borrowed a second paste is refused, so a slow app
+        // can't read the second text for the first paste, nothing lands somewhere you've since moved to, and what
+        // comes back is always what you had.
+        guard !pasteBusy else { return false }
         let saved = ClipboardSnapshot.take(pb)
         pb.clearContents()
         let item = NSPasteboardItem()
@@ -101,6 +99,9 @@ enum Insert {
         remember(text)
         return true
     }
+
+    /// True for the half second the clipboard is borrowed.
+    static var pasteBusy: Bool { borrowed != nil }
 
     /// The clipboard Voice has borrowed and not yet put back: what you had, the change count of Voice's own text, and
     /// the pending put-back.
