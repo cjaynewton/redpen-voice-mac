@@ -20,7 +20,10 @@ public enum Meaning {
             let t = String(raw).trimmingCharacters(in: CharacterSet(charactersIn: ".,'"))
             // A leading minus before a digit stays ("-5"); any other hyphen splits ("twenty-one" is "twenty", "one").
             if t.hasPrefix("-"), t.dropFirst().first?.isNumber == true { out.append(t); continue }
-            out += t.split(separator: "-").map(String.init).filter { !$0.isEmpty }
+            let parts = t.split(separator: "-").map(String.init).filter { !$0.isEmpty }
+            // All digits ("2026-10-11", "555-1234"): one number, kept whole so its order counts.
+            if parts.count > 1, parts.allSatisfy({ $0.allSatisfy { $0.isNumber || $0 == "." || $0 == "," } }) { out.append(t); continue }
+            out += parts
         }
         return out
     }

@@ -184,6 +184,8 @@ check("echo.preRollWord", MediaEcho.strip("Wait please tell me what so we ship i
 check("meaning.minus", Meaning.changed("send -5 copies", "Send 5 copies.") == "number")
 check("meaning.hyphenNumbers", Meaning.changed("send twenty-one copies today", "Send twenty-two copies today.") == "number")
 check("meaning.hyphenSame", Meaning.changed("send twenty-one copies", "Send twenty-one copies.") == nil)
+check("meaning.date", Meaning.changed("ship on 2026-10-11", "Ship on 2026-11-10.") == "number")
+check("meaning.dateSame", Meaning.changed("ship on 2026-10-11", "Ship on 2026-10-11.") == nil)
 
 // Words worth a second look, where the engines disagree (D-817 test).
 let rk = RiskyWords.find(final: "So we should not ship it on Friday with three fixes", other: "So we should now ship it on Friday with free fixes", names: [])
