@@ -51,21 +51,29 @@ final class StatsModel: ObservableObject {
     func reload() { days = load() }
     func reset() { onReset(); reload() }
 
-    /// Seventy days of made-up numbers for the pictures: busier on weekdays, a few days off, speed creeping up. Never
-    /// anyone's real counts.
+    /// Made-up heavy daily use from August 16, 2026 through today, shared by all pictures that show stats.
+    /// Weekends are lighter, a few working days are big, and speed improves unevenly. Never anyone's real counts.
     static func sample(now: Date, calendar: Calendar = .current) -> [DayStats] {
         var seed: UInt64 = 0x5EED
         func rnd() -> Double { seed = seed &* 6364136223846793005 &+ 1442695040888963407; return Double(seed >> 33) / Double(1 << 31) }
         let today = calendar.startOfDay(for: now)
+        guard let start = calendar.date(from: DateComponents(year: 2026, month: 8, day: 16)), start <= today else { return [] }
+        let count = (calendar.dateComponents([.day], from: start, to: today).day ?? 0) + 1
+        let weeklyWPM = [135.0, 141, 140, 146, 148, 147, 153, 154, 160, 158, 165]
         var out: [DayStats] = []
-        for back in (0..<70).reversed() {
-            guard let d = calendar.date(byAdding: .day, value: -back, to: today) else { continue }
+        for day in 0..<count {
+            guard let d = calendar.date(byAdding: .day, value: day, to: start) else { continue }
             let weekend = calendar.isDateInWeekend(d)
-            if rnd() < (weekend ? 0.55 : 0.08) { continue }
-            let n = Int((weekend ? 4 : 14) + rnd() * (weekend ? 6 : 22))
-            let wpm = 112 + Double(70 - back) * 0.32 + rnd() * 14
-            let secs = Double(n) * (14 + rnd() * 22)
-            out.append(DayStats(day: StatsStore.key(d, calendar: calendar), engine: "whisper", words: Int(secs / 60 * wpm), seconds: secs, dictations: n))
+            let words: Int
+            if weekend {
+                words = rnd() < 0.30 ? 0 : Int(350 + rnd() * 1_651)
+            } else {
+                words = rnd() < 0.08 ? Int(8_000 + rnd() * 1_001) : Int(3_500 + rnd() * 3_001)
+            }
+            let n = words == 0 ? 0 : Int((weekend ? 8 : 80) + rnd() * (weekend ? 28 : 51))
+            let wpm = weeklyWPM[min(day / 7, weeklyWPM.count - 1)] - 4 + rnd() * 8
+            let secs = Double(words) / wpm * 60
+            out.append(DayStats(day: StatsStore.key(d, calendar: calendar), engine: "whisper", words: words, seconds: secs, dictations: n))
         }
         return out
     }
@@ -220,6 +228,7 @@ private struct WordsChart: View {
                     Rectangle().fill(Ink.line).frame(width: plotW, height: 1)
                         .offset(x: axis, y: plotH * (1 - f))
                     Text(Int(top * f).formatted()).font(.system(size: 11)).monospacedDigit().foregroundStyle(Ink.dim)
+                        .fixedSize(horizontal: true, vertical: false)
                         .frame(width: axis - 8, alignment: .trailing)
                         .offset(y: plotH * (1 - f) - 7)
                 }

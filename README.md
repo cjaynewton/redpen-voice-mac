@@ -70,7 +70,7 @@ Click the Voice icon in the menu bar for today's words, your speed and the minut
 <p align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/menu-dark.png">
-  <img src="docs/screenshots/menu-light.png" alt="The menu bar panel: status, words today, speed and minutes saved, an all-time line, two switches, paste last dictation, history, stats, transcribe a file, settings, check for updates" width="300">
+  <img src="docs/screenshots/menu-light.png" alt="The menu bar panel with sample numbers: status, words today, speed and minutes saved, an all-time line, two switches, paste last dictation, history, stats, transcribe a file, settings, check for updates" width="300">
 </picture>
 </p>
 
@@ -81,7 +81,7 @@ Every choice on one page: the engine, how your words come out, the key you talk 
 <p align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/settings-dark.png">
-  <img src="docs/screenshots/settings-light.png" alt="Settings: engines named Most accurate, Instant and Mac built-in, what you get, talking, words it gets wrong, and what is kept on this Mac" width="360">
+  <img src="docs/screenshots/settings-light.png" alt="Settings with sample numbers for time saved: engines named Most accurate, Instant and Mac built-in, what you get, talking, words it gets wrong, and what is kept on this Mac" width="360">
 </picture>
 </p>
 

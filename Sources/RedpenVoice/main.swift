@@ -414,8 +414,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Ink.registerFonts()
             NSApp.appearance = NSAppearance(named: CommandLine.arguments.contains("dark") ? .darkAqua : .aqua)
             let model = SettingsModel(config: config, engine: engine) { _ in }
-            stats.reload(readOnly: true)
-            model.statsTotal = { [stats] in let s = Stats.score(stats.days); return (s.words, s.seconds) }
+            let sample = StatsModel.sample(now: Date())
+            model.statsTotal = { let s = Stats.score(sample); return (s.words, s.seconds) }
             // `ready`: drawn as a Mac where the chosen engine has finished loading (for the README pictures).
             if CommandLine.arguments.contains("ready") { model.engineState = .ready }
             let v = NSHostingView(rootView: SettingsView(model: model).buttonBorderShape(.roundedRectangle(radius: 4)))
@@ -439,8 +439,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let i = CommandLine.arguments.firstIndex(of: "--menu-shot"), i + 1 < CommandLine.arguments.count {
             Ink.registerFonts()
             NSApp.appearance = NSAppearance(named: CommandLine.arguments.contains("dark") ? .darkAqua : .aqua)
-            stats.reload(readOnly: true)
             menu.state = menuState()
+            let now = Date()
+            let sample = StatsModel.sample(now: now)
+            let today = Stats.today(sample, now: now, typing: 40), total = Stats.score(sample, typing: 40)
+            menu.state.todayWords = today.words; menu.state.todayWPM = today.wordsPerMinute; menu.state.todaySaved = today.minutesSaved
+            menu.state.totalWords = total.words; menu.state.totalSaved = total.minutesSaved
             // `ready`: drawn as a set-up Mac (engine loaded, Fn key already set), for the README pictures.
             if CommandLine.arguments.contains("ready") { menu.state.ready = true; menu.state.status = "Ready"; menu.state.warning = nil }
             let v = NSHostingView(rootView: MenuPanel(model: menu))
