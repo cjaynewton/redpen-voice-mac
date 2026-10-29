@@ -1,12 +1,11 @@
 import Foundation
 
-/// Hardware-confirmed talk gestures. Times are monotonic seconds, supplied by the caller.
+/// Event-timed talk gestures. Hardware state is used only to recover missing releases.
 public struct TalkKeyState {
     public enum Action: Equatable { case begin, end, cancel, handsFree }
     public static let tapLength = DictationDelivery.tapLength
     public static let tapGap = 0.5
     public static let stopGuard = 0.5
-    public static let bounceGap = 0.03
     public var doubleTap = true
     public private(set) var owner: Int?
     public private(set) var held = false
@@ -14,23 +13,22 @@ public struct TalkKeyState {
     public private(set) var handsFree = false
     private var pressedAt = 0.0
     private var lastTap: (key: Int, at: Double)?
-    private var lastRelease: Double?
     private var secondTap = false
     private var swallowed = false
     private var guardedUntil = 0.0
 
     public init() {}
 
-    /// Synthetic events cannot begin, stop, cancel, or contribute to a double tap.
-    public mutating func event(key: Int, down: Bool, hardwareDown: Bool, ownEvent: Bool = false,
+    /// Voice's own events cannot begin, stop, cancel, or contribute to a double tap.
+    public mutating func event(key: Int, down: Bool, ownEvent: Bool = false,
                                canBegin: Bool = true, at now: Double) -> Action? {
-        guard !ownEvent, down == hardwareDown else { return nil }
+        guard !ownEvent else { return nil }
         // Either configured talk key can stop hands-free. While held, only its owner controls the press.
         if let owner, key != owner, !(handsFree && down) { return nil }
         guard down != held else { return nil }
         held = down
         if down {
-            owner = key
+            owner = key; pressedAt = now
             if handsFree {
                 handsFree = false; active = false; swallowed = true
                 lastTap = nil; secondTap = false; guardedUntil = now + Self.stopGuard
@@ -38,16 +36,20 @@ public struct TalkKeyState {
             }
             guard !active else { return nil }
             // Block before beginning audio, including a press whose release arrives after finishing ends.
-            guard canBegin, now >= guardedUntil,
-                  lastRelease.map({ now - $0 >= Self.bounceGap }) ?? true else {
+            guard canBegin, now >= guardedUntil else {
                 swallowed = true; lastTap = nil; secondTap = false
                 return nil
             }
             secondTap = doubleTap && lastTap.map { $0.key == key && now - $0.at < Self.tapGap } == true
-            lastTap = nil; pressedAt = now; active = true
+            lastTap = nil; active = true
             return .begin
         }
-        lastRelease = now
+        return release(at: now)
+    }
+
+    private mutating func release(at now: Double, quick: Bool = false) -> Action? {
+        guard let key = owner else { return nil }
+        held = false
         defer { if !active && !handsFree { owner = nil } }
         if swallowed {
             swallowed = false
@@ -55,14 +57,13 @@ public struct TalkKeyState {
             return nil
         }
         guard active else { return nil }
-        let duration = now - pressedAt
+        let duration = quick ? 0 : now - pressedAt
         if doubleTap, duration < Self.tapLength {
-            // Chatter shorter than 30 ms cannot seed or complete a double tap.
-            if duration >= Self.bounceGap, secondTap {
+            if secondTap {
                 handsFree = true; secondTap = false; return .handsFree
             }
             active = false; secondTap = false
-            lastTap = duration >= Self.bounceGap ? (key, now) : nil
+            lastTap = (key, now)
             return .cancel
         }
         active = false; lastTap = nil; secondTap = false; guardedUntil = now + Self.stopGuard
@@ -73,7 +74,15 @@ public struct TalkKeyState {
     /// A latched hands-free dictation has no held key and must never be stopped by this check.
     public mutating func checkRelease(key: Int, hardwareDown: Bool, at now: Double) -> Action? {
         guard held, !handsFree, owner == key, !hardwareDown else { return nil }
-        return event(key: key, down: false, hardwareDown: false, at: now)
+        return event(key: key, down: false, at: now)
+    }
+
+    /// A delayed down arrived after the physical release. Give the queued up event first chance to supply
+    /// its exact time. If it never arrives, finish this press as a quick tap, rather than recording forever.
+    /// Only the same press can be recovered. The down's time keeps later queued taps in chronological order.
+    public mutating func recoverReleasedDown(key: Int, eventAt: Double) -> Action? {
+        guard held, owner == key, pressedAt == eventAt else { return nil }
+        return release(at: eventAt, quick: true)
     }
 
     public mutating func otherKey() -> Action? {

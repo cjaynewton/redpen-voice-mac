@@ -111,9 +111,8 @@ do {
 // Talk gestures run without posting keys, opening windows, or using the microphone.
 do {
     var key = TalkKeyState()
-    func event(_ down: Bool, _ time: Double, code: Int = 63, hardware: Bool? = nil,
-               own: Bool = false, ready: Bool = true) -> TalkKeyState.Action? {
-        key.event(key: code, down: down, hardwareDown: hardware ?? down, ownEvent: own, canBegin: ready, at: time)
+    func event(_ down: Bool, _ time: Double, code: Int = 63, own: Bool = false, ready: Bool = true) -> TalkKeyState.Action? {
+        key.event(key: code, down: down, ownEvent: own, canBegin: ready, at: time)
     }
     check("talk.firstDownBegins", event(true, 1) == .begin)
     check("talk.duplicateDownIgnored", event(true, 1.02) == nil)
@@ -122,7 +121,7 @@ do {
     check("talk.secondTapLatches", event(false, 1.35) == .handsFree && key.handsFree)
     check("talk.typingWhileHandsFreeIgnored", key.otherKey() == nil && key.handsFree)
     check("talk.ownDownCannotStop", event(true, 2, own: true) == nil && key.handsFree)
-    check("talk.phantomDownCannotStop", event(true, 2.1, hardware: false) == nil && key.handsFree)
+    check("talk.latchHasNoHeldKey", !key.held && key.handsFree)
     check("talk.oneDownStops", event(true, 3, ready: false) == .end && !key.handsFree && !key.active)
     check("talk.stopUpSwallowed", event(false, 3.1, ready: false) == nil)
     check("talk.extraDownNoRecording", event(true, 3.2, ready: false) == nil && !key.active)
@@ -140,8 +139,8 @@ do {
 
     key = TalkKeyState()
     check("talk.holdBeginsImmediately", event(true, 10) == .begin)
-    check("talk.ownReleaseIgnored", event(false, 10.1, hardware: true, own: true) == nil && key.active)
-    check("talk.phantomReleaseIgnored", event(false, 10.2, hardware: true) == nil && key.active)
+    check("talk.ownReleaseIgnored", event(false, 10.1, own: true) == nil && key.active)
+    check("talk.holdKeepsOwner", key.held && key.active && key.owner == 63)
     check("talk.otherTalkKeyCannotOwnHold", event(true, 10.3, code: 61) == nil && key.owner == 63)
     check("talk.holdReleaseEnds", event(false, 10.6) == .end && !key.active)
     check("talk.holdStopGuard", event(true, 10.7) == nil)
@@ -149,13 +148,14 @@ do {
     check("talk.holdClearedTapHistory", event(true, 12) == .begin && event(false, 12.1) == .cancel && !key.handsFree)
 
     key = TalkKeyState()
-    check("talk.phantomDownNoBegin", event(true, 20, hardware: false) == nil && !key.active && key.owner == nil)
+    check("talk.idleHasNoOwner", !key.active && !key.held && key.owner == nil)
     check("talk.ownDownNoBegin", event(true, 20.1, own: true) == nil && key.owner == nil)
-    check("talk.realAfterPhantomBegins", event(true, 21) == .begin)
-    check("talk.bounceTapCannotSeed", event(false, 21.01) == .cancel)
-    check("talk.bounceDownIgnored", event(true, 21.02) == nil && !key.active)
-    check("talk.bounceReleaseCannotLatch", event(false, 21.03) == nil && !key.handsFree)
-    check("talk.afterBounceFirstTap", event(true, 22) == .begin && event(false, 22.1) == .cancel)
+    check("talk.realAfterOwnEventBegins", event(true, 21) == .begin)
+    check("talk.veryFastTapStillCounts", event(false, 21.01) == .cancel)
+    check("talk.veryFastSecondDownStillBegins", event(true, 21.02) == .begin && key.active)
+    check("talk.veryFastSecondReleaseLatches", event(false, 21.03) == .handsFree && key.handsFree)
+    key = TalkKeyState()
+    check("talk.newFirstTap", event(true, 22) == .begin && event(false, 22.1) == .cancel)
     check("talk.doubleTapOtherKeyNotSecond", event(true, 22.25, code: 61) == .begin && event(false, 22.35, code: 61) == .cancel)
     check("talk.expiredTapNotSecond", event(true, 23, code: 61) == .begin && event(false, 23.1, code: 61) == .cancel)
 
@@ -185,13 +185,12 @@ do {
     check("talk.26ExtraTapsNeverRecordOrLatch", began == 0 && latched == 0 && !key.active && !key.handsFree)
 }
 
-// A missing or hardware-mismatched release follows the same gesture path as a normal release.
+// A missing release follows the same gesture path as a normal release.
 do {
     var key = TalkKeyState()
     check("talk.releaseCheckIdleNoAction", key.checkRelease(key: 63, hardwareDown: false, at: 0) == nil)
-    check("talk.missedReleaseBegins", key.event(key: 63, down: true, hardwareDown: true, at: 1) == .begin)
-    check("talk.missedReleaseInitiallyDropped", key.event(key: 63, down: false, hardwareDown: true, at: 1.5) == nil
-          && key.held && key.active)
+    check("talk.missedReleaseBegins", key.event(key: 63, down: true, at: 1) == .begin)
+    check("talk.missingUpWaitsForRecovery", key.held && key.active)
     check("talk.releaseRecheckStillHeld", key.checkRelease(key: 63, hardwareDown: true, at: 1.55) == nil
           && key.held && key.active)
     check("talk.releaseTimerNeverEndsHeldKey", key.checkRelease(key: 63, hardwareDown: true, at: 10) == nil && key.active)
@@ -199,44 +198,170 @@ do {
     check("talk.missedReleaseEndsFromHardware", key.checkRelease(key: 63, hardwareDown: false, at: 10.2) == .end
           && !key.held && !key.active && key.owner == nil)
     check("talk.missedReleaseEndsExactlyOnce", key.checkRelease(key: 63, hardwareDown: false, at: 10.4) == nil
-          && key.event(key: 63, down: false, hardwareDown: false, at: 10.5) == nil)
-    check("talk.missedReleaseUsesStopGuard", key.event(key: 63, down: true, hardwareDown: true, at: 10.6) == nil && !key.active)
+          && key.event(key: 63, down: false, at: 10.5) == nil)
+    check("talk.missedReleaseUsesStopGuard", key.event(key: 63, down: true, at: 10.6) == nil && !key.active)
     check("talk.missedGuardReleaseClearsHold", key.checkRelease(key: 63, hardwareDown: false, at: 10.7) == nil
           && !key.held && key.owner == nil)
 
     key = TalkKeyState()
-    _ = key.event(key: 61, down: true, hardwareDown: true, at: 20)
+    _ = key.event(key: 61, down: true, at: 20)
     check("talk.entirelyMissingReleaseEnds", key.checkRelease(key: 61, hardwareDown: false, at: 20.6) == .end && !key.active)
     key = TalkKeyState(); key.doubleTap = false
-    _ = key.event(key: 42, down: true, hardwareDown: true, at: 21)
+    _ = key.event(key: 42, down: true, at: 21)
     check("talk.missedSingleTapModeEnds", key.checkRelease(key: 42, hardwareDown: false, at: 21.1) == .end && !key.active)
 
     key = TalkKeyState()
-    _ = key.event(key: 63, down: true, hardwareDown: true, at: 30)
+    _ = key.event(key: 63, down: true, at: 30)
     check("talk.missedQuickReleaseCancelsNormally", key.checkRelease(key: 63, hardwareDown: false, at: 30.1) == .cancel
           && !key.active && !key.held)
-    check("talk.missedTapCanBeginSecond", key.event(key: 63, down: true, hardwareDown: true, at: 30.25) == .begin)
+    check("talk.missedTapCanBeginSecond", key.event(key: 63, down: true, at: 30.25) == .begin)
     check("talk.secondMissedTapLatchesNormally", key.checkRelease(key: 63, hardwareDown: false, at: 30.35) == .handsFree
           && key.handsFree && key.active && !key.held)
     check("talk.releaseCheckNeverEndsHandsFree", key.checkRelease(key: 63, hardwareDown: false, at: 40) == nil
           && key.handsFree && key.active)
     check("talk.otherKeyCheckNeverEndsHandsFree", key.checkRelease(key: 61, hardwareDown: false, at: 41) == nil
           && key.handsFree && key.active)
-    check("talk.handsFreeStillStopsNormally", key.event(key: 63, down: true, hardwareDown: true, at: 42) == .end)
+    check("talk.handsFreeStillStopsNormally", key.event(key: 63, down: true, at: 42) == .end)
     check("talk.missedHandsFreeStopReleaseSwallowed", key.checkRelease(key: 63, hardwareDown: false, at: 42.1) == nil
           && !key.held && key.owner == nil && !key.active)
-    check("talk.missedStopReleaseKeepsGuard", key.event(key: 63, down: true, hardwareDown: true, at: 42.3) == nil)
+    check("talk.missedStopReleaseKeepsGuard", key.event(key: 63, down: true, at: 42.3) == nil)
 
     key = TalkKeyState()
-    _ = key.event(key: 63, down: true, hardwareDown: true, at: 50)
+    _ = key.event(key: 63, down: true, at: 50)
     _ = key.otherKey()
     check("talk.cancelledHoldRecheckDoesNotEnd", key.checkRelease(key: 63, hardwareDown: false, at: 50.6) == nil
           && !key.active && !key.held && key.owner == nil)
     key = TalkKeyState()
-    _ = key.event(key: 63, down: true, hardwareDown: true, at: 51)
+    _ = key.event(key: 63, down: true, at: 51)
     key.rejectBegin()
     check("talk.failedBeginRecheckCannotLatch", key.checkRelease(key: 63, hardwareDown: false, at: 51.1) == nil
           && !key.active && !key.held && !key.handsFree)
+}
+
+// Replay the real event times. Handler times must not shorten taps or the space between them.
+do {
+    var key = TalkKeyState()
+    let trace: [(Bool, Double, Double)] = [
+        (true, 877537.248089, 877537.596022), (false, 877537.326396, 877537.597452),
+        (true, 877537.400087, 877537.600064), (false, 877537.510938, 877537.600817)
+    ]
+    let actions = trace.compactMap { down, event, _ in key.event(key: 63, down: down, at: event) }
+    check("talk.delayedReleasedDoubleTap", actions == [.begin, .cancel, .begin, .handsFree] && key.handsFree)
+    _ = key.event(key: 63, down: true, at: 877538)
+    _ = key.event(key: 63, down: false, at: 877538.1)
+    check("talk.delayedExtraStopTapBlocked", key.event(key: 63, down: true, at: 877538.2) == nil && !key.active)
+    _ = key.event(key: 63, down: false, at: 877538.3)
+
+    key = TalkKeyState()
+    let first = key.event(key: 63, down: true, at: 877568.461358)
+    let cancel = key.event(key: 63, down: false, at: 877568.533444)
+    let second = key.event(key: 63, down: true, at: 877568.594213)
+    let latch = key.event(key: 63, down: false, at: 877568.728678)
+    check("talk.logged26msHandlerGapStillLatches", [first, cancel, second, latch] == [.begin, .cancel, .begin, .handsFree])
+
+    key = TalkKeyState()
+    _ = key.event(key: 63, down: true, at: 877540.094132)
+    check("talk.upAcceptedEvenIfHardwareAlreadyDownAgain", key.event(key: 63, down: false, at: 877540.184299) == .cancel)
+    _ = key.event(key: 63, down: true, at: 877540.243950)
+    check("talk.nextPhysicalPressLatches", key.event(key: 63, down: false, at: 877540.363864) == .handsFree)
+
+    key = TalkKeyState()
+    check("talk.releasedDownStillBegins", key.event(key: 63, down: true, at: 1) == .begin)
+    check("talk.releasedDownWithNoUpCompletesQuickTap", key.recoverReleasedDown(key: 63, eventAt: 1) == .cancel && !key.held)
+    check("talk.recoveredTapOnlyCompletesOnce", key.recoverReleasedDown(key: 63, eventAt: 1) == nil)
+    check("talk.lateQueuedUpIgnored", key.event(key: 63, down: false, at: 1.1) == nil)
+    _ = key.event(key: 63, down: true, at: 1.2)
+    check("talk.staleRecoveryCannotEndNewPress", key.recoverReleasedDown(key: 63, eventAt: 1) == nil && key.held)
+    check("talk.otherKeyRecoveryCannotEndPress", key.recoverReleasedDown(key: 61, eventAt: 1.2) == nil && key.held)
+    check("talk.twoRecoveredFastTapsLatch", key.recoverReleasedDown(key: 63, eventAt: 1.2) == .handsFree && !key.held)
+    check("talk.recoveryNeverStopsLatchedDictation", key.recoverReleasedDown(key: 63, eventAt: 1.2) == nil && key.handsFree)
+    check("talk.releasedStopDownEnds", key.event(key: 63, down: true, at: 2) == .end)
+    check("talk.releasedStopDownReleaseSwallowed", key.recoverReleasedDown(key: 63, eventAt: 2) == nil && !key.held)
+    check("talk.recoveredStopKeepsGuard", key.event(key: 63, down: true, at: 2.1) == nil && !key.active)
+    _ = key.recoverReleasedDown(key: 63, eventAt: 2.1)
+
+    key = TalkKeyState()
+    _ = key.event(key: 63, down: true, at: 10)
+    _ = key.event(key: 63, down: false, at: 11)
+    check("talk.finishingStillBlocksNewRecording", key.event(key: 63, down: true, canBegin: false, at: 12) == nil)
+    _ = key.event(key: 63, down: false, canBegin: false, at: 12.1)
+    // Finishing ends at 15. The first tap can begin immediately, with no stale tap/guard from the old dictation.
+    check("talk.firstTapImmediatelyAfterFinishBegins", key.event(key: 63, down: true, at: 15) == .begin)
+    _ = key.event(key: 63, down: false, at: 15.08)
+    check("talk.secondTapImmediatelyAfterFinishBegins", key.event(key: 63, down: true, at: 15.15) == .begin)
+    check("talk.doubleTapImmediatelyAfterFinishLatches", key.event(key: 63, down: false, at: 15.25) == .handsFree)
+
+    key = TalkKeyState()
+    check("talk.ownDelayedDownCannotBegin", key.event(key: 63, down: true, ownEvent: true, at: 20) == nil)
+    check("talk.ownDelayedDownCannotSeedRecovery", key.recoverReleasedDown(key: 63, eventAt: 20) == nil && !key.active)
+}
+
+// Paste policy is exercised without posting a single key or touching the general clipboard.
+do {
+    var attempt = PasteAttempt(at: 0)
+    func step(_ now: Double, held: Bool = false, target: Bool = true, clipboard: Bool = true,
+              landed: Bool = false) -> PasteAttempt.Decision {
+        attempt.next(at: now, modifiersDown: held, sameTarget: target, clipboardOwned: clipboard, landed: landed)
+    }
+    check("paste.shortcutWaitsForModifiers", step(0, held: true) == .wait && attempt.postedAt == nil)
+    check("paste.noPostWhileControlOptionHeld", step(0.8, held: true) == .wait && attempt.postedAt == nil)
+    check("paste.releaseMustSettle", step(0.9) == .wait)
+    check("paste.shortcutPostsAfterRelease", step(0.95) == .post)
+    check("paste.postIsNotSuccess", step(1) == .wait)
+    check("paste.noPrematureHalfSecondRestore", step(1.5) == .wait)
+    check("paste.slowElectronSuccessConfirmed", step(2.1, landed: true) == .confirmed)
+
+    attempt = PasteAttempt(at: 10)
+    check("paste.menuStartsWithoutShortcut", step(10) == .wait)
+    check("paste.menuPostsAfterStableRelease", step(10.04) == .post)
+    check("paste.menuSuccessNeedsEvidence", step(10.1, landed: true) == .confirmed)
+    attempt = PasteAttempt(at: 20)
+    _ = step(20, held: true)
+    check("paste.heldShortcutTimesOutWithoutPosting", step(21.21, held: true) == .failed("shortcut keys still held") && attempt.postedAt == nil)
+    attempt = PasteAttempt(at: 30)
+    _ = step(30); _ = step(30.04)
+    check("paste.undeliveredPasteFails", step(32.1) == .failed("delivery not confirmed"))
+    attempt = PasteAttempt(at: 40)
+    _ = step(40, held: true)
+    check("paste.focusChangeBeforePostFails", step(40.1, target: false) == .failed("target changed") && attempt.postedAt == nil)
+    attempt = PasteAttempt(at: 50)
+    _ = step(50); _ = step(50.04)
+    check("paste.focusChangeAfterPostFails", step(50.1, target: false, landed: true) == .failed("target changed"))
+    attempt = PasteAttempt(at: 60)
+    check("paste.newClipboardBeforePostFails", step(60.1, clipboard: false) == .failed("clipboard changed before posting"))
+    attempt = PasteAttempt(at: 70)
+    _ = step(70); _ = step(70.04)
+    check("paste.newClipboardAfterPostDoesNotInventFailure", step(70.1, clipboard: false, landed: true) == .confirmed)
+    attempt = PasteAttempt(at: 80)
+    _ = step(80); _ = step(80.02, held: true)
+    check("paste.modifierRepressResetsStableWait", step(80.04) == .wait)
+    check("paste.releasedAgainThenPosts", step(80.08) == .post)
+
+    let evidence = PasteEvidence(before: "Hello world", range: NSRange(location: 6, length: 5), text: "🌍")
+    check("paste.selectedUTF16ReplacementConfirmed", evidence.landed(value: "Hello 🌍", range: NSRange(location: 8, length: 0)))
+    check("paste.unchangedBoxNeverConfirms", !evidence.landed(value: "Hello world", range: NSRange(location: 6, length: 5)))
+    check("paste.unrelatedEditNeverConfirms", !evidence.landed(value: "Other words", range: NSRange(location: 8, length: 0)))
+    let unreadable = PasteEvidence(before: nil, range: NSRange(location: 4, length: 0), text: "hi")
+    check("paste.unreadableValueExpectedCursorConfirms", unreadable.landed(value: nil, range: NSRange(location: 6, length: 0)))
+    check("paste.unreadableValueWrongCursorFails", !unreadable.landed(value: nil, range: NSRange(location: 5, length: 0)))
+    check("paste.noReadableEvidenceNeverConfirms", !PasteEvidence(before: nil, range: nil, text: "hi").landed(value: nil, range: nil))
+    let same = PasteEvidence(before: "hello", range: NSRange(location: 0, length: 5), text: "hello")
+    check("paste.identicalSelectedTextNeedsCursorChange", same.landed(value: "hello", range: NSRange(location: 5, length: 0)))
+    let pb = NSPasteboard(name: NSPasteboard.Name("rv-paste-failure-\(UUID().uuidString)"))
+    pb.clearContents(); pb.setString("old clipboard", forType: .string)
+    let saved = ClipboardSnapshot.take(pb)
+    let failedLoan = PasteClipboardLoan("kept dictation", pasteboard: pb)!
+    check("paste.failedDeliveryKeepsWordsForManualPaste", failedLoan.finish(confirmed: false) == .kept
+          && pb.string(forType: .string) == "kept dictation" && !saved.matches(pb))
+    saved.restore(to: pb)
+    let confirmedLoan = PasteClipboardLoan("landed dictation", pasteboard: pb)!
+    check("paste.confirmedDeliveryRestoresSnapshot", confirmedLoan.finish(confirmed: true) == .restored && saved.matches(pb))
+    let changedLoan = PasteClipboardLoan("dictation", pasteboard: pb)!
+    pb.clearContents(); pb.setString("new user copy", forType: .string)
+    check("paste.newCopyPreservedAfterSuccess", changedLoan.finish(confirmed: true) == .changed && pb.string(forType: .string) == "new user copy")
+    check("paste.newCopyPreservedAfterFailure", changedLoan.finish(confirmed: false) == .changed && pb.string(forType: .string) == "new user copy")
+    check("paste.invalidCursorDoesNotConfirmOrCrash", !PasteEvidence(before: "hi", range: NSRange(location: NSNotFound, length: 0), text: "x").landed(value: "hi", range: nil))
+    pb.releaseGlobally()
 }
 
 // Inspect synthetic event construction only. None of these events are posted.

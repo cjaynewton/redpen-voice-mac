@@ -367,7 +367,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let doc = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("rv-paste-test-\(UUID().uuidString.prefix(6)).txt")
             try? "".write(to: doc, atomically: true, encoding: .utf8)
             NSWorkspace.shared.open([doc], withApplicationAt: URL(fileURLWithPath: "/System/Applications/TextEdit.app"), configuration: NSWorkspace.OpenConfiguration())
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { Task { @MainActor in
                 var lines: [String] = []
                 let te = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.TextEdit").first
                 te?.activate()
@@ -379,11 +379,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                    let f = attr(AXUIElementCreateApplication(pid), kAXFocusedUIElementAttribute),
                    let w = attr(f as! AXUIElement, kAXWindowAttribute), ((attr(w as! AXUIElement, kAXTitleAttribute) as? String) ?? "").contains("rv-paste-test") {
                     let el = f as! AXUIElement
-                    lines.append("pasted: \(Insert.paste("Pasted by the backup route."))")
-                    usleep(100_000)
-                    // A second paste inside the half second: the clipboard must still come back as it was before both.
-                    lines.append("pasted again: \(Insert.paste(" Twice."))")
-                    usleep(400_000)
+                    let first = Task { await Insert.paste("Pasted by the backup route.") }
+                    try? await Task.sleep(for: .milliseconds(10))
+                    let second = await Insert.paste(" Twice.")
+                    let result = await first.value
+                    lines.append("pasted: \(result.landed)")
+                    lines.append("overlapping paste refused: \(!second.landed)")
                     lines.append("box now: \((Insert.value(el) ?? "?").debugDescription)")
                     ok = true
                 } else { lines.append("refused: the test document wasn't in front") }
@@ -397,7 +398,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try? lines.joined(separator: "\n").write(toFile: out, atomically: true, encoding: .utf8)
                     exit(0)
                 }
-            }
+            } }
             return
         }
         if CommandLine.arguments.contains("--media-check") {
@@ -525,7 +526,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         keys.onUp = { [weak self] in self?.end() }
         keys.onCancel = { [weak self] in self?.cancel() }
         keys.start()
-        pasteKey = Shortcut(id: 1, keyCode: kVK_ANSI_V, name: "Control-Option-V") { [weak self] in self?.pasteLastNow() }
+        pasteKey = Shortcut(id: 1, keyCode: kVK_ANSI_V, name: "Control-Option-V") { [weak self] in self?.pasteLastNow(triggerKey: CGKeyCode(kVK_ANSI_V)) }
         undoKey = Shortcut(id: 2, keyCode: kVK_ANSI_Z, name: "Control-Option-Z") { [weak self] in self?.takeBack() }
         updateSwapKey()
         installWatches()
@@ -1574,7 +1575,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Control-Option-V: the last dictation again, at the cursor.
-    private func pasteLastNow() {
+    private func pasteLastNow(triggerKey: CGKeyCode? = nil) {
         guard session == nil, let e = history.lastSpoken() ?? lastSaid else { hud.flash("Nothing to paste yet"); return }
         stopWaiting()
         deliveries.supersede()  // a dictation still being written won't start its own wait after this
@@ -1587,9 +1588,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // The backup route: a paste that puts your clipboard back, so it works where typing just failed (D-825).
         if Insert.pasteBusy { hud.flash("Still pasting. Press ⌃⌥V again in a second", for: 2); return }
-        let ok = Insert.paste(e.text)
-        hud.flash(ok ? "Pasted" : "Could not paste", ok: ok)
-        Log.note("paste last: \(ok)")
+        Task { [weak self] in
+            let result = await Insert.paste(e.text, triggerKey: triggerKey)
+            self?.hud.flash(result.landed ? "Pasted" : result.copied
+                            ? "Paste not confirmed. Text copied. Press ⌘V"
+                            : "Paste not confirmed. Try ⌃⌥V again", ok: result.landed, for: 3)
+            Log.note("paste last: \(result.landed)")
+        }
     }
 
     /// Point out words to check (D-817 test): a second engine hears the same audio after the words went in, so nothing

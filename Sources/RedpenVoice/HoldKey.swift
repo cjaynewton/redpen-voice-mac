@@ -26,6 +26,7 @@ final class HoldKey {
     private var monitors: [Any] = []
     private var state = TalkKeyState()
     private var releaseTimer: Timer?
+    private var inputSequence = 0
     var handsFree: Bool { state.handsFree }
     var ownerName: String? { state.owner.flatMap { o in keys.first { $0.code == o }?.name } }
 
@@ -78,7 +79,7 @@ final class HoldKey {
             return
         }
         if let owner = state.owner, state.held {
-            apply(state.event(key: owner, down: false, hardwareDown: false, at: ProcessInfo.processInfo.systemUptime))
+            apply(state.event(key: owner, down: false, at: ProcessInfo.processInfo.systemUptime))
         }
         for m in monitors { NSEvent.removeMonitor(m) }
         monitors.removeAll()
@@ -124,12 +125,22 @@ final class HoldKey {
             Log.note("talk raw: key \(code), \(down ? "down" : "up"), hardware \(hardware), confirmed \(down == hardware), pid \(pid), own \(own), repeat \(repeated), event \(String(format: "%.6f", e.timestamp)), uptime \(String(format: "%.6f", ProcessInfo.processInfo.systemUptime))")
         }
         guard !repeated else { return }
+        guard !own else { return }
+        inputSequence += 1
+        let sequence = inputSequence
         state.doubleTap = doubleTap
-        let action = state.event(key: code, down: down, hardwareDown: hardware, ownEvent: own,
-                                 canBegin: canBegin(), at: ProcessInfo.processInfo.systemUptime)
+        let action = state.event(key: code, down: down, ownEvent: own,
+                                 canBegin: canBegin(), at: e.timestamp)
         apply(action)
-        if !own, !down, hardware, state.held, !state.handsFree, state.owner == code {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.checkRelease() }
+        if down, !hardware {
+            // A real queued up carries the exact tap duration, even if the next press is already held.
+            // If that up was missed, this already-released down still completes as a quick tap.
+            let eventAt = e.timestamp
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                guard let self, self.inputSequence == sequence,
+                      !CGEventSource.keyState(.hidSystemState, key: CGKeyCode(code)) else { return }
+                self.apply(self.state.recoverReleasedDown(key: code, eventAt: eventAt))
+            }
         }
     }
 
