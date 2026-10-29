@@ -1,6 +1,7 @@
 import AudioToolbox
 import CoreAudio
 import Foundation
+import VoiceCore
 
 /// Listens to what some apps are playing out loud for a moment and reports how loud it was, 0 to 1.
 /// Used only to decide whether to press pause: apps like Chrome and Boom 3D hold the speakers open while silent,
@@ -31,15 +32,36 @@ enum SoundTap {
     }
 
     static func loudness(of processes: [AudioObjectID], for seconds: Double, record: Recording? = nil, done: @escaping @Sendable (Float?) -> Void) {
-        guard !processes.isEmpty else { done(nil); return }
-        guard running.claim() else { done(nil); return }
-        let done: @Sendable (Float?) -> Void = { v in running.release(); done(v) }
+        guard !processes.isEmpty else { Log.note("media listen: no media processes"); done(nil); return }
+        let request = Listen(processes: processes, seconds: seconds, record: record, done: done)
+        if let next = listens.submit(request) { listen(next) }
+        else { Log.note("media listen: busy, queued \(seconds)s listen") }
+    }
+
+    private struct Listen: Sendable {
+        let processes: [AudioObjectID]
+        let seconds: Double
+        let record: Recording?
+        let done: @Sendable (Float?) -> Void
+    }
+    private static let listens = MediaListenQueue<Listen>()
+
+    private static func listen(_ request: Listen) {
+        let processes = request.processes, seconds = request.seconds, record = request.record
+        let done: @Sendable (Float?) -> Void = { v in
+            let next = listens.finish()
+            request.done(v)
+            if let next { listen(next) }
+        }
         let desc = CATapDescription(stereoMixdownOfProcesses: processes)
         desc.uuid = UUID()
         desc.isPrivate = true
         desc.muteBehavior = .unmuted
         var tap = AudioObjectID(kAudioObjectUnknown)
-        guard AudioHardwareCreateProcessTap(desc, &tap) == noErr else { done(nil); return }
+        let tapStatus = AudioHardwareCreateProcessTap(desc, &tap)
+        guard tapStatus == noErr else {
+            Log.note("media listen: tap failed creating process tap, status \(tapStatus)"); done(nil); return
+        }
         let agg: [String: Any] = [
             kAudioAggregateDeviceNameKey: "Redpen Voice listen",
             kAudioAggregateDeviceUIDKey: "redpen-voice-tap-" + UUID().uuidString,
@@ -49,7 +71,9 @@ enum SoundTap {
             kAudioAggregateDeviceTapListKey: [[kAudioSubTapUIDKey: desc.uuid.uuidString, kAudioSubTapDriftCompensationKey: true]],
         ]
         var dev = AudioObjectID(kAudioObjectUnknown)
-        guard AudioHardwareCreateAggregateDevice(agg as CFDictionary, &dev) == noErr else {
+        let deviceStatus = AudioHardwareCreateAggregateDevice(agg as CFDictionary, &dev)
+        guard deviceStatus == noErr else {
+            Log.note("media listen: tap failed creating aggregate device, status \(deviceStatus)")
             AudioHardwareDestroyProcessTap(tap); done(nil); return
         }
         let box = Peak()
@@ -60,7 +84,7 @@ enum SoundTap {
         let deviceRate = rate
         var proc: AudioDeviceIOProcID?
         let q = DispatchQueue(label: "redpen.voice.tap")
-        let ok = AudioDeviceCreateIOProcIDWithBlock(&proc, dev, q) { _, input, _, _, _ in
+        let procStatus = AudioDeviceCreateIOProcIDWithBlock(&proc, dev, q) { _, input, _, _, _ in
             var mono: [Float] = []
             var parts = 0
             for b in UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input)) {
@@ -79,8 +103,11 @@ enum SoundTap {
                 }
             }
             if let record, parts > 0 { record.add(parts == 1 ? mono : mono.map { $0 / Float(parts) }, rate: deviceRate) }
-        } == noErr
-        guard ok, let proc, AudioDeviceStart(dev, proc) == noErr else {
+        }
+        var startStatus = procStatus
+        if procStatus == noErr, let proc { startStatus = AudioDeviceStart(dev, proc) }
+        guard procStatus == noErr, let proc, startStatus == noErr else {
+            Log.note("media listen: tap failed starting audio, IO proc status \(procStatus), start status \(startStatus), proc present \(proc != nil)")
             if let proc { AudioDeviceDestroyIOProcID(dev, proc) }
             AudioHardwareDestroyAggregateDevice(dev); AudioHardwareDestroyProcessTap(tap); done(nil); return
         }
@@ -91,17 +118,10 @@ enum SoundTap {
             AudioDeviceDestroyIOProcID(dev, proc)
             AudioHardwareDestroyAggregateDevice(dev)
             AudioHardwareDestroyProcessTap(tap)
+            if box.frames == 0 { Log.note("media listen: tap failed, no audio frames (audio permission may be unavailable)") }
             done(box.frames > 0 ? box.value : nil)
         }
     }
 
     private final class Peak: @unchecked Sendable { var value: Float = 0; var frames = 0 }
-
-    /// Only one listen at a time, so two quick presses never stack taps.
-    private final class Flag: @unchecked Sendable {
-        private let lock = NSLock(); private var on = false
-        func claim() -> Bool { lock.lock(); defer { lock.unlock() }; if on { return false }; on = true; return true }
-        func release() { lock.lock(); on = false; lock.unlock() }
-    }
-    private static let running = Flag()
 }

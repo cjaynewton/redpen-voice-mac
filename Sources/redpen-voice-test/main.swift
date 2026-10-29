@@ -65,6 +65,17 @@ check("media.resume.newpress", !MediaGate.shouldResume(paused: true, recordingAg
 check("media.resume.alreadyplaying", !MediaGate.shouldResume(paused: true, playingNow: true))
 check("media.alerts", !MediaGate.isMedia("systemsoundserverd") && !MediaGate.isMedia("corespeechd") && !MediaGate.isMedia("Monologue"))
 check("media.players", MediaGate.isMedia("Google Chrome Helper (Aperitif)") && MediaGate.isMedia("Music") && !MediaGate.isMedia("Boom 3D"))
+// A double tap must wait for the first listen, never turn a busy tap into a silent result.
+let listens = MediaListenQueue<Int>()
+check("media.listen.firstTap", listens.submit(1) == 1)
+check("media.listen.secondTapWaits", listens.submit(2) == nil)
+check("media.listen.resumeWaits", listens.submit(3) == nil)
+check("media.listen.secondTapRunsNext", listens.finish() == 2)
+check("media.listen.quietWaits", listens.submit(4) == nil)
+check("media.listen.resumeRunsNext", listens.finish() == 3)
+check("media.listen.quietRunsNext", listens.finish() == 4)
+check("media.listen.drained", listens.finish() == nil)
+check("media.listen.availableAgain", listens.submit(5) == 5 && listens.finish() == nil)
 func fk(_ r: String?, ed: Bool = false, set: Bool = false, web: Bool = false) -> FocusKind { FocusGate.kind(role: r, editableAncestor: ed, valueSettable: set, inBrowser: web) }
 // Streaming cuts: only in a pause, never inside a word.
 func tone(_ secs: Double) -> [Float] { (0..<Int(secs * 16000)).map { Float(sin(Double($0) * 0.05)) * 0.3 } }
