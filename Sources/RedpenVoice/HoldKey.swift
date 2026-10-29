@@ -14,25 +14,19 @@ final class HoldKey {
 
     var keys: [Key] = [HoldKey.fn, HoldKey.rightOption]
     var doubleTap = true
-    var onDown: () -> Void = {}
+    var onDown: () -> Bool = { false }
+    var canBegin: () -> Bool = { true }
     var onUp: () -> Void = {}
     var onCancel: () -> Void = {}
     /// Hands-free just started (second tap), so the bar can say so.
     var onHandsFree: () -> Void = {}
     /// A tap is a press shorter than this; the second must come within `tapGap` of the first. Generous enough for an
     /// unhurried double tap (Cedric's first tap ran just over the old 0.3 s on Oct 25).
-    static let tapLength = DictationDelivery.tapLength, tapGap = 0.5
+    static let tapLength = TalkKeyState.tapLength, tapGap = TalkKeyState.tapGap
     private var monitors: [Any] = []
-    private var held: Set<Int> = []
-    private var active = false
-    private var spoiled = false
-    private var pressedAt = Date()
-    private var lastTap: Date?
-    private var secondTap = false
-    private var latched = false
-    /// Talking hands-free: no key is held, so typed words can't pick up Fn or Option.
-    var handsFree: Bool { latched }
-    private var swallowUp = false
+    private var state = TalkKeyState()
+    var handsFree: Bool { state.handsFree }
+    var ownerName: String? { state.owner.flatMap { o in keys.first { $0.code == o }?.name } }
 
     static let fn = Key(code: kVK_Function, name: "Fn")
     static let rightOption = Key(code: kVK_RightOption, name: "right Option")
@@ -77,91 +71,71 @@ final class HoldKey {
         // Hands-free, or the key really still down: setting up again would lose the press, so it waits.
         // Whether any talk key is physically down now, modifier or not, read from the keyboard's own state.
         // The hardware's own state: Voice's typed keys don't change it.
-        let down = keys.contains { k in CGEventSource.keyState(.hidSystemState, key: CGKeyCode(k.code))
-            || (Self.modifiers[k.code].map { NSEvent.modifierFlags.contains($0) } ?? false) }
-        if latched || ((active || !held.isEmpty) && down) {
+        let down = keys.contains { CGEventSource.keyState(.hidSystemState, key: CGKeyCode($0.code)) }
+        if state.handsFree || ((state.active || state.held) && down) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.restart() }
             return
         }
-        // The key is up but its release was never heard (watchers made before Accessibility): finish that dictation.
-        if active { active = false; onUp() }
+        if let owner = state.owner, state.held {
+            apply(state.event(key: owner, down: false, hardwareDown: false, at: ProcessInfo.processInfo.systemUptime))
+        }
         for m in monitors { NSEvent.removeMonitor(m) }
-        monitors.removeAll(); held.removeAll(); active = false; owner = nil
+        monitors.removeAll()
         start()
     }
 
     private func isTalkKey(_ code: Int) -> Bool { keys.contains { $0.code == code } }
 
+    private func isOwn(_ e: NSEvent) -> Bool {
+        guard let cg = e.cgEvent else { return false }
+        return VoiceEvents.isOwn(pid: cg.getIntegerValueField(.eventSourceUnixProcessID),
+                                 userData: cg.getIntegerValueField(.eventSourceUserData))
+    }
+
     private func flagsChanged(_ e: NSEvent) {
         let code = Int(e.keyCode)
         guard isTalkKey(code), let flag = Self.modifiers[code] else {
-            if !held.isEmpty { otherKey() }  // another modifier while the talk key is down: a shortcut, not talking
+            if !isOwn(e) { apply(state.otherKey()) }
             return
         }
-        let down = e.modifierFlags.contains(flag)
-        // A release the keyboard itself does not report (the key is still physically down) is an echo of
-        // something the app posted, not the finger lifting.
-        // The hardware's own state, not the session's: words typed while the key is held are posted without Fn or
-        // Option, and the session state can read that as the key coming up.
-        if !down, CGEventSource.keyState(.hidSystemState, key: CGKeyCode(code)) { return }
-        set(code, down)
+        receive(e, down: e.modifierFlags.contains(flag))
     }
 
     private func key(_ e: NSEvent) {
-        // Words Voice types itself while you hold the key are not "another key": they would cancel the dictation.
-        if e.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) == Int64(getpid()) { return }
         let code = Int(e.keyCode)
         if isTalkKey(code), Self.modifiers[code] == nil {
-            guard !e.isARepeat else { return }
-            set(code, e.type == .keyDown)
-        } else if e.type == .keyDown {
-            otherKey()
+            receive(e, down: e.type == .keyDown)
+        } else if e.type == .keyDown, !isOwn(e) {
+            apply(state.otherKey())
         }
     }
 
-    private func set(_ code: Int, _ down: Bool) {
-        // One talk key at a time: the key that started a dictation owns it, and the other one (right Option hit by
-        // accident while holding Fn) is ignored, so it can't keep the dictation going or start another (Oct 25).
-        if let o = owner, code != o { return }
-        guard down != held.contains(code) else { return }
-        if down { held.insert(code) } else { held.remove(code) }
-        if down, owner == nil { owner = code }
-        changed(down)
-        if held.isEmpty, !active, !latched { owner = nil }
-    }
-    private var owner: Int?
-    /// The key running the dictation now, by name, so the hands-free bar names the one that stops it.
-    var ownerName: String? { owner.flatMap { o in keys.first { $0.code == o }?.name } }
+    // Temporary diagnostics end a week after this repair. Only talk keys, never letters or dictated words.
+    private static let rawLogUntil = ISO8601DateFormatter().date(from: "2026-11-05T12:00:00Z")!
 
-    private func changed(_ down: Bool) {
-        if down {
-            // Hands-free: this press finishes the dictation; its release is ignored.
-            if latched { latched = false; active = false; swallowUp = true; onUp(); return }
-            guard !active else { return }
-            spoiled = false
-            active = true
-            secondTap = doubleTap && lastTap.map { Date().timeIntervalSince($0) < Self.tapGap } == true
-            pressedAt = Date()
-            onDown()
-        } else if held.isEmpty {
-            if swallowUp { swallowUp = false; return }
-            guard active else { return }
-            if spoiled { active = false; onCancel(); return }
-            if doubleTap, Date().timeIntervalSince(pressedAt) < Self.tapLength {
-                // A quick tap: the second one keeps listening, the first is dropped quietly and waits for a second.
-                if secondTap { latched = true; secondTap = false; lastTap = nil; Log.note("hold key: hands-free on"); onHandsFree(); return }
-                active = false; lastTap = Date(); onCancel(); return
-            }
-            active = false
-            onUp()
+    private func receive(_ e: NSEvent, down: Bool) {
+        let code = Int(e.keyCode)
+        let hardware = CGEventSource.keyState(.hidSystemState, key: CGKeyCode(code))
+        let own = isOwn(e)
+        let repeated = e.type == .keyDown && e.isARepeat
+        if Date() < Self.rawLogUntil {
+            let pid = e.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) ?? -1
+            Log.note("talk raw: key \(code), \(down ? "down" : "up"), hardware \(hardware), confirmed \(down == hardware), pid \(pid), own \(own), repeat \(repeated), event \(String(format: "%.6f", e.timestamp)), uptime \(String(format: "%.6f", ProcessInfo.processInfo.systemUptime))")
         }
+        guard !repeated else { return }
+        state.doubleTap = doubleTap
+        let action = state.event(key: code, down: down, hardwareDown: hardware, ownEvent: own,
+                                 canBegin: canBegin(), at: ProcessInfo.processInfo.systemUptime)
+        apply(action)
     }
 
-    /// Any other key while the talk key is held: this press is a shortcut. Cancel what started, say nothing.
-    /// Hands-free talking is never cancelled this way, since no talk key is held.
-    private func otherKey() {
-        guard !held.isEmpty, !spoiled, !latched else { return }
-        spoiled = true
-        if active { active = false; onCancel() }
+    private func apply(_ action: TalkKeyState.Action?) {
+        switch action {
+        case .begin: if !onDown() { state.rejectBegin() }
+        case .end: onUp()
+        case .cancel: onCancel()
+        case .handsFree: Log.note("hold key: hands-free on"); onHandsFree()
+        case nil: break
+        }
     }
 }

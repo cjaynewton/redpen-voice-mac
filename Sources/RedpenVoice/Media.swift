@@ -42,18 +42,9 @@ enum Media {
     }
 
     /// The same key press as the play/pause key on the keyboard.
-    /// Posted with the modifier keys as they are right now. A press posted with "no modifiers" reads to the system as
-    /// the talk key being released, which ended every dictation the instant it started.
+    /// Isolated from session modifier state. Hardware checks in HoldKey reject any synthetic flag changes.
     static func pressPlayPause() {
-        let key = 16  // NX_KEYTYPE_PLAY
-        let held = CGEventSource.flagsState(.combinedSessionState)
-        for down in [true, false] {
-            let data1 = (key << 16) | ((down ? 0xA : 0xB) << 8)
-            guard let e = NSEvent.otherEvent(with: .systemDefined, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-                                             windowNumber: 0, context: nil, subtype: 8, data1: data1, data2: -1),
-                  let cg = e.cgEvent else { continue }
-            cg.flags = held
-            cg.post(tap: .cghidEventTap)
-        }
+        guard let pair = VoiceEvents.playPausePair() else { return }
+        pair.down.post(tap: .cghidEventTap); pair.up.post(tap: .cghidEventTap)
     }
 }

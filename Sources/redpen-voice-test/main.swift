@@ -108,6 +108,115 @@ do {
     check("delivery.tapBoundaryIsHold", !boundary.cancel(at: zero.addingTimeInterval(DictationDelivery.tapLength)) && boundary.current == 1)
 }
 
+// Talk gestures run without posting keys, opening windows, or using the microphone.
+do {
+    var key = TalkKeyState()
+    func event(_ down: Bool, _ time: Double, code: Int = 63, hardware: Bool? = nil,
+               own: Bool = false, ready: Bool = true) -> TalkKeyState.Action? {
+        key.event(key: code, down: down, hardwareDown: hardware ?? down, ownEvent: own, canBegin: ready, at: time)
+    }
+    check("talk.firstDownBegins", event(true, 1) == .begin)
+    check("talk.duplicateDownIgnored", event(true, 1.02) == nil)
+    check("talk.firstTapCancelled", event(false, 1.1) == .cancel && !key.active)
+    check("talk.secondDownBegins", event(true, 1.25) == .begin)
+    check("talk.secondTapLatches", event(false, 1.35) == .handsFree && key.handsFree)
+    check("talk.typingWhileHandsFreeIgnored", key.otherKey() == nil && key.handsFree)
+    check("talk.ownDownCannotStop", event(true, 2, own: true) == nil && key.handsFree)
+    check("talk.phantomDownCannotStop", event(true, 2.1, hardware: false) == nil && key.handsFree)
+    check("talk.oneDownStops", event(true, 3, ready: false) == .end && !key.handsFree && !key.active)
+    check("talk.stopUpSwallowed", event(false, 3.1, ready: false) == nil)
+    check("talk.extraDownNoRecording", event(true, 3.2, ready: false) == nil && !key.active)
+    check("talk.extraUpNoLatch", event(false, 3.3, ready: false) == nil && !key.handsFree)
+    check("talk.guardAfterFinishNoRecording", event(true, 3.45) == nil && !key.active)
+    check("talk.guardAfterFinishNoLatch", event(false, 3.55) == nil && !key.handsFree)
+    check("talk.finishingBeyondGuardBlocks", event(true, 5, ready: false) == nil)
+    check("talk.releaseAfterFinishingCannotLatch", event(false, 5.1) == nil && !key.handsFree)
+    check("talk.newIdleTapBegins", event(true, 6) == .begin)
+    check("talk.newIdleTapDropped", event(false, 6.1) == .cancel)
+    check("talk.newIdleDoubleTapBegins", event(true, 6.25) == .begin)
+    check("talk.newIdleDoubleTapLatches", event(false, 6.35) == .handsFree)
+    check("talk.eitherTalkKeyStops", event(true, 7, code: 61, ready: false) == .end)
+    check("talk.eitherTalkKeyReleaseSwallowed", event(false, 7.1, code: 61) == nil && key.owner == nil)
+
+    key = TalkKeyState()
+    check("talk.holdBeginsImmediately", event(true, 10) == .begin)
+    check("talk.ownReleaseIgnored", event(false, 10.1, hardware: true, own: true) == nil && key.active)
+    check("talk.phantomReleaseIgnored", event(false, 10.2, hardware: true) == nil && key.active)
+    check("talk.otherTalkKeyCannotOwnHold", event(true, 10.3, code: 61) == nil && key.owner == 63)
+    check("talk.holdReleaseEnds", event(false, 10.6) == .end && !key.active)
+    check("talk.holdStopGuard", event(true, 10.7) == nil)
+    check("talk.holdStopGuardRelease", event(false, 10.8) == nil)
+    check("talk.holdClearedTapHistory", event(true, 12) == .begin && event(false, 12.1) == .cancel && !key.handsFree)
+
+    key = TalkKeyState()
+    check("talk.phantomDownNoBegin", event(true, 20, hardware: false) == nil && !key.active && key.owner == nil)
+    check("talk.ownDownNoBegin", event(true, 20.1, own: true) == nil && key.owner == nil)
+    check("talk.realAfterPhantomBegins", event(true, 21) == .begin)
+    check("talk.bounceTapCannotSeed", event(false, 21.01) == .cancel)
+    check("talk.bounceDownIgnored", event(true, 21.02) == nil && !key.active)
+    check("talk.bounceReleaseCannotLatch", event(false, 21.03) == nil && !key.handsFree)
+    check("talk.afterBounceFirstTap", event(true, 22) == .begin && event(false, 22.1) == .cancel)
+    check("talk.doubleTapOtherKeyNotSecond", event(true, 22.25, code: 61) == .begin && event(false, 22.35, code: 61) == .cancel)
+    check("talk.expiredTapNotSecond", event(true, 23, code: 61) == .begin && event(false, 23.1, code: 61) == .cancel)
+
+    key = TalkKeyState()
+    check("talk.shortcutBegins", event(true, 30) == .begin)
+    check("talk.otherKeyCancels", key.otherKey() == .cancel && !key.active)
+    check("talk.shortcutReleaseIgnored", event(false, 30.1) == nil)
+    check("talk.shortcutCannotSeedDoubleTap", event(true, 30.25) == .begin && event(false, 30.35) == .cancel && !key.handsFree)
+    check("talk.rejectedBegin", event(true, 30.5) == .begin)
+    key.rejectBegin()
+    check("talk.rejectedBeginCannotLatch", event(false, 30.6) == nil && !key.handsFree)
+    key = TalkKeyState(); key.doubleTap = false
+    check("talk.singleTapModeBegins", event(true, 40) == .begin)
+    check("talk.singleTapModeEnds", event(false, 40.1) == .end && !key.handsFree)
+    key = TalkKeyState()
+    check("talk.tapLengthBoundaryIsHold", event(true, 0) == .begin && event(false, TalkKeyState.tapLength) == .end)
+    key = TalkKeyState()
+    _ = event(true, 50); _ = event(false, 50.1)
+    _ = event(true, 50.25); _ = event(false, 50.35)
+    _ = event(true, 51); _ = event(false, 51.1)
+    var began = 0, latched = 0
+    for i in 0..<26 {
+        let time = 51.2 + Double(i) * 0.12
+        if event(true, time, ready: i > 20) == .begin { began += 1 }
+        if event(false, time + 0.06, ready: i > 20) == .handsFree { latched += 1 }
+    }
+    check("talk.26ExtraTapsNeverRecordOrLatch", began == 0 && latched == 0 && !key.active && !key.handsFree)
+}
+
+// Inspect synthetic event construction only. None of these events are posted.
+do {
+    let me = Int64(ProcessInfo.processInfo.processIdentifier)
+    check("events.ownPID", VoiceEvents.isOwn(pid: me, userData: 0))
+    check("events.ownMarker", VoiceEvents.isOwn(pid: -1, userData: VoiceEvents.marker))
+    check("events.hardwareNotOwn", !VoiceEvents.isOwn(pid: 0, userData: 0))
+    let paste = VoiceEvents.keyboardPair(key: 9, flags: .maskCommand)
+    check("events.pastePairConstructed", paste != nil)
+    check("events.pasteDownCommandOnly", paste?.down.flags == .maskCommand)
+    check("events.pasteUpClearsCommand", paste?.up.flags.isEmpty == true)
+    check("events.pasteSourcePrivate", paste?.down.getIntegerValueField(.eventSourceStateID) != Int64(CGEventSourceStateID.combinedSessionState.rawValue)
+          && paste?.down.getIntegerValueField(.eventSourceStateID) != Int64(CGEventSourceStateID.hidSystemState.rawValue))
+    check("events.bothMarked", paste?.down.getIntegerValueField(.eventSourceUserData) == VoiceEvents.marker
+          && paste?.up.getIntegerValueField(.eventSourceUserData) == VoiceEvents.marker)
+    let typing = VoiceEvents.keyboardPair(key: 0)
+    check("events.typingHasNoModifiers", typing?.down.flags.isEmpty == true && typing?.up.flags.isEmpty == true)
+    let media = VoiceEvents.playPausePair()
+    check("events.mediaPairConstructed", media != nil)
+    check("events.mediaHasNoModifiers", media?.down.flags.isEmpty == true && media?.up.flags.isEmpty == true)
+    check("events.mediaBothMarked", media?.down.getIntegerValueField(.eventSourceUserData) == VoiceEvents.marker
+          && media?.up.getIntegerValueField(.eventSourceUserData) == VoiceEvents.marker)
+    check("events.mediaSourcePrivate", media?.down.getIntegerValueField(.eventSourceStateID) != Int64(CGEventSourceStateID.combinedSessionState.rawValue)
+          && media?.down.getIntegerValueField(.eventSourceStateID) != Int64(CGEventSourceStateID.hidSystemState.rawValue))
+    check("events.mediaDownUp", media.flatMap { NSEvent(cgEvent: $0.down) }?.data1 == (16 << 16) | (0xA << 8)
+          && media.flatMap { NSEvent(cgEvent: $0.up) }?.data1 == (16 << 16) | (0xB << 8))
+    check("events.noFocusCannotType", !FocusGate.canType(kind: .unknown, hasFocusedElement: false))
+    check("events.noFocusEvenIfTextCannotType", !FocusGate.canType(kind: .text, hasFocusedElement: false))
+    check("events.controlCannotType", !FocusGate.canType(kind: .notText, hasFocusedElement: true))
+    check("events.nativeEditorStillTypes", FocusGate.canType(kind: .unknown, hasFocusedElement: true))
+    check("events.textBoxStillTypes", FocusGate.canType(kind: .text, hasFocusedElement: true))
+}
+
 // Media gate: never press play on a quiet Mac.
 check("media.quiet", MediaGate.shouldPause(enabled: true, outputRunning: false) == false)
 check("media.playing", MediaGate.shouldPause(enabled: true, outputRunning: true) == true)

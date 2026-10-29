@@ -136,8 +136,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let el = Insert.focusedElement()?.0
                 func box() -> String { el.flatMap { Insert.value($0) } ?? "(can't read)" }
                 // Cursor to the end of the box (Command-Down).
-                if let src = CGEventSource(stateID: .combinedSessionState) {
-                    for down in [true, false] { let e = CGEvent(keyboardEventSource: src, virtualKey: 125, keyDown: down); e?.flags = .maskCommand; e?.post(tap: .cghidEventTap) }
+                if let pair = VoiceEvents.keyboardPair(key: 125, flags: .maskCommand) {
+                    pair.down.post(tap: .cgSessionEventTap); pair.up.post(tap: .cgSessionEventTap)
                 }
                 usleep(300_000)
                 lines.append("before: \(box().debugDescription)")
@@ -517,7 +517,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         keys.keys = HoldKey.keys(for: config.talkKeyChoice); keys.doubleTap = config.doubleTap ?? true
         fixWatch.onLearn = { [weak self] f in self?.learn(f) }
         keys.onHandsFree = { [weak self] in self?.handsFreeOn() }
-        keys.onDown = { [weak self] in self?.begin() }
+        keys.canBegin = { [weak self] in
+            guard let self else { return false }
+            return !self.busy && self.session == nil && self.writing == 0 && self.testFile == nil
+        }
+        keys.onDown = { [weak self] in self?.begin(); return self?.session != nil }
         keys.onUp = { [weak self] in self?.end() }
         keys.onCancel = { [weak self] in self?.cancel() }
         keys.start()
@@ -1452,7 +1456,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     if !newer {
                         if inserted, Insert.unconfirmed { self.hud.flash("Didn't see it land. Press ⌃⌥V to paste it", for: 3) }
                         else if inserted { if handsFree { self.hud.flash("Hands-free done", ok: true) } else { self.hud.hide() } }
-                        else { self.hud.flash("Couldn't type it here. Press ⌃⌥V to paste", for: 2.5) }
+                        else { self.hud.flash("Words kept. Click a text box and press ⌃⌥V to paste", for: 3) }
                     }
                     Log.note("insert: focus \(focus.role), \(focus.kind.rawValue)")
                 }

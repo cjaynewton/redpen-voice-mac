@@ -6,6 +6,10 @@ import Foundation
 public enum FocusKind: String, Sendable { case text, notText, unknown }
 
 public enum FocusGate {
+    public static func canType(kind: FocusKind, hasFocusedElement: Bool) -> Bool {
+        hasFocusedElement && kind != .notText
+    }
+
     public static let textRoles: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"]
     /// Never take typed words, in any app.
     public static let controls: Set<String> = [
@@ -22,8 +26,8 @@ public enum FocusGate {
         "com.microsoft.edgemac", "com.brave.Browser", "com.operasoftware.Opera", "com.vivaldi.Vivaldi",
     ]
 
-    /// `role` nil means Accessibility named no focused element (Electron apps often don't): unknown, so the words
-    /// are typed as before. Only editable evidence makes a place text: a selected range alone is not, since a web
+    /// A missing focused element remains unknown for classification, but cannot receive typing.
+    /// Only editable evidence makes a place text: a selected range alone is not, since a web
     /// page reports one for any selected words.
     public static func kind(role: String?, editableAncestor: Bool, valueSettable: Bool, inBrowser: Bool) -> FocusKind {
         guard let role, !role.isEmpty else { return .unknown }
