@@ -133,6 +133,32 @@ check("media.listen.resumeRunsNext", listens.finish() == 3)
 check("media.listen.quietRunsNext", listens.finish() == 4)
 check("media.listen.drained", listens.finish() == nil)
 check("media.listen.availableAgain", listens.submit(5) == 5 && listens.finish() == nil)
+check("media.listen.diagnosticStartsIdle", listens.submitIfIdle(6) == 6)
+check("media.listen.diagnosticSkipsBusy", listens.submitIfIdle(7) == nil)
+check("media.listen.realCheckStillQueues", listens.submit(8) == nil)
+check("media.listen.diagnosticDoesNotQueue", listens.finish() == 8 && listens.finish() == nil)
+check("media.listen.diagnosticAvailableAgain", listens.submitIfIdle(9) == 9 && listens.finish() == nil)
+
+// Settings links and fallback order, without opening System Settings.
+let settingsURLs: [(SystemSettingsLink, String, String)] = [
+    (.accessibility, "com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility", "com.apple.preference.security?Privacy_Accessibility"),
+    (.microphone, "com.apple.settings.PrivacySecurity.extension?Privacy_Microphone", "com.apple.preference.security?Privacy_Microphone"),
+    (.systemAudio, "com.apple.settings.PrivacySecurity.extension?Privacy_AudioCapture", "com.apple.preference.security?Privacy_AudioCapture"),
+    (.keyboard, "com.apple.Keyboard-Settings.extension", "com.apple.preference.keyboard"),
+]
+for (page, current, legacy) in settingsURLs {
+    check("settings.\(page).url", page.url.absoluteString == "x-apple.systempreferences:\(current)")
+    check("settings.\(page).legacy", page.fallbackURL.absoluteString == "x-apple.systempreferences:\(legacy)")
+    var opened: [URL] = []
+    let success = page.open { opened.append($0); return true }
+    check("settings.\(page).noFallbackOnSuccess", success && opened == [page.url])
+    opened = []
+    let fallback = page.open { opened.append($0); return opened.count == 2 }
+    check("settings.\(page).fallbackOnFailure", fallback && opened == [page.url, page.fallbackURL])
+    opened = []
+    let failure = page.open { opened.append($0); return false }
+    check("settings.\(page).bothFail", !failure && opened == [page.url, page.fallbackURL])
+}
 func fk(_ r: String?, ed: Bool = false, set: Bool = false, web: Bool = false) -> FocusKind { FocusGate.kind(role: r, editableAncestor: ed, valueSettable: set, inBrowser: web) }
 // Streaming cuts: only in a pause, never inside a word.
 func tone(_ secs: Double) -> [Float] { (0..<Int(secs * 16000)).map { Float(sin(Double($0) * 0.05)) * 0.3 } }

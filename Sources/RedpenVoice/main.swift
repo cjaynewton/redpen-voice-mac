@@ -30,7 +30,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var startedAt = Date()
     /// The engine the dictation in progress started with, for its day's numbers (D-837).
     private var sessionEngine = "dictation"
-    private var pausedMedia = false
+    private let mediaPauseMonitor = MediaPauseMonitor()
+    private var pausedMedia = false {
+        didSet {
+            if pausedMedia { mediaPauseMonitor.resume() }
+            else { mediaPauseMonitor.stop() }
+        }
+    }
     private var settleWork: DispatchWorkItem?
     private var busy = false
     private var press = 0
@@ -544,6 +550,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Updates.shared.start()
         updateWatch = Updates.shared.$waiting.sink { [weak self] _ in DispatchQueue.main.async { self?.refreshMenu() } }
         Log.note("launched")
+        Log.note("keyboard: AppleFnUsageType \(FnKey.usage)\(FnKey.problem.map { ", \($0)" } ?? "")")
     }
 
     /// Watches for your own typing and clicks. Set up again when Accessibility arrives (watchers made before it can
@@ -770,11 +777,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             Log.note("media: apps [\(players.map(\.name).joined(separator: ", "))], loudness \(peak.map { String(format: "%.4f", $0) } ?? "no tap"), paused \(playing)")
                             guard playing else { s.mediaSettled(); return }  // nothing playing: every word kept
                             self.pausedMedia = true; Media.pressPlayPause()
+                            let pauseWatch = self.mediaPauseMonitor.start(players)
                             let pausedAt = Date()
                             // The video's own sound reached the mic until the pause took hold: listen for that app going
                             // quiet, then leave out everything before it, plus 0.15 s for the speakers and the room.
                             Self.waitForQuiet(players.map(\.object), tries: 8, record: played) { quietAt in
                                 DispatchQueue.main.async {
+                                    self.mediaPauseMonitor.didSettle(pauseWatch)
                                     // Every word you said is kept and the video's words come off the start (D-817),
                                     // when Voice heard the video and the engine can write it down. Otherwise the
                                     // start is left out as before: the Mac's own engine, drafts typed as you talk,

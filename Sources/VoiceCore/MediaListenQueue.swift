@@ -17,6 +17,14 @@ public final class MediaListenQueue<Request: Sendable>: @unchecked Sendable {
         return request
     }
 
+    /// Optional diagnostics skip a busy tap instead of delaying a pause, quiet check or resume.
+    public func submitIfIdle(_ request: Request) -> Request? {
+        lock.lock(); defer { lock.unlock() }
+        guard !running else { return nil }
+        running = true
+        return request
+    }
+
     /// Returns the next request, keeping the tap reserved for it, or makes the tap available again.
     public func finish() -> Request? {
         lock.lock(); defer { lock.unlock() }

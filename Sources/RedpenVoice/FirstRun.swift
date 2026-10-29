@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import AVFoundation
+import VoiceCore
 
 /// What the first window needs from the app: the engine's state, the microphone, the talk key, and a way back in when
 /// something is stuck.
@@ -131,22 +132,22 @@ final class FirstRunModel: ObservableObject {
     }
 
     func askMic() {
-        if mic == .denied || mic == .restricted { openPrivacy("Privacy_Microphone"); return }
+        if mic == .denied || mic == .restricted { openPrivacy(.microphone); return }
         AVCaptureDevice.requestAccess(for: .audio) { _ in DispatchQueue.main.async { self.tick() } }
     }
 
     func askAccess() {
         let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         AXIsProcessTrustedWithOptions(opts)
-        openPrivacy("Privacy_Accessibility")
+        openPrivacy(.accessibility)
     }
 
-    func openPrivacy(_ pane: String) {
-        if let u = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") { NSWorkspace.shared.open(u) }
+    func openPrivacy(_ page: SystemSettingsLink) {
+        page.open { NSWorkspace.shared.open($0) }
     }
 
     func openKeyboardSettings() {
-        if let u = URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension") { NSWorkspace.shared.open(u) }
+        SystemSettingsLink.keyboard.open { NSWorkspace.shared.open($0) }
     }
 
     /// Changes one setting on the saved file as it is now, so a change made in Settings meanwhile is never undone.

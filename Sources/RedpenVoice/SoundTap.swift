@@ -46,6 +46,14 @@ enum SoundTap {
     }
     private static let listens = MediaListenQueue<Listen>()
 
+    /// A diagnostic sample never queues behind or stacks on another listen. False means try next time.
+    static func loudnessIfIdle(of processes: [AudioObjectID], for seconds: Double, done: @escaping @Sendable (Float?) -> Void) -> Bool {
+        guard !processes.isEmpty,
+              let next = listens.submitIfIdle(Listen(processes: processes, seconds: seconds, record: nil, done: done)) else { return false }
+        listen(next)
+        return true
+    }
+
     private static func listen(_ request: Listen) {
         let processes = request.processes, seconds = request.seconds, record = request.record
         let done: @Sendable (Float?) -> Void = { v in
