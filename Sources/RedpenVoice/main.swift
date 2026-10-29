@@ -663,8 +663,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var writing = 0
     /// The press whose recording the mic is feeding. Only that press may stop it.
     private var micOwner = 0
-    /// Goes up with every press. A dictation finishing after a newer press began never waits or touches the bar.
-    private var delivery = 0
+    /// A cancelled short tap returns delivery to the previous dictation; microphone ownership never goes back.
+    private var deliveries = DictationDelivery()
+    private var delivery: Int { deliveries.current }
 
     private var engineWord: String {
         switch engine.state {
@@ -716,11 +717,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 window: Self.windowTitle(pid), print: Self.boxPrint(el, withText: true))
         } else { startBox = nil }
         fixWatch.finish()
-        delivery += 1
+        deliveries.begin()
+        let generation = delivery
         busy = true
         // The bar waits a quarter second, so an Fn shortcut never flickers it.
         let settle = DispatchWorkItem { [weak self] in
-            guard let self, self.session != nil else { return }
+            guard let self, self.session != nil, self.delivery == generation else { return }
             if self.config.showLevel {
                 self.hud.style = self.config.levelLook; self.hud.micName = self.recorder.inputName
                 self.hud.show("", level: true)
@@ -808,7 +810,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if config.sounds { NSSound(named: "Pop")?.play() }
         if recorder.inputName.isEmpty {
             do { try recorder.start(format: format) } catch {
-                Log.note("mic failed: \(error.localizedDescription)"); hud.flash("No microphone"); session = nil; busy = false; return
+                Log.note("mic failed: \(error.localizedDescription)"); hud.flash("No microphone"); session = nil; deliveries.cancel(); busy = false; return
             }
         }
         // The engine is listening before the pre-roll arrives, so nothing waits in a queue.
@@ -816,6 +818,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Whisper writes each stretch at a pause while you talk, so only the last few seconds are left at the end.
         livePieces = 0; liveTyped = 0; liveShown = ""; liveStopped = false; liveLeftover = ""
         // A dictation still finishing keeps its drafts as typed: the new one's words come after them.
+        interruptedDrafting = finishingDrafting.map { ($0, $0.checksStopped, $0.draftsStopped) }
         finishingDrafting?.checksStopped = true; finishingDrafting?.draftsStopped = true
         drafting = nil
         if config.engine == "whisper", s.drafter != nil, config.mode != "rewrite" {
@@ -859,9 +862,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settleWork?.cancel()
         recorder.end()
         s.cancel()
+        let ignoredTap = deliveries.cancel()
+        if ignoredTap, let (d, checks, drafts) = interruptedDrafting, finishingDrafting === d {
+            d.checksStopped = checks; d.draftsStopped = drafts
+        }
+        interruptedDrafting = nil
         hud.hide()
         resumeMedia()
-        Log.note("cancelled: another key while holding")
+        if ignoredTap, writing > 0 { Log.note("hold key: tap after stop ignored; finishing dictation keeps its insertion") }
+        else { Log.note(ignoredTap ? "cancelled: quick tap" : "cancelled: another key while holding") }
     }
 
     /// Pieces of the current dictation written so far, how many of them are already typed into the box, and the text
@@ -934,6 +943,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// key held. It stays until you tap again.
     private func handsFreeOn() {
         guard session != nil else { return }
+        deliveries.confirm()
+        interruptedDrafting = nil
         settleWork?.cancel()
         hud.style = config.levelLook == "off" ? "pen" : config.levelLook; hud.micName = recorder.inputName
         hud.show("", level: true)
@@ -1058,10 +1069,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     /// The dictation whose ending is being written, so its last checks still land after you let go.
     private var finishingDrafting: Drafting?
+    /// A provisional press freezes the old draft checks. A discarded tap lets them finish as before.
+    private var interruptedDrafting: (Drafting, Bool, Bool)?
 
     /// The ending in draft mode: Whisper's last words replace the drafts not yet checked (if the end of the box is
     /// still Voice's own typing), then one log line with the numbers that say whether this works.
-    private func finishDrafts(_ d: Drafting, _ s: Transcriber.Session, released: Date) {
+    private func finishDrafts(_ d: Drafting, _ s: Transcriber.Session, released: Date, showResult: Bool) {
         let tail = clean(s.lastTail)
         if !d.checksStopped, let first = d.runs.firstIndex(where: { !$0.checked }) {
             let lower = d.runs[first].drafts.lowerBound
@@ -1080,7 +1093,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         let kept = d.checksStopped || d.draftsStopped
-        if kept { hud.flash("Part went in as a quick draft. ⌃⌥V pastes the checked version.", for: 3) } else { hud.hide() }
+        if showResult {
+            if kept { hud.flash("Part went in as a quick draft. ⌃⌥V pastes the checked version.", for: 3) } else { hud.hide() }
+        }
         let lag = d.firstLag.map { "\(Log.ms($0))ms" } ?? "none"
         Log.note("draft: first words \(lag) after you started talking, \(d.runs.count) runs, checks \(d.checks), changed \(d.changed) (\(d.words) words), \(kept ? "draft kept" : "final is Whisper's"), ending typed \(Log.ms(Date().timeIntervalSince(released)))ms after release")
     }
@@ -1165,7 +1180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stopWaiting()
         waitingText = text
         let until = Date().addingTimeInterval(60)
-        hud.show("Click where the words go", level: false)
+        hud.flash("Click where the words go", for: 3)
         waitTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.checkWaiting(until: until) }
         }
@@ -1271,6 +1286,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func end() {
         guard let s = session else { return }
+        deliveries.confirm()
+        interruptedDrafting = nil
         session = nil
         let seconds = Date().timeIntervalSince(startedAt)
         settleWork?.cancel()
@@ -1319,30 +1336,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let more = self.config.mode == "noUms" ? Fillers.strip(r) : r
                 rest = [leftover, more].filter { !$0.isEmpty }.joined(separator: leftover.hasSuffix(" ") ? "" : " ")
             }
+            // Finishing can beat the release of an extra tap. Give that tap its existing classification time,
+            // then re-check delivery. A real hold still records immediately and keeps its mic ownership.
+            while self.deliveries.waitForTap(after: gen) > 0 {
+                let wait = self.deliveries.waitForTap(after: gen)
+                try? await Task.sleep(for: .seconds(wait))
+            }
+            let newer = self.delivery != gen
             var inserted = false
             // Fast draft, Whisper checks: the drafts are already in the box; Whisper's ending replaces the last ones.
             let draftHandled = myDrafting?.typedAny == true
-            if let d = myDrafting, draftHandled { self.finishDrafts(d, s, released: releasedAt); inserted = true }
+            if let d = myDrafting, draftHandled { self.finishDrafts(d, s, released: releasedAt, showResult: !newer); inserted = true }
             if self.finishingDrafting === myDrafting { self.finishingDrafting = nil }
             if draftHandled {}
-            else if text.isEmpty, self.delivery != gen { Log.note("no words, a new press began") }
+            else if text.isEmpty, newer { Log.note("no words, a new press began") }
             else if text.isEmpty { self.hud.flash(self.recorder.peak < 0.005 ? "No sound from \(self.recorder.inputName)" : "Didn't catch that", for: 2.5) }
             else if self.firstRun?.isOpen == true, Insert.ownWindowInFront {
                 // Said into the first window: the practice sentence goes straight into it.
-                self.firstRun?.practiced(text); inserted = true; self.hud.hide()
+                self.firstRun?.practiced(text); inserted = true; if !newer { self.hud.hide() }
                 Log.note("first run: practice sentence, \(text.split(separator: " ").count) words")
             }
             else if s.echoFailed {
                 // A video was playing and its words couldn't be written down to take them off: nothing is typed.
-                self.hud.flash("A video was playing and its words couldn't be checked. Press ⌃⌥V to paste", for: 3.5)
+                if !newer { self.hud.flash("A video was playing and its words couldn't be checked. Press ⌃⌥V to paste", for: 3.5) }
                 Log.note("media: the video's words couldn't be written down, kept for paste")
             }
             else {
                 // The words go where your cursor is now, whichever app that is. If it isn't in a text box (a web page,
                 // a video, a list), nothing is typed there: the words wait for you to click into one.
                 let focus = Insert.focus()
-                let newer = self.delivery != gen  // you pressed again while these words were being written
-                if let b = box, !rest.isEmpty, !self.isAt(b) {
+                if rest.isEmpty {
+                    // Everything already went in live. A page/control now in focus must not leave Writing up.
+                    inserted = true
+                    if !newer {
+                        if handsFree { self.hud.flash("Hands-free done", ok: true) } else { self.hud.hide() }
+                    }
+                } else if let b = box, !self.isAt(b) {
                     // You moved away while the words were written: they go back to the box you started in. When a
                     // newer dictation has started they never go anywhere else: Paste last has them.
                     if newer { Log.note("insert: away from the box you started in and a new press began, kept for paste") }
@@ -1370,7 +1399,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             if typedLive > 0 { Log.note("live: \(typedLive) of \(s.written.count) pieces typed while talking") }
-            if s.endingLost { self.hud.flash("The last few words didn't come through. Say them again.", for: 3.5) }
+            if s.endingLost, !newer { self.hud.flash("The last few words didn't come through. Say them again.", for: 3.5) }
             if !raw.isEmpty, ["whisper", "parakeet", "live"].contains(self.config.engine) {
                 self.talk.add(s.recorded, words: raw.split(separator: " ").count)
                 self.talk.save(AppDelegate.talkURL)
@@ -1485,7 +1514,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func pasteLastNow() {
         guard session == nil, let e = history.lastSpoken() ?? lastSaid else { hud.flash("Nothing to paste yet"); return }
         stopWaiting()
-        delivery += 1  // a dictation still being written won't start its own wait after this
+        deliveries.supersede()  // a dictation still being written won't start its own wait after this
         // Never type into a page or a video: there, letters are shortcuts.
         let focus = Insert.focus()
         guard focus.kind != .notText else {

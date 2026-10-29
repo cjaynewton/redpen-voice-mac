@@ -1,6 +1,7 @@
 import AppKit
 import Carbon.HIToolbox
 import CoreGraphics
+import VoiceCore
 
 /// Hold a key to talk, release to write. Watches key changes system-wide (needs Accessibility), so it sees keys like
 /// Fn and right Option on their own, which a normal shortcut cannot.
@@ -20,7 +21,7 @@ final class HoldKey {
     var onHandsFree: () -> Void = {}
     /// A tap is a press shorter than this; the second must come within `tapGap` of the first. Generous enough for an
     /// unhurried double tap (Cedric's first tap ran just over the old 0.3 s on Oct 25).
-    static let tapLength = 0.4, tapGap = 0.5
+    static let tapLength = DictationDelivery.tapLength, tapGap = 0.5
     private var monitors: [Any] = []
     private var held: Set<Int> = []
     private var active = false

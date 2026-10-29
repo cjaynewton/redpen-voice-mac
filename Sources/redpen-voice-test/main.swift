@@ -51,6 +51,63 @@ let old = Entry(date: Date(timeIntervalSinceNow: -2 * 86_400), raw: "a b c", sec
 let new = Entry(raw: "a b", seconds: 1, app: "x", inserted: true)
 check("score.today", Score.today([old, new]).words == 2)
 
+// Delivery after either kind of stop: a cancelled tap cannot steal the words or leave the old bar behind.
+do {
+    let now = Date(timeIntervalSince1970: 1000)
+    var delivery = DictationDelivery()
+    delivery.begin(at: now)
+    let first = delivery.current
+    delivery.confirm() // ordinary release, or the stop of a confirmed hands-free dictation
+    check("delivery.stopKeepsOwner", delivery.current == first && delivery.waitForTap(after: first, at: now) == 0)
+    delivery.begin(at: now.addingTimeInterval(1))
+    let tap = delivery.current
+    check("delivery.tapStartsImmediately", tap > first)
+    check("delivery.finishesBeforeTapReleaseWaits", abs(delivery.waitForTap(after: first, at: now.addingTimeInterval(1.1)) - 0.3) < 0.0001)
+    check("delivery.ownFinishDoesNotWait", delivery.waitForTap(after: tap, at: now.addingTimeInterval(1.1)) == 0)
+    check("delivery.shortTapCancelled", delivery.cancel(at: now.addingTimeInterval(1.2)))
+    check("delivery.cancelBeforeFinishRestoresOwner", delivery.current == first && delivery.waitForTap(after: first, at: now.addingTimeInterval(1.3)) == 0)
+    delivery.begin(at: now.addingTimeInterval(1.3))
+    check("delivery.generationsNeverReused", delivery.current > tap)
+    check("delivery.repeatedTapCancelled", delivery.cancel(at: now.addingTimeInterval(1.35)))
+    check("delivery.repeatedTapRestoresOwner", delivery.current == first)
+    // A genuine new hold starts recording at once, and remains newer when it crosses the tap threshold.
+    delivery.begin(at: now.addingTimeInterval(2))
+    let hold = delivery.current
+    check("delivery.realHoldDoesNotWaitForever", delivery.waitForTap(after: first, at: now.addingTimeInterval(2.5)) == 0 && delivery.current == hold)
+    check("delivery.longShortcutNotATap", !delivery.cancel(at: now.addingTimeInterval(2.5)) && delivery.current == hold)
+    delivery.begin(at: now.addingTimeInterval(3))
+    let next = delivery.current
+    delivery.confirm()
+    check("delivery.realReleaseKeepsOwner", delivery.current == next && delivery.waitForTap(after: first, at: now.addingTimeInterval(3.1)) == 0)
+    check("delivery.confirmedPressCannotBeCancelledAsTap", !delivery.cancel(at: now.addingTimeInterval(3.1)) && delivery.current == next)
+    // Double tap start: discard the first tap, confirm the second as hands-free, then stop without changing owner.
+    var handsFree = DictationDelivery()
+    handsFree.begin(at: now)
+    check("delivery.doubleTapFirstDropped", handsFree.cancel(at: now.addingTimeInterval(0.1)) && handsFree.current == 0)
+    handsFree.begin(at: now.addingTimeInterval(0.2))
+    let latched = handsFree.current
+    handsFree.confirm()
+    check("delivery.doubleTapSecondConfirmed", !handsFree.cancel(at: now.addingTimeInterval(0.3)) && handsFree.current == latched)
+    handsFree.confirm() // the single stop tap does not call begin
+    handsFree.begin(at: now.addingTimeInterval(5)) // an extra tap after the stop
+    check("delivery.handsFreeExtraTapWaits", handsFree.waitForTap(after: latched, at: now.addingTimeInterval(5.1)) > 0)
+    check("delivery.handsFreeExtraTapIgnored", handsFree.cancel(at: now.addingTimeInterval(5.2)) && handsFree.current == latched)
+    handsFree.begin(at: now.addingTimeInterval(6))
+    let realAfterStop = handsFree.current
+    handsFree.confirm() // another genuine double tap starts hands-free again
+    check("delivery.handsFreeCanRestart", handsFree.current == realAfterStop && handsFree.waitForTap(after: latched, at: now.addingTimeInterval(6.1)) == 0)
+    // Paste last is deliberate and is not rolled back by an unrelated later stray tap.
+    delivery.supersede()
+    let pasted = delivery.current
+    delivery.begin(at: now.addingTimeInterval(7))
+    check("delivery.pasteSurvivesTap", delivery.cancel(at: now.addingTimeInterval(7.1)) && delivery.current == pasted && pasted > next)
+    // Exactly tapLength is a hold, matching HoldKey's strict shorter-than rule.
+    var boundary = DictationDelivery()
+    let zero = Date(timeIntervalSinceReferenceDate: 0)
+    boundary.begin(at: zero)
+    check("delivery.tapBoundaryIsHold", !boundary.cancel(at: zero.addingTimeInterval(DictationDelivery.tapLength)) && boundary.current == 1)
+}
+
 // Media gate: never press play on a quiet Mac.
 check("media.quiet", MediaGate.shouldPause(enabled: true, outputRunning: false) == false)
 check("media.playing", MediaGate.shouldPause(enabled: true, outputRunning: true) == true)
