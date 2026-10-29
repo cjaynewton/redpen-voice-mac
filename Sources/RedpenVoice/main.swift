@@ -94,7 +94,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let sample = StatsModel.sample(now: now)
             let model = StatsModel(typing: 40) { sample }; model.now = { now }
             let v = NSHostingView(rootView: StatsView(model: model).buttonBorderShape(.roundedRectangle(radius: 4)))
-            v.frame = NSRect(x: 0, y: 0, width: StatsView.width, height: 728)
+            // Enough height to include Fun facts and the footer, drawn offscreen without showing a window.
+            v.frame = NSRect(x: 0, y: 0, width: StatsView.width, height: 920)
             Self.shoot(v, to: CommandLine.arguments[i + 1])
             return
         }

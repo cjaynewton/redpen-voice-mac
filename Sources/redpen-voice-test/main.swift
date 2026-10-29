@@ -472,5 +472,29 @@ check("risky.name", RiskyWords.find(final: "Ask so well about the plan for next 
 check("risky.edge", RiskyWords.find(final: "Hey team the plan is set", other: "Hi team the plan is set", names: []).first?.kind == "edge")
 check("risky.caseOnly", RiskyWords.find(final: "Ship it today.", other: "ship it today", names: []).isEmpty)
 
+// Fun facts use the all-time word count and exact stored daily totals, with at most two approximate book lines.
+check("facts.zero", StatsFunFacts.bookLines(words: 0).isEmpty && StatsFunFacts.lines([]).isEmpty)
+check("facts.real39712", StatsFunFacts.bookLines(words: 39_712) == [
+    "You've spoken about 1.2 times as many words as The Call of the Wild.",
+    "You've spoken about 80% of the words in The Great Gatsby."
+])
+check("facts.booksChangeWithTotal", StatsFunFacts.bookLines(words: 80_000).first?.contains("Frankenstein") == true)
+check("facts.verySmallNoZeroPercent", StatsFunFacts.bookLines(words: 1) == ["Your 1 word is less than about 1% of A Christmas Carol."])
+check("facts.belowFirstOne", StatsFunFacts.bookLines(words: 10_000).count == 1)
+check("facts.exactBookAbout", StatsFunFacts.bookLines(words: 563_500) == ["You've spoken about as many words as War and Peace."])
+check("facts.aboveLastOne", StatsFunFacts.bookLines(words: 1_127_000) == ["You've spoken about 2 times as many words as War and Peace."])
+check("facts.alwaysApproximate", [1, 10_000, 39_712, 80_000, 600_000].flatMap { StatsFunFacts.bookLines(words: $0) }.allSatisfy { $0.contains("about") })
+check("facts.seconds", StatsFunFacts.talkingTime(59.9) == "less than a minute")
+check("facts.singularMinute", StatsFunFacts.talkingTime(60) == "1 minute")
+check("facts.singularHour", StatsFunFacts.talkingTime(3600) == "1 hour")
+check("facts.hoursAndMinutes", StatsFunFacts.talkingTime(13_020) == "3 hours 37 minutes")
+let factDays = [DayStats(day: "2026-10-24", engine: "whisper", words: 4_000, seconds: 6_000, dictations: 20),
+                DayStats(day: "2026-10-24", engine: "live", words: 3_515, seconds: 3_000, dictations: 10),
+                DayStats(day: "2026-10-25", engine: "whisper", words: 7_000, seconds: 4_020, dictations: 30)]
+let personalFacts = StatsFunFacts.lines(factDays)
+check("facts.enginesCombineForLongestDay", personalFacts.contains { $0.hasPrefix("Your longest day was 7,515 words on ") && $0.contains("2026") })
+check("facts.totalTalkingTime", personalFacts.last == "You've talked for 3 hours 37 minutes in total.")
+check("facts.smallSection", personalFacts.count <= 4)
+
 print("\(pass) passed, \(fail) failed")
 exit(fail == 0 ? 0 : 1)

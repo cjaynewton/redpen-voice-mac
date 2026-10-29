@@ -96,6 +96,7 @@ struct StatsView: View {
                     WordsChart(points: Stats.daily(model.days, now: model.now()))
                         .frame(height: 132)
                     speedSection
+                    funFacts
                 }
                 footer
             }
@@ -152,6 +153,18 @@ struct StatsView: View {
                 SpeedChart(points: sp.points, weekly: sp.weekly).frame(height: 112)
             } else {
                 Text("Not enough talking yet to draw your speed.").font(.system(size: 13)).foregroundStyle(Ink.dim).padding(.top, 4)
+            }
+        }
+    }
+
+    private var funFacts: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            heading("Fun facts", "From your all-time totals.")
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(StatsFunFacts.lines(model.days), id: \.self) { fact in
+                    Text(fact).font(.system(size: 13)).foregroundStyle(Ink.mid)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
     }
