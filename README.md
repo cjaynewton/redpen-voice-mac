@@ -15,15 +15,15 @@ Everything runs on your Mac. Your voice is never sent anywhere.
 ## How it works
 
 1. **Hold Fn or right Option and talk.** A small bar at the bottom of the screen moves with your voice, so you know it's listening. With the Instant engine, your words show in it as you talk.
-2. **Let go.** The words are typed into the box you were in, in any app, without touching your clipboard. If Voice can't see them arrive, the bar says so and Control-Option-V pastes them.
+2. **Let go.** The words go into the box you started in, without touching your clipboard. If Voice can't see them arrive, the bar says so. Click into a text box and press Control-Option-V to paste them.
 
    <img src="docs/screenshots/bar-typed.png" alt="The bar after letting go: a green tick and Typed into Notes, where you started" width="287">
 
-3. **Moved somewhere else while it wrote?** Before typing, Voice checks it's the same box you started in. If it can't be sure, it types nothing: the words wait until you're back in that box, and Control-Option-V pastes them anywhere.
+3. **Moved somewhere else while it wrote?** Voice checks the box you started in. If that box still matches, the words go there when the app allows it, or wait until you return. If the box changed or Voice can't be sure, Paste last keeps the words.
 
    <img src="docs/screenshots/bar-saved.png" alt="The bar saying the words are saved for Chrome and go in when you are back in that box, or with Control-Option-V" width="612">
 
-Tap the key twice to keep talking with your hands free, and tap once more to finish.
+Tap the talk key twice to start hands-free. Tap once to stop. Extra taps just after stopping, or while the words are still being written, are ignored. If the Mac misses a key release, Voice checks whether the key is really up and ends the hold.
 
 ### Pick the bar you like
 
@@ -51,17 +51,17 @@ Tap the key twice to keep talking with your hands free, and tap once more to fin
   - **Tidy it up** also takes out repeats and false starts and fixes punctuation, using Apple's on-device model. It can change a word now and then.
 - **Three engines, named for what they do.**
   - **Most accurate** is Whisper, OpenAI's model: the fewest mistakes, words about 2 seconds after you stop, a one-time 626 MB download.
-  - **Instant** is Parakeet Unified, NVIDIA's model: it writes while you talk, so there's no wait for writing (about 0.05 seconds), with about 1 more word in 100 wrong than Whisper. English only, a one-time 600 MB download.
+  - **Instant** is Parakeet Unified, NVIDIA's model: it writes while you talk, so there's no wait for writing (about 0.05 seconds), with about 1 more word in 100 wrong than Whisper. It is English only and weaker when other people talk over you. It needs a one-time 600 MB download.
   - **Mac built-in** is Apple's engine, built into macOS (if the speech files for your language aren't on the Mac yet, they download from Apple once), with the most mistakes of the three.
-- **Words it gets wrong.** A plain list, one per line: `claw code = Claude Code` fixes what it hears, a single name tells it to listen for that name.
+- **Words it gets wrong.** A plain list, one per line. `claw code = Claude Code` fixes what it hears. A name on its own keeps that spelling when the engine hears it. For Whisper, you can also turn on spelling hints in Settings; these can add to the wait.
 - **Learns your names.** Fix a name by hand after a dictation ("so well" to "Sowell") and the second time you make the same fix, it goes into your list. Only names and terms are learned, never everyday words, and the list stays a plain file you can edit.
 - **Learns how you talk.** Like a driving app that learns how you drive, it learns your pace and how long you pause, and uses that to decide where a thought ends. Only the numbers are kept.
-- **Goes back to the box you started in.** If you move to another app or box while the words are being written, Voice only types into the box you started in, after checking it's the same box: same place, and its text still starting the way it did. When that app allows it they go straight in; otherwise they wait until you're back in that box. If that box was sent or changed meanwhile, or Voice can't tell, nothing is typed and Paste last has the words. If you started on a web page or a video instead of a text box, nothing is typed there (on a video page, letters are shortcuts): the words wait for you to click into a box.
+- **Goes back to the box you started in.** Voice checks the window, the conversation when the app exposes it, and the text it expects in that box. The same chat box can grow or move while you talk. If you switch apps, words go straight into the original box when that app allows it, or wait until you return. If you edited or sent the box, or Voice can't tell whether it still matches, Paste last has the words. On a web page or video, nothing is typed there. Voice asks you to click into a box. If there is no typing target, the bar says the words are kept for Control-Option-V.
 - **Fits the sentence.** Dictate into the middle of a sentence and the first word starts lowercase ("and then and we go"), except "I" and names from your list; right before a word, the closing full stop goes. Only in boxes that tell Voice what's around the cursor.
-- **Nothing lost.** Press Control-Option-V to paste your last dictation anywhere; it pastes (rather than types) so it works where typing just failed, and puts your clipboard back after. Every dictation is in the History window, unless you choose to keep nothing.
+- **Paste last.** Click into a text box, press Control-Option-V, then release the keys. Voice waits for the keys to come up, pastes, and checks for the words or the expected cursor movement. The bar says "Pasted" only after that check. If it can't confirm the paste, it says so and leaves the words on the clipboard for Command-V, unless you copied something new meanwhile. Paste last dictation in the menu uses the same check. Dictations are also in History for as long as you choose to keep them.
 - **Take it back.** Control-Option-Z removes the last dictation, only when it is still the last thing typed.
-- **Pauses your music and video** while you talk and starts them again after, only when something is actually playing.
-- **Transcribe a file.** Any audio or video file to text, saved beside the file.
+- **Pauses your music and video** when you hold to talk or start hands-free, only when something is actually playing. It starts them again after the words are finished. Turn off "Play again when I stop talking" in Settings to leave them paused.
+- **Transcribe a file.** Turn an audio or video file the Mac can read into text, saved beside the file, or on the Desktop if that folder can't be written to.
 
 ## The menu
 
@@ -76,7 +76,7 @@ Click the Voice icon in the menu bar for today's words, your speed and the minut
 
 ## Settings
 
-Every choice on one page: the engine, how your words come out, the key you talk with, your microphone, the bar, your list of words it gets wrong, and your typing speed for time saved. Each engine shows a real sentence it heard, so you can judge before you download.
+Every choice on one page: the engine, how your words come out, the key you talk with, your microphone, the bar, your list of words it gets wrong, and your typing speed for time saved. Settings shows a real sentence heard by Whisper and the Mac built-in engine, so you can compare them before downloading Whisper.
 
 <p align="center">
 <picture>
@@ -92,6 +92,8 @@ One window, three parts, and Done waits until each one works:
 1. **How your words come out:** raw, ums taken out, or tidied.
 2. **Set up:** the microphone, with its name and a live level so a silent or wrong mic shows now; Accessibility, so it can type into other apps and see your talk key; the speech engine, ready before you start; and, if you talk with Fn, the Mac's own Fn setting, which has to be off (or switch to right Option).
 3. **Try it:** say one sentence into the window and see your own words before you leave.
+
+The setup buttons open the matching Microphone, Accessibility or Keyboard page in System Settings. If you use Fn, set "Press 🌐 key to" to Do Nothing in Keyboard settings. Otherwise a double tap can start Apple's dictation too, or open the emoji picker, depending on that setting.
 
 macOS also asks for:
 
@@ -118,12 +120,16 @@ Every dictation, newest first: search them, copy one, delete one. Choose how lon
 
 ## Stats
 
-This week, the last 30 days and all time: words, minutes saved, your average speed and how many dictations. Below them, your words a day for the last 30 days and your speed over time. Minutes saved are compared with typing at 40 words a minute; set your own typing speed in Settings. Open it from the menu. Stats are numbers only and stay when the history is cleared; Reset stats sets them back to zero.
+This week, the last 30 days and all time show your words, minutes saved, average speed and number of dictations. Below them are your words a day for the last 30 days and your speed over time.
+
+**Fun facts** compares your all-time words with books, shows your longest day by word count, and adds up your total talking time. The book comparisons are rounded and always say "about". The [word counts and sources](docs/book-word-counts.md) come from specific Standard Ebooks editions. Your longest day combines all engines used that day.
+
+Minutes saved are compared with typing at 40 words a minute; set your own typing speed in Settings. Open Stats from the menu. Stats are numbers only and stay when the history is cleared; Reset stats sets them back to zero.
 
 <p align="center">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/stats-dark.png">
-  <img src="docs/screenshots/stats-light.png" alt="The stats window, shown with sample numbers: this week, the last 30 days and all time, words a day for 30 days, and speed week by week" width="480">
+  <img src="docs/screenshots/stats-light.png" alt="The stats window with sample numbers: totals, words a day, speed over time, and Fun facts with book comparisons, the longest day and total talking time" width="480">
 </picture>
 </p>
 
@@ -157,21 +163,21 @@ On [TORGO](https://www.cs.toronto.edu/~complingweb/data/TORGO/torgo.html), recor
 ## Privacy
 
 - Speech is turned into text on your Mac, by every engine. Nothing you say or write is sent anywhere.
-- **What is kept, and where.** All in `~/Library/Application Support/Redpen Voice/`, readable only by your account on this Mac:
-  - `history.jsonl`: the text of your last 2,000 dictations (what was heard and, if you use a tidy option, what went in), with when, how long and which app. Never the sound. This is what Paste last reads. You can delete it any time.
-  - `stats.json`: numbers only, never your words. For each day and engine: how many words, how many seconds of talking, and how many dictations. Kept whatever you choose for the history; Reset stats in the Stats window clears it.
-  - Your word list (a plain text file), `talk.json` (your pace and pauses, numbers only) and `learned.json` (counts of the name fixes it has seen, stored as fingerprints, not words).
+- **What is kept, and where.** In `~/Library/Application Support/Redpen Voice/` on this Mac:
+  - `history.jsonl`: the text of your last 2,000 dictations (what was heard and, if you use a tidy option, what went in), with when, how long and which app. Never the sound. This is what Paste last reads when history is kept. You can delete it any time. This file is readable only by your account.
+  - `stats.json`: numbers only, never your words. For each day and engine: how many words, how many seconds of talking, and how many dictations. Kept whatever you choose for the history; Reset stats in the Stats window clears it. This file is readable only by your account.
+  - `config.json` holds your settings. `names.txt` is your plain word list. `talk.json` holds your pace and pauses, numbers only. `learned.json` holds counts of the name fixes it has seen, stored as fingerprints, not words.
   - The log in `~/Library/Logs/RedpenVoice.log` holds timings, app names and counts, never your words.
-- **The microphone stays on while Voice is open**, so the Mac's orange microphone dot stays lit. It holds only the last 0.6 seconds in memory, so the word you say as the key goes down isn't cut, and that is overwritten continuously. Nothing is kept until you press the key.
-- **Text boxes.** It reads the box you're dictating into, on your Mac: when you start (so the words go back to the right box) and after (to learn the names you fix). Only the fixed names are kept.
-- **Clipboard.** Voice types your words; it only borrows the clipboard for Paste last. The text is marked so clipboard managers skip it, and what you had is put back half a second later, unless you copied something new in between. A second Paste last within 1.5 seconds waits, so an app that's slow to paste doesn't get it twice; an app frozen for longer than that is the one case this can't rule out.
+- **The microphone stays on while Voice is open**, so the Mac's orange microphone dot stays lit. Between dictations it holds only the last 0.6 seconds in memory, overwritten continuously, so the word you say as the key goes down isn't cut. During a dictation, the sound is held in memory for the engine. Normal dictations never save an audio file. "Record a test" in Settings saves a recording to the Desktop when you ask for one.
+- **Text boxes.** It reads the box you're dictating into on your Mac, to keep the words tied to that box, check delivery and learn the names you fix. The surrounding box text is not saved. Learned fixes go in your word list.
+- **Clipboard.** Ordinary dictation leaves your clipboard alone. Paste last marks its text so clipboard managers can skip it. Voice puts back every original clipboard item and format only after confirming the paste, unless you copied something new meanwhile. It waits up to 1.2 seconds for the shortcut keys to come up and up to 2 seconds after posting the paste. If delivery can't be confirmed, the words stay on the clipboard for Command-V. A second Paste last is refused while one is in progress and for 1.5 seconds after it finishes. An app can still accept a paste late, so check the box before pasting again.
 - **How long dictations are kept** is your choice in the History window: the last 2,000, the last week, or nothing (Paste last then works until Voice quits).
-- **Videos.** When it pauses a video, it listens to that app's sound for about a second, in memory only, to take the video's words off the start of your dictation.
+- **Videos.** When it pauses a video, it listens to that app's sound for about a second, in memory only. Whisper uses those words to remove the video's speech from the start; the other engines leave out the opening sound instead. While the pause is held, Voice also checks short samples for unexpected playback. No system audio is saved.
 - **Network.** The Whisper or Instant model downloads once from Hugging Face if you choose one; Apple's speech files for your language download once from Apple if the Mac doesn't have them yet; and the app checks GitHub once a day for a newer version.
 
 ## Install
 
-Download `Redpen-Voice-0.12.2.dmg` from the [latest release](https://github.com/cjaynewton/redpen-voice-mac/releases/latest), open it and drag Redpen Voice to Applications. It needs macOS 26 on a Mac with Apple silicon, and updates itself.
+Download the `.dmg` from the [latest release](https://github.com/cjaynewton/redpen-voice-mac/releases/latest), open it and drag Redpen Voice to Applications. It needs macOS 26 on a Mac with Apple silicon, and updates itself.
 
 First run asks for the microphone and Accessibility (to type into other apps and see the Fn key); macOS also asks for Speech Recognition, and for system audio the first time a video is playing when you talk. If you talk with Fn, set "Press 🌐 key to" to Do Nothing in Keyboard settings, or the Mac also opens its own dictation or the emoji picker.
 
@@ -185,9 +191,11 @@ cd redpen-voice-mac
 ./build.sh
 ```
 
-This builds `Redpen Voice.app` and installs it to `~/Applications`. On first launch it asks for the microphone and Accessibility (needed to type into other apps and to see the Fn key).
+This builds `Redpen Voice.app` and installs it to `~/Applications` if the signing-team check passes. On first launch it asks for the microphone and Accessibility (needed to type into other apps and to see the Fn key).
 
-To keep Accessibility permission across rebuilds, sign with your own certificate: create a `.local.env` beside `build.sh` with `REDPEN_SIGN_ID="Apple Development"`.
+To keep Accessibility permission across rebuilds, sign with your own certificate. Create a `.local.env` beside `build.sh` with `REDPEN_SIGN_ID="Apple Development"`, or set it to the full name of your signing identity. Without one, the build uses an ad-hoc signature and macOS may ask for Accessibility again after each rebuild.
+
+Before replacing an installed copy, `build.sh` compares its signing team with the new build's. If they differ, it stops to protect the app's permissions. Set `REDPEN_SIGN_ID` to an identity from the installed copy's team. If you mean to replace it with a different team or an ad-hoc build, run `REDPEN_FORCE_INSTALL=1 ./build.sh`. That override can make macOS forget the app's permissions, so you may need to grant them again.
 
 ## Checks
 
@@ -195,9 +203,9 @@ To keep Accessibility permission across rebuilds, sign with your own certificate
 swift run redpen-voice-test
 ```
 
-Runs the checks for the parts that need no microphone: the word list, history, stats, the ums filter, silence handling, the media pause, where a recording is cut while you talk, how-you-talk numbers, learning fixed names and screen hints.
+Runs checks that need no microphone or open windows. They cover the word list, history, stats and Fun facts, the ums filter, silence handling, media rules, recording cuts, pace and pauses, learning fixed names, screen hints, matching text boxes, talk-key gestures, missed releases, and paste timing and clipboard rules.
 
-`"Redpen Voice.app/Contents/MacOS/RedpenVoice" --stream-test files.txt out.jsonl` writes each audio file whole and streamed, with the wait after release, for checking streaming against long recordings.
+`"build/Redpen Voice.app/Contents/MacOS/RedpenVoice" --stream-test files.txt out.jsonl` writes each audio file whole and streamed, with the wait after release, for checking streaming against long recordings.
 
 ## Credits
 
