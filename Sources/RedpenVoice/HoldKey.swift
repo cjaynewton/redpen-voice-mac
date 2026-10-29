@@ -25,6 +25,7 @@ final class HoldKey {
     static let tapLength = TalkKeyState.tapLength, tapGap = TalkKeyState.tapGap
     private var monitors: [Any] = []
     private var state = TalkKeyState()
+    private var releaseTimer: Timer?
     var handsFree: Bool { state.handsFree }
     var ownerName: String? { state.owner.flatMap { o in keys.first { $0.code == o }?.name } }
 
@@ -127,9 +128,35 @@ final class HoldKey {
         let action = state.event(key: code, down: down, hardwareDown: hardware, ownEvent: own,
                                  canBegin: canBegin(), at: ProcessInfo.processInfo.systemUptime)
         apply(action)
+        if !own, !down, hardware, state.held, !state.handsFree, state.owner == code {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.checkRelease() }
+        }
+    }
+
+    private func checkRelease() {
+        guard let owner = state.owner, state.held, !state.handsFree else { return }
+        let hardware = CGEventSource.keyState(.hidSystemState, key: CGKeyCode(owner))
+        let action = state.checkRelease(key: owner, hardwareDown: hardware, at: ProcessInfo.processInfo.systemUptime)
+        if action == .end { Log.note("hold key: release was missed, ended from the key's real state") }
+        apply(action)
+    }
+
+    private func updateReleaseTimer() {
+        guard state.held, !state.handsFree else {
+            releaseTimer?.invalidate(); releaseTimer = nil
+            return
+        }
+        guard releaseTimer == nil else { return }
+        let timer = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkRelease() }
+        }
+        timer.tolerance = 0.02
+        releaseTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     private func apply(_ action: TalkKeyState.Action?) {
+        defer { updateReleaseTimer() }
         switch action {
         case .begin: if !onDown() { state.rejectBegin() }
         case .end: onUp()

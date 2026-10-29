@@ -3,6 +3,8 @@
 # Optional, in a .local.env next to this script (not committed):
 #   REDPEN_SIGN_ID="Apple Development"       # sign with your certificate so Accessibility survives rebuilds
 #   REDPEN_VOICE_BUNDLE_ID="com.example.redpen-voice"
+# Installation stops if the installed app's signing team differs, to preserve macOS permissions.
+# Match REDPEN_SIGN_ID to the installed app, or explicitly override with REDPEN_FORCE_INSTALL=1.
 set -e
 cd "${0:A:h}"
 # A signing identity passed in (release.sh passes the Developer ID) wins over the one in .local.env.
@@ -66,6 +68,27 @@ else
 fi
 [[ "$SIGN_ID" == "-" ]] && echo "Note: ad-hoc signed. macOS may ask you to allow Accessibility again after each rebuild."
 [[ -n "$REDPEN_SKIP_INSTALL" ]] && exit 0
+# Compare actual signatures before touching the installed copy. Ad-hoc and unsigned copies have no team.
+signing_team() {
+  local details team
+  details=$(codesign -dv "$1" 2>&1) || { print -r -- "-"; return; }
+  team=$(print -r -- "$details" | sed -n 's/^TeamIdentifier=//p')
+  if [[ -n "$team" && "$team" != "not set" ]]; then print -r -- "$team"; else print -r -- "-"; fi
+}
+INSTALLED_APP="$HOME/Applications/Redpen Voice.app"
+if [[ -e "$INSTALLED_APP" ]]; then
+  INSTALLED_TEAM=$(signing_team "$INSTALLED_APP")
+  BUILD_TEAM=$(signing_team "$APP")
+  if [[ "$INSTALLED_TEAM" != "$BUILD_TEAM" ]]; then
+    if [[ "$REDPEN_FORCE_INSTALL" != "1" ]]; then
+      print -r -- "The installed Redpen Voice is signed by team $INSTALLED_TEAM, this build by team $BUILD_TEAM. Installing it would make macOS forget its permissions. Set REDPEN_SIGN_ID in .local.env to match, or set REDPEN_FORCE_INSTALL=1."
+      exit 1
+    fi
+    print -r -- "REDPEN_FORCE_INSTALL=1: installing despite signing team change ($INSTALLED_TEAM to $BUILD_TEAM)."
+  else
+    print -r -- "Signing team matches installed Redpen Voice ($BUILD_TEAM)."
+  fi
+fi
 mkdir -p ~/Applications
 rm -rf ~/Applications/"Redpen Voice.app"
 cp -R "$APP" ~/Applications/"Redpen Voice.app"

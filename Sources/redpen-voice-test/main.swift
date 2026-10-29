@@ -185,6 +185,60 @@ do {
     check("talk.26ExtraTapsNeverRecordOrLatch", began == 0 && latched == 0 && !key.active && !key.handsFree)
 }
 
+// A missing or hardware-mismatched release follows the same gesture path as a normal release.
+do {
+    var key = TalkKeyState()
+    check("talk.releaseCheckIdleNoAction", key.checkRelease(key: 63, hardwareDown: false, at: 0) == nil)
+    check("talk.missedReleaseBegins", key.event(key: 63, down: true, hardwareDown: true, at: 1) == .begin)
+    check("talk.missedReleaseInitiallyDropped", key.event(key: 63, down: false, hardwareDown: true, at: 1.5) == nil
+          && key.held && key.active)
+    check("talk.releaseRecheckStillHeld", key.checkRelease(key: 63, hardwareDown: true, at: 1.55) == nil
+          && key.held && key.active)
+    check("talk.releaseTimerNeverEndsHeldKey", key.checkRelease(key: 63, hardwareDown: true, at: 10) == nil && key.active)
+    check("talk.releaseCheckOnlyOwner", key.checkRelease(key: 61, hardwareDown: false, at: 10.1) == nil && key.active)
+    check("talk.missedReleaseEndsFromHardware", key.checkRelease(key: 63, hardwareDown: false, at: 10.2) == .end
+          && !key.held && !key.active && key.owner == nil)
+    check("talk.missedReleaseEndsExactlyOnce", key.checkRelease(key: 63, hardwareDown: false, at: 10.4) == nil
+          && key.event(key: 63, down: false, hardwareDown: false, at: 10.5) == nil)
+    check("talk.missedReleaseUsesStopGuard", key.event(key: 63, down: true, hardwareDown: true, at: 10.6) == nil && !key.active)
+    check("talk.missedGuardReleaseClearsHold", key.checkRelease(key: 63, hardwareDown: false, at: 10.7) == nil
+          && !key.held && key.owner == nil)
+
+    key = TalkKeyState()
+    _ = key.event(key: 61, down: true, hardwareDown: true, at: 20)
+    check("talk.entirelyMissingReleaseEnds", key.checkRelease(key: 61, hardwareDown: false, at: 20.6) == .end && !key.active)
+    key = TalkKeyState(); key.doubleTap = false
+    _ = key.event(key: 42, down: true, hardwareDown: true, at: 21)
+    check("talk.missedSingleTapModeEnds", key.checkRelease(key: 42, hardwareDown: false, at: 21.1) == .end && !key.active)
+
+    key = TalkKeyState()
+    _ = key.event(key: 63, down: true, hardwareDown: true, at: 30)
+    check("talk.missedQuickReleaseCancelsNormally", key.checkRelease(key: 63, hardwareDown: false, at: 30.1) == .cancel
+          && !key.active && !key.held)
+    check("talk.missedTapCanBeginSecond", key.event(key: 63, down: true, hardwareDown: true, at: 30.25) == .begin)
+    check("talk.secondMissedTapLatchesNormally", key.checkRelease(key: 63, hardwareDown: false, at: 30.35) == .handsFree
+          && key.handsFree && key.active && !key.held)
+    check("talk.releaseCheckNeverEndsHandsFree", key.checkRelease(key: 63, hardwareDown: false, at: 40) == nil
+          && key.handsFree && key.active)
+    check("talk.otherKeyCheckNeverEndsHandsFree", key.checkRelease(key: 61, hardwareDown: false, at: 41) == nil
+          && key.handsFree && key.active)
+    check("talk.handsFreeStillStopsNormally", key.event(key: 63, down: true, hardwareDown: true, at: 42) == .end)
+    check("talk.missedHandsFreeStopReleaseSwallowed", key.checkRelease(key: 63, hardwareDown: false, at: 42.1) == nil
+          && !key.held && key.owner == nil && !key.active)
+    check("talk.missedStopReleaseKeepsGuard", key.event(key: 63, down: true, hardwareDown: true, at: 42.3) == nil)
+
+    key = TalkKeyState()
+    _ = key.event(key: 63, down: true, hardwareDown: true, at: 50)
+    _ = key.otherKey()
+    check("talk.cancelledHoldRecheckDoesNotEnd", key.checkRelease(key: 63, hardwareDown: false, at: 50.6) == nil
+          && !key.active && !key.held && key.owner == nil)
+    key = TalkKeyState()
+    _ = key.event(key: 63, down: true, hardwareDown: true, at: 51)
+    key.rejectBegin()
+    check("talk.failedBeginRecheckCannotLatch", key.checkRelease(key: 63, hardwareDown: false, at: 51.1) == nil
+          && !key.active && !key.held && !key.handsFree)
+}
+
 // Inspect synthetic event construction only. None of these events are posted.
 do {
     let me = Int64(ProcessInfo.processInfo.processIdentifier)

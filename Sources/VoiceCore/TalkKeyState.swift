@@ -69,6 +69,13 @@ public struct TalkKeyState {
         return .end
     }
 
+    /// Recover a missing release using the owner's current hardware state, through the normal release path.
+    /// A latched hands-free dictation has no held key and must never be stopped by this check.
+    public mutating func checkRelease(key: Int, hardwareDown: Bool, at now: Double) -> Action? {
+        guard held, !handsFree, owner == key, !hardwareDown else { return nil }
+        return event(key: key, down: false, hardwareDown: false, at: now)
+    }
+
     public mutating func otherKey() -> Action? {
         guard held, active, !handsFree else { return nil }
         active = false; lastTap = nil; secondTap = false
