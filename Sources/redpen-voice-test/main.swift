@@ -228,13 +228,50 @@ check("fit.keepQuestion", Fit.text("Should we go?", before: "", after: "t", keep
 
 // The box a dictation started in (D-817): same box only, and its text must still start the same.
 let f0 = CGRect(x: 100, y: 800, width: 600, height: 40)
-let start = BoxPrint(role: "AXTextArea", identifier: nil, frame: f0, prefix: "Hello the")
+let start = BoxPrint(role: "AXTextArea", identifier: nil, frame: f0, text: "Hello there")
 check("box.sameElement", BoxMatch.same(start: start, now: start, nowText: "Hello there", sameElement: true))
 check("box.sentAndCleared", !BoxMatch.same(start: start, now: start, nowText: "", sameElement: true))
-check("box.otherBoxSameWindow", !BoxMatch.same(start: start, now: BoxPrint(role: "AXTextArea", identifier: nil, frame: CGRect(x: 100, y: 200, width: 300, height: 40), prefix: nil), nowText: "Hello there", sameElement: false))
-check("box.newElementSameBoxGrew", BoxMatch.same(start: start, now: BoxPrint(role: "AXTextArea", identifier: nil, frame: CGRect(x: 100, y: 760, width: 600, height: 80), prefix: nil), nowText: "Hello there", sameElement: false))
-check("box.sameId", BoxMatch.same(start: BoxPrint(role: "AXTextArea", identifier: "composer", frame: nil, prefix: "", context: "Notes"), now: BoxPrint(role: "AXTextArea", identifier: "composer", frame: nil, prefix: nil, context: "Notes"), nowText: "x", sameElement: false))
-check("box.unreadableOther", !BoxMatch.same(start: BoxPrint(role: "AXTextArea", identifier: "c", frame: f0, prefix: nil), now: BoxPrint(role: "AXTextArea", identifier: "c", frame: f0, prefix: nil), nowText: nil, sameElement: false))
+check("box.otherBoxSameWindow", !BoxMatch.same(start: start, now: BoxPrint(role: "AXTextArea", identifier: nil, frame: CGRect(x: 100, y: 200, width: 300, height: 40), text: nil), nowText: "Hello there", sameElement: false))
+check("box.newElementSameBoxGrew", BoxMatch.same(start: start, now: BoxPrint(role: "AXTextArea", identifier: nil, frame: CGRect(x: 100, y: 760, width: 600, height: 80), text: nil), nowText: "Hello there", sameElement: false))
+check("box.sameId", BoxMatch.same(start: BoxPrint(role: "AXTextArea", identifier: "composer", frame: nil, text: "x", title: "Notes"), now: BoxPrint(role: "AXTextArea", identifier: "composer", frame: nil, text: nil, title: "Notes"), nowText: "x", sameElement: false))
+check("box.unreadableOther", !BoxMatch.same(start: BoxPrint(role: "AXTextArea", identifier: "c", frame: f0, text: nil), now: BoxPrint(role: "AXTextArea", identifier: "c", frame: f0, text: nil), nowText: nil, sameElement: false))
+
+// Growing/moving composers and changing titles are harmless in the same window and conversation.
+let t3Start = BoxPrint(role: "AXTextArea", identifier: "composer", frame: f0, text: "", title: "Thread", url: "t3://thread-1")
+let t3Grew = BoxPrint(role: "AXTextArea", identifier: "composer", frame: CGRect(x: 105, y: 690, width: 600, height: 150), text: nil, title: "Working", url: "t3://thread-1")
+check("box.sameElementGrewAndMoved", BoxMatch.same(start: t3Start, now: t3Grew, nowText: "", sameElement: true))
+check("box.titleChanged", BoxMatch.same(start: t3Start, now: t3Grew, nowText: "", sameElement: true))
+check("box.otherWindow", BoxMatch.failure(start: t3Start, now: t3Grew, nowText: "", sameElement: true, sameWindow: false) == .window)
+check("box.recreatedMovedSlightly", BoxMatch.same(start: start, now: BoxPrint(role: "AXTextArea", identifier: nil, frame: CGRect(x: 106, y: 766, width: 605, height: 80), text: nil), nowText: "Hello there", sameElement: false))
+var ownDraft = t3Start
+check("box.recordOwnDraft", ownDraft.recordEdit(before: "", range: NSRange(location: 0, length: 0), replacement: "My draft"))
+check("box.ownDraftTyped", BoxMatch.same(start: ownDraft, now: t3Grew, nowText: "My draft", sameElement: true))
+ownDraft.replaceBeforeCursor("draft", with: "checked words", cursor: 8)
+check("box.ownDraftCorrected", BoxMatch.same(start: ownDraft, now: t3Grew, nowText: "My checked words", sameElement: true))
+check("box.ownDraftSent", BoxMatch.failure(start: ownDraft, now: t3Grew, nowText: "", sameElement: true) == .text)
+check("box.userDifferentText", !BoxMatch.same(start: ownDraft, now: t3Grew, nowText: "Someone else's message", sameElement: true))
+check("box.userAppendedText", !BoxMatch.same(start: ownDraft, now: t3Grew, nowText: "My checked words plus mine", sameElement: true))
+check("box.notArbitraryRebase", !ownDraft.recordEdit(before: "Unrelated", range: NSRange(location: 0, length: 0), replacement: "Oops"))
+check("box.rebaseLeavesExpected", ownDraft.text == "My checked words")
+let anotherThread = BoxPrint(role: "AXTextArea", identifier: "composer", frame: f0, text: nil, title: "Thread", url: "t3://thread-2")
+check("box.nonemptyOtherConversation", BoxMatch.failure(start: ownDraft, now: anotherThread, nowText: "My checked words", sameElement: true) == .url)
+check("box.emptyOtherConversation", BoxMatch.failure(start: t3Start, now: anotherThread, nowText: "", sameElement: true) == .url)
+check("box.missingURL", BoxMatch.failure(start: t3Start, now: BoxPrint(role: "AXTextArea", identifier: "composer", frame: f0, text: nil, title: "Thread"), nowText: "", sameElement: true) == .url)
+check("box.diagnostics", BoxMatch.differences(start: t3Start, now: t3Grew, nowText: "x", sameElement: false) == ["frame", "title", "text prefix/value", "element"])
+let longText = String(repeating: "a", count: 220)
+check("box.changeBeyondOldPrefix", !BoxMatch.same(start: BoxPrint(role: "AXTextArea", identifier: nil, frame: f0, text: longText), now: start, nowText: String(repeating: "a", count: 210) + "changed", sameElement: true))
+var unicodeBox = BoxPrint(role: "AXTextArea", identifier: nil, frame: f0, text: "Hi 🎉")
+check("box.ownUTF16Edit", unicodeBox.recordEdit(before: "Hi 🎉", range: NSRange(location: 5, length: 0), replacement: " there") && unicodeBox.text == "Hi 🎉 there")
+check("box.badEditRange", !unicodeBox.recordEdit(before: "Hi 🎉 there", range: NSRange(location: 999, length: 1), replacement: "x"))
+
+check("box.initiallyEmptyUserTypedAndSent", BoxMatch.failure(start: t3Start, now: t3Grew, nowText: "", sameElement: true, userEdited: true) == .text)
+check("box.nonemptyURLDoesNotExcuseUserEdit", !BoxMatch.same(start: ownDraft, now: t3Grew, nowText: "My checked words", sameElement: true, userEdited: true))
+
+var middleDraft = BoxPrint(role: "AXTextArea", identifier: nil, frame: f0, text: "Mine. Draft Later. Tail stays.")
+middleDraft.replaceBeforeCursor("Draft Later.", with: "Checked later.", cursor: 18)
+check("box.ownDraftInMiddle", middleDraft.text == "Mine. Checked later. Tail stays.")
+
+check("box.noURLChangedConversationTitle", BoxMatch.failure(start: BoxPrint(role: "AXTextArea", identifier: "composer", frame: f0, text: "Same text", title: "Chat A"), now: BoxPrint(role: "AXTextArea", identifier: "composer", frame: f0, text: nil, title: "Chat B"), nowText: "Same text", sameElement: true) == .title)
 
 // The video's words come off the start; yours stay (D-817).
 check("echo.strip", MediaEcho.strip("Please tell me what. Why is listening to horror music so comfortable?", video: "please tell me what") == "Why is listening to horror music so comfortable?", MediaEcho.strip("Please tell me what. Why is listening to horror music so comfortable?", video: "please tell me what"))
@@ -244,10 +281,10 @@ check("echo.noMatch", MediaEcho.strip("So we ship it", video: "the weather tomor
 check("echo.laterRepeatKept", MediaEcho.strip("Tell me more. Then tell me what you think about tell me", video: "tell me") == "More. Then tell me what you think about tell me", MediaEcho.strip("Tell me more. Then tell me what you think about tell me", video: "tell me"))
 
 // Round 2 (Codex): an empty box proves nothing by its text; scattered words never take the sentence; minus signs count.
-let emptyStart = BoxPrint(role: "AXTextArea", identifier: nil, frame: f0, prefix: "", context: "T3 Code|thread-1")
-check("box.emptySameThread", BoxMatch.same(start: emptyStart, now: BoxPrint(role: "AXTextArea", identifier: nil, frame: f0, prefix: nil, context: "T3 Code|thread-1"), nowText: "", sameElement: true))
-check("box.emptyOtherThread", !BoxMatch.same(start: emptyStart, now: BoxPrint(role: "AXTextArea", identifier: nil, frame: f0, prefix: nil, context: "T3 Code|thread-2"), nowText: "", sameElement: true))
-check("box.emptyNoContext", !BoxMatch.same(start: BoxPrint(role: "AXTextArea", identifier: nil, frame: f0, prefix: "", context: nil), now: BoxPrint(role: "AXTextArea", identifier: nil, frame: f0, prefix: nil, context: nil), nowText: "", sameElement: true))
+let emptyStart = BoxPrint(role: "AXTextArea", identifier: nil, frame: f0, text: "", title: "T3 Code", url: "thread-1")
+check("box.emptySameThread", BoxMatch.same(start: emptyStart, now: BoxPrint(role: "AXTextArea", identifier: nil, frame: f0, text: nil, title: "T3 Code", url: "thread-1"), nowText: "", sameElement: true))
+check("box.emptyOtherThread", !BoxMatch.same(start: emptyStart, now: BoxPrint(role: "AXTextArea", identifier: nil, frame: f0, text: nil, title: "T3 Code", url: "thread-2"), nowText: "", sameElement: true))
+check("box.emptyNoContext", !BoxMatch.same(start: BoxPrint(role: "AXTextArea", identifier: nil, frame: f0, text: "", title: nil), now: BoxPrint(role: "AXTextArea", identifier: nil, frame: f0, text: nil, title: nil), nowText: "", sameElement: true))
 check("echo.scatteredKept", MediaEcho.strip("I need the report tomorrow", video: "the weather tomorrow") == "I need the report tomorrow", MediaEcho.strip("I need the report tomorrow", video: "the weather tomorrow"))
 check("echo.preRollWord", MediaEcho.strip("Wait please tell me what so we ship it", video: "please tell me what") == "So we ship it", MediaEcho.strip("Wait please tell me what so we ship it", video: "please tell me what"))
 check("meaning.minus", Meaning.changed("send -5 copies", "Send 5 copies.") == "number")

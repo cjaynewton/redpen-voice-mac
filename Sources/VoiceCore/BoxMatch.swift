@@ -1,46 +1,78 @@
 import CoreGraphics
 import Foundation
 
-/// Whether the text box in front now is the one a dictation started in (D-817). Chat apps reuse their typing box and
-/// T3 has several, so "a text box in the same window" sent words to the wrong one. A different element counts only
-/// when it is clearly the same box; in every case the box must still start with the text it had at key-down (a sent
-/// and cleared box fails). When in doubt the words wait, and Paste last has them.
+/// The box a dictation started in. Window titles describe a window, not a conversation: a web app's URL
+/// identifies the conversation. Text is the full expected value, updated only by edits Voice itself made.
 public struct BoxPrint: Equatable, Sendable {
     public let role: String?
     public let identifier: String?
     public let frame: CGRect?
-    /// The start of the box's text at key-down (up to 200 characters), nil when the box won't say.
-    public let prefix: String?
-    /// Where the box is: its window's title and, in a browser or web app, the page address. A chat app reuses one
-    /// empty box for every conversation; this tells them apart.
-    public let context: String?
-    public init(role: String?, identifier: String?, frame: CGRect?, prefix: String?, context: String? = nil) {
-        self.role = role; self.identifier = identifier; self.frame = frame; self.prefix = prefix; self.context = context
+    public private(set) var text: String?
+    public let title: String?
+    public let url: String?
+    public init(role: String?, identifier: String?, frame: CGRect?, text: String?, title: String? = nil, url: String? = nil) {
+        self.role = role; self.identifier = identifier; self.frame = frame; self.text = text; self.title = title; self.url = url
+    }
+
+    /// Advance only from the text we expected, by a known Voice edit. Never adopt arbitrary Accessibility text.
+    @discardableResult
+    public mutating func recordEdit(before: String, range: NSRange, replacement: String) -> Bool {
+        guard text == before, range.location >= 0, range.length >= 0,
+              range.location <= before.utf16.count, range.length <= before.utf16.count - range.location else { return false }
+        text = (before as NSString).replacingCharacters(in: range, with: replacement)
+        return true
+    }
+
+    /// Draft checks delete and retype a known suffix, including any later drafts.
+    public mutating func replaceBeforeCursor(_ old: String, with new: String, cursor: Int) {
+        guard let before = text, cursor >= old.utf16.count, cursor <= before.utf16.count else { return }
+        let range = NSRange(location: cursor - old.utf16.count, length: old.utf16.count)
+        guard (before as NSString).substring(with: range) == old else { return }
+        recordEdit(before: before, range: range, replacement: new)
     }
 }
 
 public enum BoxMatch {
-    public static let prefixLength = 200
+    public enum Failure: String, Sendable {
+        case window, url, title, element, frame
+        case text = "text prefix/value"
+    }
 
-    /// `sameElement`: Accessibility hands back the very element. `nowText`: the box's text now, nil when unreadable.
-    public static func same(start: BoxPrint, now: BoxPrint, nowText: String?, sameElement: Bool) -> Bool {
-        // The box was emptied or rewritten since key-down (a message sent, a different conversation): not the box.
-        if let p = start.prefix {
-            guard let t = nowText, t.hasPrefix(p) else { return false }
-        } else if !sameElement {
-            return false  // a different element whose text can't be compared: never guess
+    public static func same(start: BoxPrint, now: BoxPrint, nowText: String?, sameElement: Bool, sameWindow: Bool = true, userEdited: Bool = false) -> Bool {
+        failure(start: start, now: now, nowText: nowText, sameElement: sameElement, sameWindow: sameWindow, userEdited: userEdited) == nil
+    }
+
+    /// Check the conversation even for a nonempty box and even when the app reuses the same AX element.
+    /// A changed title is harmless when the URL and actual window still match. Without a URL an empty box
+    /// needs an unchanged title; there is no other evidence that it belongs to the same conversation.
+    public static func failure(start: BoxPrint, now: BoxPrint, nowText: String?, sameElement: Bool, sameWindow: Bool = true, userEdited: Bool = false) -> Failure? {
+        guard sameWindow else { return .window }
+        if start.url != now.url { return .url }
+        if userEdited { return .text }
+        if start.url == nil, start.title != now.title { return .title }
+        if let text = start.text {
+            guard nowText == text else { return .text }
+        } else if !sameElement { return .text }
+        if (start.text ?? "").isEmpty, start.url == nil {
+            guard let title = start.title, !title.isEmpty, title == now.title else { return .title }
         }
-        // An empty or unreadable box at key-down proves nothing by its text: the same window and page must.
-        if (start.prefix ?? "").isEmpty {
-            guard let c = start.context, !c.isEmpty, c == now.context else { return false }
-        }
-        if sameElement { return true }
-        guard start.role != nil, start.role == now.role else { return false }
-        if let a = start.identifier, !a.isEmpty, a == now.identifier { return true }
-        // Same left edge and width, and the same top or bottom: a chat box grows upward as you type, a document's
-        // box grows downward.
-        if let a = start.frame, let b = now.frame, abs(a.minX - b.minX) <= 2, abs(a.width - b.width) <= 2,
-           abs(a.minY - b.minY) <= 2 || abs(a.maxY - b.maxY) <= 2 { return true }
-        return false
+        // The same AX element in the same window can grow or move. Geometry is only a fallback for a recreated element.
+        if sameElement { return nil }
+        guard start.role != nil, start.role == now.role else { return .element }
+        if let a = start.identifier, !a.isEmpty, a == now.identifier { return nil }
+        if let a = start.frame, let b = now.frame, abs(a.minX - b.minX) <= 12, abs(a.width - b.width) <= 12,
+           abs(a.minY - b.minY) <= 12 || abs(a.maxY - b.maxY) <= 12 { return nil }
+        return .frame
+    }
+
+    /// Names only, never text, titles or URLs, for diagnostics on both rejected and tolerated changes.
+    public static func differences(start: BoxPrint, now: BoxPrint, nowText: String?, sameElement: Bool) -> [String] {
+        var parts: [String] = []
+        if start.frame != now.frame { parts.append("frame") }
+        if start.title != now.title { parts.append("title") }
+        if start.url != now.url { parts.append("url") }
+        if start.text != nowText { parts.append("text prefix/value") }
+        if !sameElement { parts.append("element") }
+        return parts
     }
 }

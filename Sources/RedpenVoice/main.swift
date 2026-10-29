@@ -329,7 +329,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let f = focused else { print("box-test: no focused box"); exit(1) }
             let el = f as! AXUIElement
             let start = Self.boxPrint(el, withText: true)
-            print("box-test: start \(start.role ?? "?"), id \(start.identifier ?? "none"), frame \(start.frame.map { "\($0)" } ?? "none"), text \(start.prefix.map { "\($0.count) chars" } ?? "unreadable")")
+            print("box-test: start \(start.role ?? "?"), id \(start.identifier ?? "none"), frame \(start.frame.map { "\($0)" } ?? "none"), text \(start.text.map { "\($0.count) chars" } ?? "unreadable")")
             print("box-test: same box again -> \(BoxMatch.same(start: start, now: Self.boxPrint(el, withText: false), nowText: Insert.value(el), sameElement: true))")
             var boxes: [AXUIElement] = []
             func walk(_ e: AXUIElement, _ depth: Int) {
@@ -342,7 +342,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 print("box-test: other box in the window -> \(BoxMatch.same(start: start, now: Self.boxPrint(o, withText: false), nowText: Insert.value(o), sameElement: false))")
             }
             // Emptying is tried only on the test page, and the text is put back after.
-            if (start.context ?? "").contains("rv-box-test") {
+            if ((start.url ?? "") + (start.title ?? "")).contains("rv-box-test") {
                 let before = Insert.value(el) ?? ""
                 AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, "" as CFString)
                 usleep(300_000)
@@ -556,7 +556,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if e.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) != me {
                 MainActor.assumeIsolated {
                     Insert.typedSince = true
-                    if self?.keys.keys.contains(where: { $0.code == Int(e.keyCode) }) != true { self?.userActedAt = Date() }
+                    if self?.keys.keys.contains(where: { $0.code == Int(e.keyCode) }) != true {
+                        self?.userActedAt = Date()
+                        self?.userTypedInStartBox()
+                    }
                 }
             }
         }
@@ -714,7 +717,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Where this dictation's words go back to, if you move away while they are written.
         if Insert.focus().kind == .text, let (el, pid) = Insert.focusedElement() {
             startBox = StartBox(pid: pid, element: el, app: NSRunningApplication(processIdentifier: pid)?.localizedName ?? "that app",
-                                window: Self.windowTitle(pid), print: Self.boxPrint(el, withText: true))
+                                window: Self.boxWindow(el), print: Self.boxPrint(el, withText: true))
         } else { startBox = nil }
         fixWatch.finish()
         deliveries.begin()
@@ -822,7 +825,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         finishingDrafting?.checksStopped = true; finishingDrafting?.draftsStopped = true
         drafting = nil
         if config.engine == "whisper", s.drafter != nil, config.mode != "rewrite" {
-            drafting = Drafting(owner: s)
+            drafting = Drafting(owner: s, startBox: startBox)
             s.onDraft = { [weak self, weak s] i, t in DispatchQueue.main.async { if let s { self?.draft(i, t, from: s) } } }
             s.onCheck = { [weak self, weak s] r, t in DispatchQueue.main.async { if let s { self?.check(r, t, from: s) } } }
             s.streamDrafts()
@@ -904,7 +907,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let out = config.mode == "noUms" ? Fillers.strip(names.apply(text)) : names.apply(text)
             // Only "um"s: nothing to type, the piece is done.
             if out.trimmingCharacters(in: .whitespaces).isEmpty { liveTyped += 1; return }
-            if Insert.text(out, joining: delivery) { liveTyped += 1; Log.note("live: piece \(livePieces) typed, \(keys.handsFree ? "hands-free" : "holding the key")") }
+            let typed = Insert.text(out, joining: delivery)
+            rememberOwnTyping(in: startBox)
+            if typed { liveTyped += 1; Log.note("live: piece \(livePieces) typed, \(keys.handsFree ? "hands-free" : "holding the key")") }
             else if Insert.typedSome {
                 // Part of it went in before the box changed: keep exactly what didn't, for the end, never retype the rest.
                 let typed = Insert.typedCount - (Insert.typedPadding)
@@ -967,7 +972,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var draftsStopped = false, checksStopped = false
         var firstLag: Double?
         var checks = 0, changed = 0, words = 0
-        init(owner: Transcriber.Session) { self.owner = owner }
+        let startBox: StartBox?
+        init(owner: Transcriber.Session, startBox: StartBox?) { self.owner = owner; self.startBox = startBox }
         /// Anything actually typed (empty drafts leave nothing in the box).
         var typedAny: Bool { runs.contains { !$0.text.isEmpty } }
     }
@@ -987,6 +993,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard Self.userQuietSince(d.startedAt, keys: talkKeyIsModifier), userActedAt < d.startedAt, let b = d.box,
               NSWorkspace.shared.frontmostApplication?.processIdentifier == b.pid,
               let (now, _) = Insert.focusedElement(), CFEqual(now, b.element) else { return false }
+        if let start = d.startBox, !isAt(start) { return false }
         return true
     }
 
@@ -1021,7 +1028,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard draftSafe(d) else { d.draftsStopped = true; liveShown = out; hud.caption(liveShown); Log.note("draft: you moved or typed, drafts stopped"); return }
         let started = d.startedAt, keysCount = talkKeyIsModifier
-        if Insert.text(out, joining: delivery, while: { AppDelegate.userQuietSince(started, keys: keysCount) }) {
+        let typed = Insert.text(out, joining: delivery, while: { AppDelegate.userQuietSince(started, keys: keysCount) })
+        rememberOwnTyping(in: d.startBox)
+        if typed {
             d.runs.append(.init(drafts: i..<i + 1, text: String(repeating: " ", count: Insert.typedPadding) + out, checked: false))
             if d.firstLag == nil { d.firstLag = Date().timeIntervalSince(s.timeOf(s.speechOnset)) }
         } else {
@@ -1058,12 +1067,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let later = d.runs[(idx.upperBound + 1)...].map(\.text).joined()
         let started = d.startedAt, keysCount = talkKeyIsModifier
         let quiet: () -> Bool = { AppDelegate.userQuietSince(started, keys: keysCount) }
+        let cursor = d.box.flatMap { Insert.selectionRange($0.element)?.location }
         let deleted = Insert.backspace((typed + later).count, while: quiet)
         guard deleted == (typed + later).count, (fixed + later).isEmpty || Insert.type(fixed + later, while: quiet) else {
             d.checksStopped = true; Insert.forgetLast()
             Log.note("draft: stopped partway (you typed or clicked); history has the checked text")
             return
         }
+        if let cursor { d.startBox?.print.replaceBeforeCursor(typed + later, with: fixed + later, cursor: cursor) }
         d.runs.replaceSubrange(idx, with: [.init(drafts: range, text: fixed, checked: true)])
         Insert.forgetLast()  // Take back's record no longer matches the box
     }
@@ -1081,6 +1092,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             replace(d, runs: first...(d.runs.count - 1), drafts: lower..<max(lower + 1, s.draftCount), with: tail)
         } else if !d.checksStopped, !tail.isEmpty, draftSafe(d) {
             _ = Insert.text(tail, joining: delivery)  // words after the last draft
+            rememberOwnTyping(in: d.startBox)
         }
         // A name split across two checks ("claw" | "code") is only fixed in the whole text: if the box still differs
         // from the whole cleaned text, one last replacement makes it exactly that.
@@ -1103,24 +1115,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The text box you were in when you started talking. The words go back there, even if you moved to another app
     /// while they were being written ("like Monologue"): straight in if that app allows it, or the moment you are
     /// back in that box. Never into some other box.
-    struct StartBox { let pid: pid_t; let element: AXUIElement; let app: String; let window: String?; let print: BoxPrint }
+    final class StartBox {
+        let pid: pid_t
+        let element: AXUIElement
+        let app: String
+        let window: AXUIElement?
+        var print: BoxPrint
+        var lastDiagnostic: String?
+        var userEdited = false
+        init(pid: pid_t, element: AXUIElement, app: String, window: AXUIElement?, print: BoxPrint) {
+            self.pid = pid; self.element = element; self.app = app; self.window = window; self.print = print
+        }
+    }
     private var startBox: StartBox?
 
-    private static func windowTitle(_ pid: pid_t) -> String? {
-        var w: CFTypeRef?, t: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXFocusedWindowAttribute as CFString, &w) == .success, let w,
-              AXUIElementCopyAttributeValue(w as! AXUIElement, kAXTitleAttribute as CFString, &t) == .success else { return nil }
-        return t as? String
+    private static func boxWindow(_ el: AXUIElement) -> AXUIElement? {
+        var w: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(el, kAXWindowAttribute as CFString, &w) == .success, let w,
+              CFGetTypeID(w) == AXUIElementGetTypeID() else { return nil }
+        return (w as! AXUIElement)
     }
 
-    /// A box's fingerprint: role, Accessibility id, place on screen, and (at key-down) the start of its text.
+    /// Once you type in the captured box, an empty value can mean you sent it, even if it started empty.
+    private func userTypedInStartBox() {
+        guard let (element, pid) = Insert.focusedElement() else { return }
+        for box in [startBox, drafting?.startBox, finishingDrafting?.startBox, interruptedDrafting?.0.startBox, waitingBox].compactMap({ $0 }) {
+            if box.pid == pid, CFEqual(element, box.element) { box.userEdited = true }
+        }
+    }
+
+    private func rememberOwnTyping(in box: StartBox?) {
+        guard let box, let edit = Insert.lastEdit, CFEqual(edit.element, box.element) else { return }
+        box.print.recordEdit(before: edit.before, range: edit.range, replacement: edit.replacement)
+    }
+
+    /// Role, id, frame, full expected text, title, and conversation URL, kept separately.
     private static func boxPrint(_ el: AXUIElement, withText: Bool) -> BoxPrint {
         func attr(_ k: String) -> CFTypeRef? { var v: CFTypeRef?; return AXUIElementCopyAttributeValue(el, k as CFString, &v) == .success ? v : nil }
         var p = CGPoint.zero, sz = CGSize.zero
         var frame: CGRect?
         if let pv = attr(kAXPositionAttribute), let sv = attr(kAXSizeAttribute), CFGetTypeID(pv) == AXValueGetTypeID(), CFGetTypeID(sv) == AXValueGetTypeID(),
            AXValueGetValue(pv as! AXValue, .cgPoint, &p), AXValueGetValue(sv as! AXValue, .cgSize, &sz) { frame = CGRect(origin: p, size: sz) }
-        let prefix = withText ? Insert.value(el).map { String($0.prefix(BoxMatch.prefixLength)) } : nil
+        let text = withText ? Insert.value(el) : nil
         // Where the box is: its window's title and the web page's address when there is one, so a chat app's one
         // reused box in another conversation isn't taken for the same box.
         var title = ""
@@ -1140,22 +1176,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard AXUIElementCopyAttributeValue(n, kAXParentAttribute as CFString, &p) == .success, let p, CFGetTypeID(p) == AXUIElementGetTypeID() else { break }
             node = (p as! AXUIElement)
         }
-        let context = title.isEmpty && url.isEmpty ? nil : title + "|" + url
-        return BoxPrint(role: attr(kAXRoleAttribute) as? String, identifier: attr(kAXIdentifierAttribute) as? String, frame: frame, prefix: prefix, context: context)
+        return BoxPrint(role: attr(kAXRoleAttribute) as? String, identifier: attr(kAXIdentifierAttribute) as? String,
+                        frame: frame, text: text, title: title.isEmpty ? nil : title, url: url.isEmpty ? nil : url)
     }
 
-    /// True when the cursor is back in that very box (D-817): the same element, or one that is clearly the same box
-    /// (same role and place, or same id), and its text still starts as it did at key-down. Another box in the same
-    /// window never counts; a sent and cleared box never counts.
+    /// Check the actual window and conversation as well as the expected text. Log only which parts differ.
+    private func matches(_ b: StartBox, _ element: AXUIElement) -> Bool {
+        let now = Self.boxPrint(element, withText: false), text = Insert.value(element)
+        let sameElement = CFEqual(element, b.element)
+        let sameWindow = b.window.flatMap { old in Self.boxWindow(element).map { CFEqual(old, $0) } } ?? false
+        let failure = BoxMatch.failure(start: b.print, now: now, nowText: text, sameElement: sameElement, sameWindow: sameWindow, userEdited: b.userEdited)
+        let differences = BoxMatch.differences(start: b.print, now: now, nowText: text, sameElement: sameElement)
+        let diagnostic = "\(failure.map { "failed " + $0.rawValue } ?? "matched"); differs \(differences.isEmpty ? "none" : differences.joined(separator: ",")); same element \(sameElement), window \(sameWindow), user edited \(b.userEdited); text expected \(b.print.text.map { String($0.utf16.count) } ?? "unreadable"), now \(text.map { String($0.utf16.count) } ?? "unreadable")"
+        if diagnostic != b.lastDiagnostic, failure != nil || !differences.isEmpty {
+            Log.note("box check: " + diagnostic)
+        }
+        b.lastDiagnostic = diagnostic
+        return failure == nil
+    }
+
     private func isAt(_ b: StartBox) -> Bool {
-        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == b.pid, let (now, _) = Insert.focusedElement() else { return false }
-        return BoxMatch.same(start: b.print, now: Self.boxPrint(now, withText: false), nowText: Insert.value(now), sameElement: CFEqual(now, b.element))
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == b.pid, let (now, _) = Insert.focusedElement() else {
+            let diagnostic = "failed element; app or focus changed"
+            if b.lastDiagnostic != diagnostic { Log.note("box check: " + diagnostic); b.lastDiagnostic = diagnostic }
+            return false
+        }
+        return matches(b, now)
     }
 
-    /// The box you started in still holds what it held at key-down, so writing into it in the background is safe.
-    private func unchanged(_ b: StartBox) -> Bool {
-        BoxMatch.same(start: b.print, now: Self.boxPrint(b.element, withText: false), nowText: Insert.value(b.element), sameElement: true)
-    }
+    private func unchanged(_ b: StartBox) -> Bool { matches(b, b.element) }
 
     /// Words waiting for the box you started in.
     private var waitingBox: StartBox?

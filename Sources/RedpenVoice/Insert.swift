@@ -9,7 +9,7 @@ import VoiceCore
 enum Insert {
     /// `joining`: the dictation this text belongs to, when it is typed in pieces, so Take back removes all of it.
     static func text(_ text: String, joining: Int? = nil, while still: () -> Bool = { true }) -> Bool {
-        typedSome = false; typedCount = 0; typedPadding = 0; unconfirmed = false
+        typedSome = false; typedCount = 0; typedPadding = 0; unconfirmed = false; lastEdit = nil
         guard !text.isEmpty else { return true }  // nothing to type; replacing the selection with "" would delete it
         guard !ownWindowInFront else { Log.note("insert: a Redpen Voice window is in front, not typed"); return false }
         dictation = joining
@@ -28,10 +28,16 @@ enum Insert {
         let fitted = joining == nil ? fit(text, in: el) : text
         let padded = spaced(fitted, before: el)
         typedPadding = padded.utf16.count - fitted.utf16.count
-        if let before = selectedRange(el), AXUIElementSetAttributeValue(el, kAXSelectedTextAttribute as CFString, padded as CFString) == .success {
+        let oldValue = value(el), oldRange = selectedRange(el)
+        func recordEdit(_ inserted: String) {
+            guard let oldValue, let oldRange, oldRange.location <= oldValue.utf16.count,
+                  oldRange.length <= oldValue.utf16.count - oldRange.location else { return }
+            lastEdit = (el, oldValue, oldRange, inserted)
+        }
+        if let before = oldRange, AXUIElementSetAttributeValue(el, kAXSelectedTextAttribute as CFString, padded as CFString) == .success {
             // Moved by the length of the text: it landed. Otherwise the app said yes and did nothing.
             if let after = selectedRange(el), after.location == before.location + (padded as NSString).length || after.location > before.location {
-                remember(padded); return true
+                recordEdit(padded); remember(padded); return true
             }
             Log.note("insert: accessibility accepted but cursor did not move, typing")
         }
@@ -39,7 +45,8 @@ enum Insert {
         guard focus().kind != .notText else { Log.note("insert: focus left the text box, not typed"); return false }
         let before = joining == nil ? value(el) : nil
         let ok = type(padded, while: still)
-        if ok { remember(padded) }
+        if ok { recordEdit(padded); remember(padded) }
+        else if typedSome { recordEdit(String(decoding: padded.utf16.prefix(typedCount), as: UTF16.self)) }
         // A whole dictation in a box that says what it holds, and the box hasn't changed a second later: it may not
         // have landed. Never pasted automatically (a busy app can still take the typing late, and then it would be
         // there twice): the caller says so and Control-Option-V pastes it (D-825).
@@ -52,6 +59,8 @@ enum Insert {
 
     /// True after the last insert when typing was sent but not seen in the box.
     private(set) static var unconfirmed = false
+    /// The exact edit just sent by Voice, for the starting box's expected text. Not arbitrary text read afterward.
+    private(set) static var lastEdit: (element: AXUIElement, before: String, range: NSRange, replacement: String)?
 
     /// The box's text changed within a second of typing.
     private static func landed(in el: AXUIElement, before: String) -> Bool {
@@ -277,6 +286,8 @@ enum Insert {
 
     /// How many characters are selected in a box, or nil when it won't say.
     static func selectionLength(_ el: AXUIElement) -> Int? { selectedRange(el)?.length }
+
+    static func selectionRange(_ el: AXUIElement) -> NSRange? { selectedRange(el) }
 
     private static func selectedRange(_ el: AXUIElement) -> NSRange? {
         var v: CFTypeRef?
