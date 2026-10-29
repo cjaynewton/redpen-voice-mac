@@ -17,9 +17,9 @@ public struct BoxPrint: Equatable, Sendable {
     /// Advance only from the text we expected, by a known Voice edit. Never adopt arbitrary Accessibility text.
     @discardableResult
     public mutating func recordEdit(before: String, range: NSRange, replacement: String) -> Bool {
-        guard text == before, range.location >= 0, range.length >= 0,
+        guard let text, BoxText.same(text, before), range.location >= 0, range.length >= 0,
               range.location <= before.utf16.count, range.length <= before.utf16.count - range.location else { return false }
-        text = (before as NSString).replacingCharacters(in: range, with: replacement)
+        self.text = (before as NSString).replacingCharacters(in: range, with: replacement)
         return true
     }
 
@@ -51,7 +51,7 @@ public enum BoxMatch {
         if userEdited { return .text }
         if start.url == nil, start.title != now.title { return .title }
         if let text = start.text {
-            guard nowText == text else { return .text }
+            guard let nowText, BoxText.same(text, nowText) else { return .text }
         } else if !sameElement { return .text }
         if (start.text ?? "").isEmpty, start.url == nil {
             guard let title = start.title, !title.isEmpty, title == now.title else { return .title }

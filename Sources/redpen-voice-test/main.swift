@@ -585,6 +585,59 @@ var middleDraft = BoxPrint(role: "AXTextArea", identifier: nil, frame: f0, text:
 middleDraft.replaceBeforeCursor("Draft Later.", with: "Checked later.", cursor: 18)
 check("box.ownDraftInMiddle", middleDraft.text == "Mine. Checked later. Tail stays.")
 
+// App whitespace normalization must not stop drafts or corrupt the next known edit's UTF-16 offsets.
+let spacedDraft = BoxPrint(role: "AXTextArea", identifier: "composer", frame: f0,
+                           text: "  My  checked\u{00a0}words \n", title: "Thread", url: "t3://thread-1")
+for (name, value) in [("trailingSpaceTrimmed", "  My  checked\u{00a0}words\n"),
+                      ("newlineTrimmed", "  My  checked\u{00a0}words "),
+                      ("leadingSpaceTrimmed", "My  checked\u{00a0}words \n"),
+                      ("doubleSpacesCollapsed", " My checked\u{00a0}words \n"),
+                      ("nbspToSpace", "  My  checked words \n"),
+                      ("allWhitespaceNormalized", "My checked words")] {
+    check("box." + name, BoxMatch.same(start: spacedDraft, now: t3Grew, nowText: value, sameElement: true))
+}
+check("box.normalizationStillRejectsEdit", !BoxMatch.same(start: spacedDraft, now: t3Grew, nowText: "My changed words", sameElement: true))
+check("box.normalizationKeepsWordBoundaries", !BoxText.same("some words", "somewords"))
+check("box.normalizationKeepsCase", !BoxText.same("Some words", "some words"))
+check("box.normalizationKeepsPunctuation", !BoxText.same("Some words.", "Some words"))
+check("box.normalizedButHardwareEdited", !BoxMatch.same(start: spacedDraft, now: t3Grew, nowText: "My checked words", sameElement: true, userEdited: true))
+check("box.normalizedButDifferentConversation", !BoxMatch.same(start: spacedDraft, now: anotherThread, nowText: "My checked words", sameElement: true))
+check("box.normalizedButDifferentWindow", !BoxMatch.same(start: spacedDraft, now: t3Grew, nowText: "My checked words", sameElement: true, sameWindow: false))
+check("box.normalizationDoesNotExcuseUnreadable", !BoxMatch.same(start: spacedDraft, now: t3Grew, nowText: nil, sameElement: true))
+var normalizedDraft = spacedDraft
+check("box.nextEditAfterTrim", normalizedDraft.recordEdit(before: "My checked words", range: NSRange(location: 16, length: 0), replacement: " again "))
+check("box.nextEditTracksActualOffsets", normalizedDraft.text == "My checked words again ")
+check("box.nextEditRejectsNewCharacters", !normalizedDraft.recordEdit(before: "My checked words again plus mine", range: NSRange(location: 0, length: 0), replacement: "x"))
+check("box.emptyWhitespaceEquivalent", BoxText.same(" \n", ""))
+
+// Stopped drafts finish with the WHOLE checked text, never only the engine's last tail. These are the
+// production replacement planner and delivery checks, with no AX edits or keyboard events posted.
+let stoppedDraft = DraftReplacement(expectedBox: "Prefix. My draft ", actual: "Prefix. My draft",
+                                    cursor: NSRange(location: 16, length: 0), draft: "My draft ",
+                                    replacement: "My checked words and the rest.")
+check("draft.trimmedSuffixActualRange", stoppedDraft?.range == NSRange(location: 8, length: 8))
+check("draft.completeEndingAfterStop", stoppedDraft?.expected == "Prefix. My checked words and the rest.")
+check("draft.completeEndingConfirmed", stoppedDraft?.landed("Prefix. My checked words and the rest.\n") == true)
+check("draft.postedButUnchangedNotConfirmed", stoppedDraft?.landed("Prefix. My draft") == false)
+check("draft.partialEndingNotConfirmed", stoppedDraft?.landed("Prefix. My checked words") == false)
+check("draft.unreadableNotConfirmed", stoppedDraft?.landed(nil) == false)
+let middleNormalized = DraftReplacement(expectedBox: "🎉 Mine.  Draft  later. \nTail stays.",
+                                         actual: "🎉 Mine. Draft later. Tail stays.",
+                                         cursor: NSRange(location: 22, length: 0), draft: " Draft  later. \n",
+                                         replacement: " Checked words. ")
+check("draft.normalizedMiddleRange", middleNormalized?.range == NSRange(location: 8, length: 14))
+check("draft.normalizedMiddleKeepsBothSides", middleNormalized?.expected == "🎉 Mine. Checked words. Tail stays.")
+check("draft.normalizedFullBoxEditRejected", DraftReplacement(expectedBox: "Prefix. My draft ", actual: "Edited. My draft", cursor: NSRange(location: 16, length: 0), draft: "My draft ", replacement: "Checked.") == nil)
+check("draft.selectionRejected", DraftReplacement(expectedBox: "My draft", actual: "My draft", cursor: NSRange(location: 0, length: 8), draft: "My draft", replacement: "Checked.") == nil)
+check("draft.invalidCursorRejected", DraftReplacement(expectedBox: "My draft", actual: "My draft", cursor: NSRange(location: NSNotFound, length: 0), draft: "My draft", replacement: "Checked.") == nil)
+check("draft.wrongSuffixRejected", DraftReplacement(expectedBox: "My draft", actual: "My draft", cursor: NSRange(location: 8, length: 0), draft: "other draft", replacement: "Checked.") == nil)
+check("draft.wordSubstringRejected", DraftReplacement(expectedBox: "undraft", actual: "undraft", cursor: NSRange(location: 7, length: 0), draft: "draft", replacement: "Checked.") == nil)
+let normalizedOnly = DraftReplacement(expectedBox: " My  words \n", actual: "My words", cursor: NSRange(location: 8, length: 0), draft: " My  words \n", replacement: " My words")
+check("draft.normalizedAlreadyPresent", normalizedOnly?.landed("My words") == true)
+let emptyChecked = DraftReplacement(expectedBox: "Prefix. draft", actual: "Prefix. draft", cursor: NSRange(location: 13, length: 0), draft: " draft", replacement: "")
+check("draft.checkedEmptyPreservesPrefix", emptyChecked?.expected == "Prefix.")
+check("draft.checkedDeletionNeedsEvidence", emptyChecked?.landed("Prefix. draft") == false && emptyChecked?.landed("Prefix.") == true)
+
 check("box.noURLChangedConversationTitle", BoxMatch.failure(start: BoxPrint(role: "AXTextArea", identifier: "composer", frame: f0, text: "Same text", title: "Chat A"), now: BoxPrint(role: "AXTextArea", identifier: "composer", frame: f0, text: nil, title: "Chat B"), nowText: "Same text", sameElement: true) == .title)
 
 // The video's words come off the start; yours stay (D-817).

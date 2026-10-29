@@ -8,7 +8,7 @@ import VoiceCore
 /// cursor back; when an app says yes and does nothing, the text is typed instead, as key events.
 enum Insert {
     /// `joining`: the dictation this text belongs to, when it is typed in pieces, so Take back removes all of it.
-    static func text(_ text: String, joining: Int? = nil, while still: () -> Bool = { true }) -> Bool {
+    static func text(_ text: String, joining: Int? = nil, confirmed: Bool = false, while still: () -> Bool = { true }) -> Bool {
         typedSome = false; typedCount = 0; typedPadding = 0; unconfirmed = false; lastEdit = nil
         guard !text.isEmpty else { return true }  // nothing to type; replacing the selection with "" would delete it
         guard !ownWindowInFront else { Log.note("insert: a Redpen Voice window is in front, not typed"); return false }
@@ -28,14 +28,29 @@ enum Insert {
         let padded = spaced(fitted, before: el)
         typedPadding = padded.utf16.count - fitted.utf16.count
         let oldValue = value(el), oldRange = selectedRange(el)
+        let expected = oldValue.flatMap { value in oldRange.flatMap { range -> String? in
+            guard range.location <= value.utf16.count, range.length <= value.utf16.count - range.location else { return nil }
+            return (value as NSString).replacingCharacters(in: range, with: padded)
+        } }
+        // Draft bookkeeping needs readable evidence, rather than a successful event post.
+        if confirmed, expected == nil { Log.note("insert: draft target unreadable, kept for Paste last"); return false }
         func recordEdit(_ inserted: String) {
             guard let oldValue, let oldRange, oldRange.location <= oldValue.utf16.count,
                   oldRange.length <= oldValue.utf16.count - oldRange.location else { return }
             lastEdit = (el, oldValue, oldRange, inserted)
         }
         if let before = oldRange, AXUIElementSetAttributeValue(el, kAXSelectedTextAttribute as CFString, padded as CFString) == .success {
+            if confirmed, let expected {
+                if confirm(expected, in: el, while: still, attempts: 2) {
+                    recordEdit(padded); remember(padded); return true
+                }
+                // An accepted edit can arrive late. Only fall back when neither text nor cursor changed.
+                guard value(el) == oldValue, selectedRange(el) == oldRange else {
+                    unconfirmed = true; Log.note("insert: draft AX edit not confirmed, kept for Paste last"); return false
+                }
+            }
             // Moved by the length of the text: it landed. Otherwise the app said yes and did nothing.
-            if let after = selectedRange(el), after.location == before.location + (padded as NSString).length || after.location > before.location {
+            if !confirmed, let after = selectedRange(el), after.location == before.location + (padded as NSString).length || after.location > before.location {
                 recordEdit(padded); remember(padded); return true
             }
             Log.note("insert: accessibility accepted but cursor did not move, typing")
@@ -44,6 +59,12 @@ enum Insert {
         guard Self.canTypeAtFocus else { Log.note("insert: focus left the text box, not typed"); return false }
         let before = joining == nil ? value(el) : nil
         let ok = type(padded, while: still)
+        if confirmed, let expected {
+            let landed = ok && confirm(expected, in: el, while: still)
+            if landed { recordEdit(padded); remember(padded) }
+            else { unconfirmed = true; Log.note("insert: draft typing not confirmed, kept for Paste last") }
+            return landed
+        }
         if ok { recordEdit(padded); remember(padded) }
         else if typedSome { recordEdit(String(decoding: padded.utf16.prefix(typedCount), as: UTF16.self)) }
         // A whole dictation in a box that says what it holds, and the box hasn't changed a second later: it may not
@@ -54,6 +75,43 @@ enum Insert {
             Log.note("insert: typing not seen in the box after a second")
         }
         return ok
+    }
+
+    /// Read the complete expected value in the original focused box. Whitespace normalization is harmless;
+    /// a changed word, cursor movement alone, or merely posting events cannot confirm a draft.
+    private static func confirm(_ expected: String, in element: AXUIElement, while still: () -> Bool,
+                                attempts: Int = 20) -> Bool {
+        for _ in 0..<attempts {
+            guard still(), let (now, _) = focusedElement(), CFEqual(now, element) else { return false }
+            if let value = value(element), BoxText.same(expected, value) { return true }
+            usleep(50_000)
+        }
+        return false
+    }
+
+    /// Replace only the known suffix, using the editor's actual length and checking what landed afterward.
+    static func replaceDraft(_ draft: String, with replacement: String, expectedBox: String,
+                             in element: AXUIElement, while still: @escaping () -> Bool) -> Bool {
+        lastEdit = nil
+        guard still(), let (now, _) = focusedElement(), CFEqual(now, element),
+              let value = value(element), let cursor = selectedRange(element),
+              let edit = DraftReplacement(expectedBox: expectedBox, actual: value, cursor: cursor,
+                                          draft: draft, replacement: replacement) else { return false }
+        if edit.landed(value) { return true }
+        let count = ((value as NSString).substring(with: edit.range)).count
+        let safe: () -> Bool = {
+            still() && focusedElement().map { CFEqual($0.0, element) } == true
+        }
+        guard backspace(count, while: safe) == count,
+              replacement.isEmpty || type(replacement, while: safe),
+              confirm(edit.expected, in: element, while: safe) else {
+            forgetLast()
+            Log.note("draft: replacement not confirmed; checked words kept for Paste last")
+            return false
+        }
+        lastEdit = (element, edit.before, edit.range, replacement)
+        forgetLast()
+        return true
     }
 
     /// True after the last insert when typing was sent but not seen in the box.

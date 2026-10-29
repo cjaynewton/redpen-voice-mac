@@ -88,6 +88,12 @@ final class HUD {
         place()
     }
 
+    /// Captions normally update an existing bar. Stopped live typing must also restore a hidden bar.
+    func listeningCaption(_ text: String) {
+        if !panel.isVisible || meter.writing || meter.flat { show("", level: true) }
+        caption(text)
+    }
+
     /// Saves the bar as it looks now, at 2x, for checking its shape without a screen recording (--hud-snapshot).
     func snapshot(to url: URL) {
         guard let layer = box.layer else { return }
