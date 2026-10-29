@@ -26,6 +26,9 @@ final class HUD {
     private var captionText = ""
     /// Captured on key-down. Layout, captions, writing and completion messages keep this screen.
     private var dictationScreen: NSScreen?
+    private let addWord = NSButton(title: "Add", target: nil, action: nil)
+    private let notNow = NSButton(title: "Not now", target: nil, action: nil)
+    private var wordAction: ((Bool) -> Void)?
 
     func captureScreen(textBox: CGRect?) {
         let screens = NSScreen.screens
@@ -77,10 +80,26 @@ final class HUD {
         doneMark.font = NSFont.systemFont(ofSize: 14, weight: .semibold)
         doneMark.textColor = NSColor(srgbRed: 0.3, green: 0.77, blue: 0.43, alpha: 1)
         for v in [dot, label, timer, meter, doneMark] as [NSView] { box.addSubview(v) }
+        for button in [addWord, notNow] {
+            button.font = label.font
+            button.contentTintColor = .white
+            button.isBordered = false
+            button.wantsLayer = true
+            button.layer?.backgroundColor = NSColor(white: 1, alpha: 0.14).cgColor
+            button.layer?.borderColor = NSColor(white: 1, alpha: 0.35).cgColor
+            button.layer?.borderWidth = 1
+            button.layer?.cornerRadius = 3
+            button.target = self
+            button.isHidden = true
+            box.addSubview(button)
+        }
+        addWord.action = #selector(acceptWord)
+        notNow.action = #selector(dismissWord)
     }
 
     /// Bars only while talking; words only when something needs saying.
     func show(_ text: String, level: Bool, ok: Bool = false) {
+        clearSuggestion()
         hideAt?.cancel()
         self.ok = ok
         meter.flat = !level
@@ -144,7 +163,42 @@ final class HUD {
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: w)
     }
 
-    func hide() { hideAt?.cancel(); tick?.invalidate(); tick = nil; panel.orderOut(nil) }
+    func hide() { hideAt?.cancel(); tick?.invalidate(); tick = nil; clearSuggestion(); panel.orderOut(nil) }
+
+    /// Never replaces a warning or the listening/writing bar, and never makes the target app lose focus.
+    @discardableResult
+    func suggest(_ word: String, action: @escaping (Bool) -> Void) -> Bool {
+        guard !panel.isVisible else { return false }
+        show("Keep hearing “\(word)”. Add it to your words?", level: false)
+        wordAction = action
+        meter.isHidden = true
+        label.frame.origin.x = 16
+        var x = label.frame.maxX + 14
+        for button in [addWord, notNow] {
+            button.sizeToFit()
+            button.frame = NSRect(x: x, y: 7, width: button.frame.width + 18, height: 26)
+            button.isHidden = false
+            x = button.frame.maxX + 8
+        }
+        panel.setContentSize(NSSize(width: x + 8, height: 40))
+        panel.ignoresMouseEvents = false
+        place()
+        let work = DispatchWorkItem { [weak self] in self?.hide() }
+        hideAt = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12, execute: work)
+        return true
+    }
+
+    func hideSuggestion() { if wordAction != nil { hide() } }
+
+    private func clearSuggestion() {
+        wordAction = nil
+        addWord.isHidden = true; notNow.isHidden = true
+        panel.ignoresMouseEvents = true
+    }
+
+    @objc private func acceptWord() { let action = wordAction; hide(); action?(true) }
+    @objc private func dismissWord() { let action = wordAction; hide(); action?(false) }
 
     private func startTicking() {
         let t = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.frame() } }

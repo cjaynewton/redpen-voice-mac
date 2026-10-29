@@ -1,4 +1,5 @@
 import Foundation
+import VoiceCore
 
 /// Settings live in ~/Library/Application Support/Redpen Voice/config.json so they can be read and edited by hand.
 struct Config: Codable {
@@ -8,6 +9,7 @@ struct Config: Codable {
     static let url = dir.appendingPathComponent("config.json")
     static let namesURL = dir.appendingPathComponent("names.txt")
     static let historyURL = dir.appendingPathComponent("history.jsonl")
+    static let suggestionsURL = dir.appendingPathComponent("word-suggestions.json")
     /// Daily counts, numbers only (D-837): its own file, so the history's keep choice never changes them.
     static let statsURL = dir.appendingPathComponent("stats.json")
 
@@ -44,6 +46,20 @@ struct Config: Codable {
     var riskMarks: Bool?
     /// How long dictations are kept (D-825): "all" (the newest 2,000), "week", or "none". "all" when missing.
     var historyKeep: String?
+    /// Offers recurring names after dictations, at most once a day. On when missing.
+    var suggestWords: Bool?
+
+    /// The same plain list Settings opens. Preserve comments, fixes and existing spelling.
+    @discardableResult
+    static func addName(_ word: String) -> Bool {
+        ensureNamesFile()
+        guard var list = try? String(contentsOf: namesURL, encoding: .utf8) else { return false }
+        guard !word.isEmpty, !word.contains(where: \.isNewline) else { return false }
+        if Names(text: list).vocabulary.contains(where: { $0.caseInsensitiveCompare(word) == .orderedSame }) { return true }
+        if !list.isEmpty, !list.hasSuffix("\n") { list += "\n" }
+        list += word + "\n"
+        return (try? list.write(to: namesURL, atomically: true, encoding: .utf8)) != nil
+    }
     /// Your typing speed in words a minute, the clock "minutes saved" is measured against (D-837). 40 when missing.
     var typingWPM: Int?
     /// Kept between 10 and 200 words a minute, whatever a hand-edited file says.

@@ -18,6 +18,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let engine = Transcriber()
     private let hud = HUD()
     private let history = History(url: Config.historyURL)
+    private let wordSuggestions = WordSuggestions(url: Config.suggestionsURL)
+    private var suggestionWork: DispatchWorkItem?
     private var firstRun: FirstRunWindow?
     private var historyWindow: HistoryWindow?
     /// Daily counts, numbers only (D-837), in their own file: the history's keep choice never touches them.
@@ -553,6 +555,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         history.trim()
         history.apply(keep: config.historyKeep ?? "all")
+        if config.historyKeep == "none" { wordSuggestions.clear() }
         refreshMenu()
         Watchdog.start()
         restarted = CommandLine.arguments.contains("--restarted")
@@ -730,6 +733,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard engine.state == .ready, let format = engine.audioFormat else { hud.flash(engineWord == "ready" ? "Not ready" : "Engine " + engineWord); return }
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { hud.flash("Allow the microphone"); return }
         remicIfDefaultMoved(reason: "input moved before this press")
+        suggestionWork?.cancel(); hud.hideSuggestion()
         if waitingText != nil { stopWaiting(); hud.hide(); Log.note("insert: new press, the waiting words stay for paste") }
         // Where this dictation's words go back to, if you move away while they are written.
         if Insert.focus().kind == .text, let (el, pid) = Insert.focusedElement() {
@@ -1497,16 +1501,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // How long it's kept is your choice (D-825): nothing at all, the last week, or the newest 2,000.
                 // The day's numbers are counted whatever is kept (D-837).
                 Dictations.record(entry, keep: self.config.historyKeep ?? "all", history: self.history, stats: self.stats, engine: engineName)
+                self.wordSuggestions.observe(text, names: Names(text: Config.loadNames()), enabled: self.config.suggestWords ?? true,
+                                             keep: self.config.historyKeep ?? "all")
             }
             self.writing -= 1
             self.resumeMedia()
             Log.note("dictation \(Log.int(seconds))s, \(raw.split(separator: " ").count) words, write \(Log.ms(Date().timeIntervalSince(t0)))ms, engine \(engineMs)ms, key up to done \(Log.ms(Date().timeIntervalSince(releasedAt)))ms, into \(app), inserted \(inserted)")
             self.refreshMenu()
+            if !newer, !text.isEmpty, !s.endingLost, !s.echoFailed { self.scheduleWordSuggestion(gen: gen) }
             if self.quitting { NSApp.reply(toApplicationShouldTerminate: true) }
         }
     }
 
     // MARK: Menu
+
+    private func scheduleWordSuggestion(gen: Int) {
+        suggestionWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.session == nil, self.writing == 0, self.testFile == nil, !self.quitting,
+                  self.delivery == gen, self.config.suggestWords ?? true, self.config.historyKeep != "none",
+                  let word = self.wordSuggestions.next(names: Names(text: Config.loadNames())) else { return }
+            if self.hud.suggest(word, action: { [weak self] add in
+                guard let self, self.session == nil, self.writing == 0, self.config.suggestWords ?? true,
+                      self.config.historyKeep != "none" else { return }
+                if add {
+                    guard Config.addName(word) else { self.hud.flash("Couldn't save the word. Try Edit list in Settings.", for: 3); return }
+                    self.names = Names(text: Config.loadNames()); Insert.keepNames = Set(self.names.spellings)
+                    self.settings?.model.objectWillChange.send()
+                    Log.note("words: added a suggested word")
+                }
+                self.wordSuggestions.dismiss(word)
+            }) { self.wordSuggestions.offered() }
+        }
+        suggestionWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.5, execute: work)
+    }
 
     /// Light, dark, or the Mac's own setting, for every window and the menu bar panel. The talking bar stays dark.
     static func applyAppearance(_ c: Config) {
@@ -1759,6 +1788,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self else { return }
                 var c = Config.load(); c.historyKeep = k; c.save(); self.config.historyKeep = k; self.syncSettings()
                 self.history.apply(keep: k)
+                if k == "none" { self.wordSuggestions.clear(); self.suggestionWork?.cancel(); self.hud.hideSuggestion() }
                 Log.note("history: keep \(k)")
                 self.refreshMenu()
             }
@@ -1796,6 +1826,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let engineChanged = c.engine != self.config.engine || c.locale != self.config.locale || c.draftMode != self.config.draftMode || c.riskMarks != self.config.riskMarks
                 let micChanged = c.inputDevice != self.config.inputDevice
                 self.config = c
+                if c.historyKeep == "none" { self.wordSuggestions.clear() }
+                if c.suggestWords == false || c.historyKeep == "none" { self.suggestionWork?.cancel(); self.hud.hideSuggestion() }
                 Self.applyAppearance(c)
                 if micChanged { self.recorder.deviceUID = c.inputDevice; self.warmMic() }
                 self.keys.keys = HoldKey.keys(for: c.talkKeyChoice); self.keys.doubleTap = c.doubleTap ?? true

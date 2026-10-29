@@ -189,6 +189,10 @@ struct SettingsView: View {
                 talking
                 heading("Words it gets wrong")
                 wordsRow
+                row("Suggest words to add", "A recurring name, at most once a day after you finish talking.") {
+                    Toggle("", isOn: Binding(get: { model.config.suggestWords ?? true }, set: { model.config.suggestWords = $0 }))
+                        .labelsHidden().toggleStyle(.switch).tint(Ink.red)
+                }.padding(.top, 12)
                 heading("Time saved")
                 typingRow
                 footer
