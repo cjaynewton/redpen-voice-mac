@@ -863,5 +863,29 @@ check("facts.enginesCombineForLongestDay", personalFacts.contains { $0.hasPrefix
 check("facts.totalTalkingTime", personalFacts.last == "You've talked for 3 hours 37 minutes in total.")
 check("facts.smallSection", personalFacts.count <= 4)
 
+// Bar placement uses desktop coordinates, including a portrait display and displays above/left of primary.
+do {
+    let screens = [CGRect(x: 0, y: 0, width: 3440, height: 1440),
+                   CGRect(x: -3440, y: 0, width: 3440, height: 1440),
+                   CGRect(x: 3440, y: -560, width: 1440, height: 2560)]
+    let box = CGRect(x: 3500, y: 200, width: 500, height: 100)
+    let window = CGRect(x: -3000, y: 100, width: 1000, height: 900)
+    func pick(_ text: CGRect?, _ win: CGRect?, _ pointer: CGPoint = .zero) -> BarScreen.Choice? {
+        BarScreen.choose(screens: screens, textBox: text, window: win, pointer: pointer)
+    }
+    check("bar.textBoxBeatsWindowAndPointer", pick(box, window)?.index == 2 && pick(box, window)?.reason == "text box")
+    check("bar.windowFallback", pick(nil, window)?.index == 1 && pick(nil, window)?.reason == "focused window")
+    check("bar.pointerFallback", pick(nil, nil, CGPoint(x: 4000, y: -200))?.index == 2)
+    check("bar.offscreenBoxFallsBack", pick(CGRect(x: 9000, y: 0, width: 10, height: 10), window)?.index == 1)
+    check("bar.zeroBoxFallsBack", pick(.zero, window)?.index == 1)
+    check("bar.spanningWindowLargestArea", pick(nil, CGRect(x: 3000, y: 0, width: 1800, height: 1000))?.index == 2)
+    check("bar.offscreenPointerFallback", pick(nil, nil, CGPoint(x: 20000, y: 20000))?.index == 0)
+    check("bar.noScreens", BarScreen.choose(screens: [], textBox: box, window: window, pointer: .zero) == nil)
+    let ax = CGRect(x: 3500, y: -200, width: 500, height: 100)
+    check("bar.accessibilityCoordinates", BarScreen.fromAccessibility(ax, primaryTop: 1440) == CGRect(x: 3500, y: 1540, width: 500, height: 100))
+    check("bar.abovePrimary", BarScreen.choose(screens: screens + [CGRect(x: 0, y: 1440, width: 3440, height: 1440)],
+          textBox: BarScreen.fromAccessibility(CGRect(x: 10, y: -200, width: 100, height: 100), primaryTop: 1440), window: nil, pointer: .zero)?.index == 3)
+}
+
 print("\(pass) passed, \(fail) failed")
 exit(fail == 0 ? 0 : 1)

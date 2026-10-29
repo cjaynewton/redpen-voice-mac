@@ -1,4 +1,6 @@
 import AppKit
+import ApplicationServices
+import VoiceCore
 
 /// A small dark bar near the bottom of the screen while you talk, in the style picked in Settings. Messages use the
 /// same bar: a flat grey line beside the words when something went wrong, a green tick when something worked. Never takes focus, so the cursor stays where the words will land.
@@ -22,6 +24,35 @@ final class HUD {
     private var started = Date()
     /// The newest words written while you talk, shown beside the line.
     private var captionText = ""
+    /// Captured on key-down. Layout, captions, writing and completion messages keep this screen.
+    private var dictationScreen: NSScreen?
+
+    func captureScreen(textBox: CGRect?) {
+        let screens = NSScreen.screens
+        guard let primary = screens.first else { dictationScreen = nil; return }
+        var windowFrame: CGRect?
+        if let app = NSWorkspace.shared.frontmostApplication {
+            var window: CFTypeRef?
+            if AXUIElementCopyAttributeValue(AXUIElementCreateApplication(app.processIdentifier), kAXFocusedWindowAttribute as CFString, &window) == .success,
+               let window, CFGetTypeID(window) == AXUIElementGetTypeID() {
+                let element = window as! AXUIElement
+                var position: CFTypeRef?, size: CFTypeRef?
+                var p = CGPoint.zero, s = CGSize.zero
+                if AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &position) == .success,
+                   AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &size) == .success,
+                   let position, let size, CFGetTypeID(position) == AXValueGetTypeID(), CFGetTypeID(size) == AXValueGetTypeID(),
+                   AXValueGetValue(position as! AXValue, .cgPoint, &p), AXValueGetValue(size as! AXValue, .cgSize, &s) {
+                    windowFrame = CGRect(origin: p, size: s)
+                }
+            }
+        }
+        let choice = BarScreen.choose(screens: screens.map(\.frame),
+                                     textBox: textBox.map { BarScreen.fromAccessibility($0, primaryTop: primary.frame.maxY) },
+                                     window: windowFrame.map { BarScreen.fromAccessibility($0, primaryTop: primary.frame.maxY) },
+                                     pointer: NSEvent.mouseLocation)
+        dictationScreen = choice.map { screens[$0.index] }
+        if let choice { Log.note("bar: on screen \(choice.index + 1) (\(choice.reason))") }
+    }
 
     init() {
         panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 240, height: 44), styleMask: [.borderless, .nonactivatingPanel],
@@ -172,11 +203,10 @@ final class HUD {
         box.layer?.cornerRadius = 3
     }
 
-    // Above where chat apps put their typing box, so it never hides inside one. On the screen with the pointer:
-    // with several screens, NSScreen.main is the menu bar screen for an app like this, often not the one in use.
+    // Above where chat apps put their typing box, at the same offset on the screen captured on key-down.
     private func place() {
         let mouse = NSEvent.mouseLocation
-        if let s = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) }) ?? NSScreen.main {
+        if let s = dictationScreen ?? NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) }) ?? NSScreen.main {
             let f = s.visibleFrame
             panel.setFrameOrigin(NSPoint(x: f.midX - panel.frame.width / 2, y: f.minY + 120))
         }

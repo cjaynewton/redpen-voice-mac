@@ -736,6 +736,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             startBox = StartBox(pid: pid, element: el, app: NSRunningApplication(processIdentifier: pid)?.localizedName ?? "that app",
                                 window: Self.boxWindow(el), print: Self.boxPrint(el, withText: true))
         } else { startBox = nil }
+        hud.captureScreen(textBox: startBox?.print.frame)
         fixWatch.finish()
         deliveries.begin()
         let generation = delivery
