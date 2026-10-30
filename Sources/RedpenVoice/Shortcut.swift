@@ -13,7 +13,7 @@ final class Shortcut {
     /// Lets go of the key, so a shortcut that's switched off stops taking it from other apps.
     deinit { if let ref { UnregisterEventHotKey(ref) } }
 
-    init(id: UInt32, keyCode: Int, modifiers: Int = controlKey | optionKey, name: String,
+    init(id: UInt32, keyCode: Int, modifiers: Int = controlKey | optionKey, name: String, quiet: Bool = false,
          action: @escaping () -> Void) {
         Shortcut.actions[id] = action
         if !Shortcut.installed {
@@ -31,6 +31,8 @@ final class Shortcut {
         }
         let hid = EventHotKeyID(signature: OSType(0x5244_5056), id: id)  // "RDPV", not Redpen's "RDPN"
         let status = RegisterEventHotKey(UInt32(keyCode), UInt32(modifiers), hid, GetEventDispatcherTarget(), 0, &ref)
-        Log.note(status == noErr ? "shortcut \(name) ready" : "shortcut \(name) failed (\(status)), another app may own it")
+        if !quiet || status != noErr {
+            Log.note(status == noErr ? "shortcut \(name) ready" : "shortcut \(name) failed (\(status)), another app may own it")
+        }
     }
 }

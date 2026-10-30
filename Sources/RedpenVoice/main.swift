@@ -33,10 +33,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The engine the dictation in progress started with, for its day's numbers (D-837).
     private var sessionEngine = "dictation"
     private let mediaPauseMonitor = MediaPauseMonitor()
-    private var pausedMedia = false {
-        didSet {
-            if pausedMedia { mediaPauseMonitor.resume() }
-            else { mediaPauseMonitor.stop() }
+    private var mediaPause = MediaPauseOwnership()
+    private var pausedMedia: Bool {
+        get { mediaPause.paused }
+        set {
+            if newValue { mediaPause.hold(); mediaPauseMonitor.resume() }
+            else { mediaPause.release(); mediaPauseMonitor.stop() }
         }
     }
     private var settleWork: DispatchWorkItem?
@@ -44,6 +46,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var press = 0
     private var pasteKey: Shortcut?
     private var undoKey: Shortcut?
+    /// Escape, held only while you talk, so it reaches your apps the rest of the time.
+    private var escapeKey: Shortcut?
     /// ⌃⌥S, only while "Point out words to check" is on: swaps in the other engine's hearing of the marked word.
     private var swapKey: Shortcut?
     private var riskSwap: (swapped: String, gen: Int, element: AXUIElement, typed: String)?
@@ -63,6 +67,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var notesStatus: String?
 
     func applicationDidFinishLaunching(_ n: Notification) {
+        mediaPauseMonitor.onPlaybackResumed = { [weak self] peak in
+            guard let self, self.mediaPause.relinquishIfPlaying(peak: peak) else { return }
+            self.mediaPauseMonitor.stop()
+            self.resumeWork?.cancel(); self.resumeWork = nil
+            Log.note("media: someone else pressed play, Voice lets go of the pause")
+        }
         // `--hud-demo [style]` shows the talking bar for four seconds with a fake voice, then two of writing, so its
         // look can be checked on screen.
         if let i = CommandLine.arguments.firstIndex(of: "--hud-demo") {
@@ -784,6 +794,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pendingMedia = PendingMedia()
         if resumeWork != nil { resumeWork?.cancel(); resumeWork = nil }  // pressed again before the video came back
         if pausedMedia {
+            // Invalidate an older resume listen, even if this press ends before its callback arrives.
+            pausedMedia = true
             Log.note("media: still paused from the last press")
         } else if config.pauseMedia {
             let players = Media.playingApps()
@@ -869,7 +881,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         finishingDrafting?.checksStopped = true; finishingDrafting?.draftsStopped = true
         drafting = nil
         if config.engine == "whisper", s.drafter != nil, config.mode != "rewrite" {
-            drafting = Drafting(owner: s, startBox: startBox)
+            drafting = Drafting(owner: s, startBox: startBox, keys: keys)
             s.onDraft = { [weak self, weak s] i, t in DispatchQueue.main.async { if let s { self?.draft(i, t, from: s) } } }
             s.onCheck = { [weak self, weak s] r, t in DispatchQueue.main.async { if let s { self?.check(r, t, from: s) } } }
             s.streamDrafts()
@@ -895,12 +907,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pendingMedia.preRoll = Int(recorder.pushedFrames)
         micOwner = thisPress
         Log.note("recording from \(recorder.inputName)")
+        escapeKey = Shortcut(id: 3, keyCode: kVK_Escape, modifiers: 0, name: "Escape", quiet: true) { [weak self] in
+            self?.discard()
+        }
         busy = false
     }
 
     /// Fn was a shortcut, not talking: drop the audio, put the music back, no words written.
     private func cancel() {
         guard let s = session else { return }
+        escapeKey = nil
         // Drafts already typed: finish and keep this dictation (no more edits to the box) rather than drop it with
         // words already on screen and nothing in history.
         if let d = drafting, d.owner === s, d.typedAny { d.checksStopped = true; d.draftsStopped = true; end(); return }
@@ -918,6 +934,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         resumeMedia()
         if ignoredTap, writing > 0 { Log.note("hold key: tap after stop ignored; finishing dictation keeps its insertion") }
         else { Log.note(ignoredTap ? "cancelled: quick tap" : "cancelled: another key while holding") }
+    }
+
+    /// Escape while you talk: the dictation is thrown away, nothing goes into history or onto the clipboard, and the
+    /// words Voice already typed come back out if the box still ends with them. The next press starts fresh.
+    private func discard() {
+        guard let s = session else { escapeKey = nil; return }
+        escapeKey = nil
+        keys.discard()
+        wasHandsFree = false
+        session = nil
+        settleWork?.cancel()
+        recorder.end()
+        s.cancel()
+        _ = deliveries.cancel()
+        interruptedDrafting = nil
+        var left = false
+        if let d = drafting, d.owner === s {
+            d.checksStopped = true; d.draftsStopped = true
+            if d.typedAny { left = !removeDrafts(d) }
+        }
+        drafting = nil
+        hud.flash(left ? "Thrown away. Some words were already typed and stay in the box."
+                       : "Thrown away. Talk again when you're ready.", for: 2.5)
+        resumeMedia()
+        Log.note("cancelled: Escape, \(left ? "typed words left in the box" : "nothing left in the box")")
+    }
+
+    /// Deletes everything this dictation typed, only while the box still ends with it at the cursor and you press
+    /// nothing after Escape.
+    private func removeDrafts(_ d: Drafting) -> Bool {
+        let typed = d.runs.map(\.text).joined()
+        guard !typed.isEmpty else { return true }
+        guard let b = d.box, NSWorkspace.shared.frontmostApplication?.processIdentifier == b.pid,
+              let expected = d.startBox?.print.text else { return false }
+        if let start = d.startBox, !isAt(start) { return false }
+        let after = Date().addingTimeInterval(0.05)
+        let quiet: () -> Bool = { Date() < after || AppDelegate.userQuietSince(after, keys: true) }
+        guard Insert.replaceDraft(typed, with: "", expectedBox: expected, in: b.element, while: quiet) else { return false }
+        rememberOwnTyping(in: d.startBox)
+        Insert.forgetLast()
+        return true
     }
 
     /// Pieces of the current dictation written so far, how many of them are already typed into the box, and the text
@@ -1012,7 +1069,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let owner: Transcriber.Session
         let startedAt = Date()
         let startedUptime = ProcessInfo.processInfo.systemUptime
+        let input: DraftInput
+        var hardwareSample: DraftSafety.HardwareSample?
         var reportedFailures: Set<DraftSafety.Failure> = []
+        var lastFailure: DraftSafety.Failure?
         var runs: [Run] = []
         var nextDraft = 0
         var box: (pid: pid_t, element: AXUIElement)?
@@ -1021,7 +1081,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var firstLag: Double?
         var checks = 0, changed = 0, words = 0
         let startBox: StartBox?
-        init(owner: Transcriber.Session, startBox: StartBox?) { self.owner = owner; self.startBox = startBox }
+        @MainActor init(owner: Transcriber.Session, startBox: StartBox?, keys: HoldKey) {
+            self.owner = owner; self.startBox = startBox
+            input = keys.trackDraft(since: startedUptime)
+        }
         /// Anything actually typed (empty drafts leave nothing in the box).
         var typedAny: Bool { runs.contains { !$0.text.isEmpty } }
     }
@@ -1041,21 +1104,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @discardableResult
     private func draftBlocked(_ d: Drafting, _ reason: DraftSafety.Failure, during path: String) -> Bool {
+        d.lastFailure = reason
         if d.reportedFailures.insert(reason).inserted {
-            Log.note("draft blocked: \(reason.rawValue) (\(path))")
+            var detail = ""
+            if reason == .hardwareKey, let sample = d.hardwareSample {
+                let nearest = sample.nearestTalkAt.map { String(format: "%.6f", $0) } ?? "none"
+                let gap = sample.nearestTalkAt.map { String(format: "%.3fms", (sample.keyAt - $0) * 1000) } ?? "none"
+                detail = "; keyAt \(String(format: "%.6f", sample.keyAt)), nearest talk \(nearest), difference \(gap)"
+            }
+            Log.note("draft blocked: \(reason.rawValue) (\(path))\(detail)")
         }
         return false
     }
 
     /// Sample hardware throughout typing, when queued NSEvent callbacks may not have run yet.
     private func draftQuiet(_ d: Drafting, during path: String) -> Bool {
-        let now = ProcessInfo.processInfo.systemUptime
-        let failure = DraftSafety.hardwareFailure(since: d.startedUptime, at: now,
-            keyDownAgo: CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .keyDown),
-            leftClickAgo: CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .leftMouseDown),
-            rightClickAgo: CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .rightMouseDown),
-            talkKeyDownAt: keys.lastTalkKeyDownAt, typingKeyDownAt: keys.lastTypingKeyDownAt)
-        if let failure { return draftBlocked(d, failure, during: path) }
+        let sample = DraftSafety.resolveHardware(since: d.startedUptime) {
+            // Read counters before taking the listener snapshot, giving that thread time to identify the key.
+            let now = ProcessInfo.processInfo.systemUptime
+            let keyAgo = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .keyDown)
+            let leftAgo = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .leftMouseDown)
+            let rightAgo = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .rightMouseDown)
+            let input = d.input.snapshot()
+            return DraftSafety.HardwareSample(now: now, keyDownAgo: keyAgo, leftClickAgo: leftAgo,
+                rightClickAgo: rightAgo, talkKeyDownTimes: input.talkTimes, typingKeyDownAt: input.typingAt)
+        }
+        d.hardwareSample = sample
+        if let failure = sample.failure(since: d.startedUptime) { return draftBlocked(d, failure, during: path) }
         if userActedAt >= d.startedAt { return draftBlocked(d, .userActed, during: path) }
         return true
     }
@@ -1190,7 +1265,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 drafts: d.runs[0].drafts.lowerBound..<max(d.runs[0].drafts.lowerBound + 1, s.draftCount),
                 with: text, during: "ending")
         }
-        if showResult {
+        // You did something else in the seconds after you stopped (another app, a key, a click), but the box itself
+        // wasn't touched: the ending waits and goes in when you're back in that box (Oct 30: most "didn't confirm"
+        // endings were a key or app switch while Whisper was still finishing).
+        let away: Set<DraftSafety.Failure> = [.hardwareKey, .hardwareClick, .userActed, .appChanged, .elementChanged]
+        let holding = !landed && !s.echoFailed && !text.isEmpty && !d.runs.isEmpty && !d.deliveryUncertain
+            && d.lastFailure.map { away.contains($0) } == true
+        if holding { holdEnding(d, text: text) }
+        if showResult, !holding {
             if landed { hud.hide() }
             else { hud.flash("Didn't confirm all the words. Press ⌃⌥V to paste the checked text", for: 3.5) }
         }
@@ -1310,6 +1392,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Words that finished while your cursor wasn't in a text box. They go in when you click into one.
     private var waitingText: String?
     private var waitTimer: Timer?
+    private var endingTimer: Timer?
+
+    /// A finished dictation whose drafts are still in the box, waiting for you to be back in that box with nothing
+    /// changed. Then the drafts are swapped for the checked text. Changed box, a new dictation, or 10 minutes: it
+    /// gives up and the checked text stays on Control-Option-V.
+    private func holdEnding(_ d: Drafting, text: String) {
+        endingTimer?.invalidate()
+        guard let b = d.box, let start = d.startBox, let expected = start.print.text else { return }
+        let typed = d.runs.map(\.text).joined()
+        let lead = typed.first == " " ? " " : ""
+        let fixed = lead + text.trimmingCharacters(in: .whitespaces)
+        let until = Date().addingTimeInterval(600)
+        var told = false
+        Log.note("draft: ending waits for the box you started in")
+        let tick = { [weak self] (t: Timer) in
+            MainActor.assumeIsolated {
+                guard let self else { t.invalidate(); return }
+                guard self.session == nil, self.writing == 0, Date() < until else {
+                    t.invalidate(); self.endingTimer = nil
+                    Log.note("draft: held ending dropped (new dictation or 10 minutes), kept for Paste last"); return
+                }
+                let here = NSWorkspace.shared.frontmostApplication?.processIdentifier == b.pid
+                    && Insert.focusedElement().map { CFEqual($0.0, b.element) } == true
+                guard here else {
+                    if !told { told = true; self.hud.flash("Your words go in when you're back in \(start.app)", for: 2.5) }
+                    return
+                }
+                t.invalidate(); self.endingTimer = nil
+                guard self.isAt(start) else {
+                    self.hud.flash("That box changed. Press ⌃⌥V to paste the checked text", for: 3)
+                    Log.note("draft: held ending, box changed, kept for Paste last"); return
+                }
+                let after = Date().addingTimeInterval(0.05)
+                let quiet: () -> Bool = { Date() < after || AppDelegate.userQuietSince(after, keys: true) }
+                let ok = Insert.replaceDraft(typed, with: fixed, expectedBox: expected, in: b.element, while: quiet)
+                if ok { self.rememberOwnTyping(in: start); Insert.forgetLast(); self.hud.hide() }
+                else { self.hud.flash("Didn't confirm all the words. Press ⌃⌥V to paste the checked text", for: 3.5) }
+                Log.note("draft: held ending \(ok ? "went in" : "not confirmed, kept for Paste last")")
+            }
+        }
+        let timer = Timer(timeInterval: 0.3, repeats: true, block: tick)
+        RunLoop.main.add(timer, forMode: .common)
+        endingTimer = timer
+    }
     private var waitSeen = 0
     private var waitPid: pid_t = 0
 
@@ -1385,7 +1511,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard MediaGate.shouldResume(paused: pausedMedia, recordingAgain: session != nil || writing > 0) else { return }
         if quitting { resumeNow(); return }
         resumeWork?.cancel()
-        let w = DispatchWorkItem { [weak self] in self?.resumeNow() }
+        let pauseToken = mediaPause.generation
+        let w = DispatchWorkItem { [weak self] in
+            guard let self, self.mediaPause.owns(pauseToken) else { return }
+            self.resumeNow()
+        }
         resumeWork = w
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: w)
     }
@@ -1394,27 +1524,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func resumeNow() {
         resumeWork = nil
         guard MediaGate.shouldResume(paused: pausedMedia, recordingAgain: session != nil || writing > 0) else { return }
-        pausedMedia = false
+        let pauseToken = mediaPause.generation
         // "Play again when I stop talking" off: pause only, so nothing ever starts by itself.
-        guard config.resumeMedia ?? true else { Log.note("media: left paused, play again is off"); return }
+        guard config.resumeMedia ?? true else { pausedMedia = false; Log.note("media: left paused, play again is off"); return }
         // Quitting: no time to listen, the app is about to go.
-        if quitting { Media.pressPlayPause(); Log.note("media: resumed on quit"); return }
+        if quitting { pausedMedia = false; Media.pressPlayPause(); Log.note("media: resumed on quit"); return }
         let players = Media.playingApps()
-        guard !players.isEmpty else { Media.pressPlayPause(); Log.note("media: resumed"); return }
+        guard !players.isEmpty else { pausedMedia = false; Media.pressPlayPause(); Log.note("media: resumed"); return }
         SoundTap.loudness(of: players.map(\.object), for: 0.2) { peak in
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
+                guard let self, self.mediaPause.owns(pauseToken) else { return }
                 let playing = MediaGate.isPlaying(peak: peak)
                 if self.session != nil || self.writing > 0 {
                     // A new press started while this listened: it takes the pause over and puts it back later.
-                    if !playing { self.pausedMedia = true }
+                    if playing { self.pausedMedia = false }
                     Log.note("media: new press while resuming, \(playing ? "already playing" : "still paused")")
                 } else if peak == nil {
+                    self.pausedMedia = false
                     Log.note("media: not resumed, couldn't listen to [\(players.map(\.name).joined(separator: ", "))]")
                 } else if MediaGate.shouldResume(paused: true, playingNow: playing) {
+                    self.pausedMedia = false
                     Media.pressPlayPause()
                     Log.note("media: resumed")
                 } else {
+                    self.pausedMedia = false
                     Log.note("media: not resumed, already playing in [\(players.map(\.name).joined(separator: ", "))]")
                 }
             }
@@ -1423,6 +1556,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func end() {
         guard let s = session else { return }
+        escapeKey = nil
         deliveries.confirm()
         interruptedDrafting = nil
         session = nil
