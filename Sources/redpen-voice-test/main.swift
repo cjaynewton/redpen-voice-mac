@@ -175,6 +175,22 @@ do {
     check("draftSafety.shortcutTypingCannotBeHiddenByRepeat", failure(hardwareKeyAt: 108) == .hardwareKey)
 }
 
+// Escape throws a dictation away: hands-free ends, a held key's release is swallowed, the next press is new.
+do {
+    var k = TalkKeyState()
+    _ = k.event(key: 63, down: true, at: 10); _ = k.event(key: 63, down: false, at: 10.1)
+    _ = k.event(key: 63, down: true, at: 10.2); _ = k.event(key: 63, down: false, at: 10.3)
+    check("escape.handsFreeBefore", k.handsFree)
+    k.discard(at: 12)
+    check("escape.handsFreeOff", !k.handsFree && !k.active)
+    check("escape.nextPressBegins", k.event(key: 63, down: true, at: 13) == .begin)
+    var h = TalkKeyState()
+    _ = h.event(key: 63, down: true, at: 20)
+    h.discard(at: 21)
+    check("escape.heldReleaseSwallowed", h.event(key: 63, down: false, at: 22) == nil && !h.active)
+    check("escape.afterHeldNewPressBegins", h.event(key: 63, down: true, at: 23) == .begin)
+}
+
 // Oct 30 live log: the counter's key-down time matched the Fn release, not the press.
 do {
     let input = DraftInput(since: 998648.0)
@@ -187,6 +203,15 @@ do {
     }
     check("draftR3.stopTapReleaseIsTalkKey", fail(998672.029619) == nil)
     check("draftR3.keyLongAfterReleaseBlocks", fail(998672.5) == .hardwareKey)
+}
+// Oct 30 17:02 live log: a key-down posted with the Fn release (0.05 ms apart) was counted as typing.
+do {
+    let input = DraftInput(since: 999170.0)
+    input.record(talkKey: false, at: 999193.504760) // can arrive before the flags event
+    input.record(talkKey: true, at: 999193.504726)
+    check("draftR3.keyWithFnReleaseIsNotTyping", input.snapshot().typingAt == nil)
+    input.record(talkKey: false, at: 999193.9)
+    check("draftR3.laterRealKeyStillTyping", input.snapshot().typingAt == 999193.9)
 }
 
 // Round 2: use the same per-dictation evidence and bounded reconciliation as the production while/ending guard.

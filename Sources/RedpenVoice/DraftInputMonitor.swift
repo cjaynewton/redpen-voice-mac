@@ -68,6 +68,8 @@ final class DraftInputMonitor: @unchecked Sendable {
             let modifierCodes: Set<Int> = [63, 61, 58, 54, 55, 62, 59, 60, 56]
             guard talk, modifierCodes.contains(code) else { return }
         } else if type != .keyDown { return }
+        // Special keys only (codes above 127: never letters, digits or F-keys), to learn what the Fn key posts.
+        if !talk, code > 127 { DispatchQueue.main.async { Log.note("draft input: special key code \(code)") } }
         record(talkKey: talk, at: Double(event.timestamp) / 1_000_000_000)
     }
 }

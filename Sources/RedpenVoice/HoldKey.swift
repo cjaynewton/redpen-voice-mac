@@ -31,6 +31,8 @@ final class HoldKey {
     private var inputSequence = 0
     private let draftInputMonitor = DraftInputMonitor()
     func trackDraft(since: Double) -> DraftInput { draftInputMonitor.track(since: since) }
+    /// Escape threw the dictation away.
+    func discard() { state.discard(at: ProcessInfo.processInfo.systemUptime); updateReleaseTimer() }
     var handsFree: Bool { state.handsFree }
     var lastTalkKeyDownAt: Double? { state.lastTalkKeyDownAt }
     var lastTypingKeyDownAt: Double? { state.lastTypingKeyDownAt }

@@ -101,6 +101,14 @@ public struct TalkKeyState {
         return .cancel
     }
 
+    /// Escape threw the dictation away: back to idle, hands-free or held. A press still held is swallowed when it
+    /// comes up, and the next press starts a new dictation.
+    public mutating func discard(at now: Double) {
+        handsFree = false; active = false; lastTap = nil; secondTap = false
+        if held { swallowed = true } else { owner = nil }
+        guardedUntil = now + Self.stopGuard
+    }
+
     /// The application could not start recording. Its release must never latch hands-free.
     public mutating func rejectBegin() { active = false; lastTap = nil; secondTap = false }
 }

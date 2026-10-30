@@ -46,6 +46,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var press = 0
     private var pasteKey: Shortcut?
     private var undoKey: Shortcut?
+    /// Escape, held only while you talk, so it reaches your apps the rest of the time.
+    private var escapeKey: Shortcut?
     /// ⌃⌥S, only while "Point out words to check" is on: swaps in the other engine's hearing of the marked word.
     private var swapKey: Shortcut?
     private var riskSwap: (swapped: String, gen: Int, element: AXUIElement, typed: String)?
@@ -885,12 +887,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pendingMedia.preRoll = Int(recorder.pushedFrames)
         micOwner = thisPress
         Log.note("recording from \(recorder.inputName)")
+        escapeKey = Shortcut(id: 3, keyCode: kVK_Escape, modifiers: 0, name: "Escape", quiet: true) { [weak self] in
+            self?.discard()
+        }
         busy = false
     }
 
     /// Fn was a shortcut, not talking: drop the audio, put the music back, no words written.
     private func cancel() {
         guard let s = session else { return }
+        escapeKey = nil
         // Drafts already typed: finish and keep this dictation (no more edits to the box) rather than drop it with
         // words already on screen and nothing in history.
         if let d = drafting, d.owner === s, d.typedAny { d.checksStopped = true; d.draftsStopped = true; end(); return }
@@ -908,6 +914,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         resumeMedia()
         if ignoredTap, writing > 0 { Log.note("hold key: tap after stop ignored; finishing dictation keeps its insertion") }
         else { Log.note(ignoredTap ? "cancelled: quick tap" : "cancelled: another key while holding") }
+    }
+
+    /// Escape while you talk: the dictation is thrown away, nothing goes into history or onto the clipboard, and the
+    /// words Voice already typed come back out if the box still ends with them. The next press starts fresh.
+    private func discard() {
+        guard let s = session else { escapeKey = nil; return }
+        escapeKey = nil
+        keys.discard()
+        wasHandsFree = false
+        session = nil
+        settleWork?.cancel()
+        recorder.end()
+        s.cancel()
+        _ = deliveries.cancel()
+        interruptedDrafting = nil
+        var left = false
+        if let d = drafting, d.owner === s {
+            d.checksStopped = true; d.draftsStopped = true
+            if d.typedAny { left = !removeDrafts(d) }
+        }
+        drafting = nil
+        hud.flash(left ? "Thrown away. Some words were already typed and stay in the box."
+                       : "Thrown away. Talk again when you're ready.", for: 2.5)
+        resumeMedia()
+        Log.note("cancelled: Escape, \(left ? "typed words left in the box" : "nothing left in the box")")
+    }
+
+    /// Deletes everything this dictation typed, only while the box still ends with it at the cursor and you press
+    /// nothing after Escape.
+    private func removeDrafts(_ d: Drafting) -> Bool {
+        let typed = d.runs.map(\.text).joined()
+        guard !typed.isEmpty else { return true }
+        guard let b = d.box, NSWorkspace.shared.frontmostApplication?.processIdentifier == b.pid,
+              let expected = d.startBox?.print.text else { return false }
+        if let start = d.startBox, !isAt(start) { return false }
+        let after = Date().addingTimeInterval(0.05)
+        let quiet: () -> Bool = { Date() < after || AppDelegate.userQuietSince(after, keys: true) }
+        guard Insert.replaceDraft(typed, with: "", expectedBox: expected, in: b.element, while: quiet) else { return false }
+        rememberOwnTyping(in: d.startBox)
+        Insert.forgetLast()
+        return true
     }
 
     /// Pieces of the current dictation written so far, how many of them are already typed into the box, and the text
@@ -1436,6 +1483,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func end() {
         guard let s = session else { return }
+        escapeKey = nil
         deliveries.confirm()
         interruptedDrafting = nil
         session = nil
