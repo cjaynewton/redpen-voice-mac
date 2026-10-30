@@ -40,11 +40,20 @@ final class TrackWriter: @unchecked Sendable {
     /// Samples on disk so far, and the loudest of them (0 to 1).
     var frames: Int { lock.withLock { written } }
     var peak: Float { lock.withLock { loudest } }
+    /// How loud the newest audio was, 0 to 1, for the meeting bar's Me and Others bars. 0 while paused.
+    var level: Float { lock.withLock { recent } }
+    private var recent: Float = 0
+    private var muted = false
+    /// Paused (D-957): audio still arrives so the clock stays true, but only silence is written, nothing heard.
+    var paused: Bool {
+        get { lock.withLock { muted } }
+        set { lock.withLock { muted = newValue; if newValue { recent = 0 } } }
+    }
 
     /// A buffer from the microphone, in whatever format the engine asked the mic for.
     func write(_ buffer: AVAudioPCMBuffer) {
-        let arrived = Date()
-        queue.async { [self] in append(buffer, arrived: arrived) }
+        let arrived = Date(), mute = paused
+        queue.async { [self] in append(buffer, arrived: arrived, mute: mute) }
     }
 
     /// What the Mac played, already mixed to one channel, at the output device's rate.
@@ -56,7 +65,7 @@ final class TrackWriter: @unchecked Sendable {
         write(b)
     }
 
-    private func append(_ buffer: AVAudioPCMBuffer, arrived: Date) {
+    private func append(_ buffer: AVAudioPCMBuffer, arrived: Date, mute: Bool) {
         guard !lock.withLock({ closed }), buffer.frameLength > 0 else { return }
         if !started { started = true; onFirst?(arrived.addingTimeInterval(-Double(buffer.frameLength) / buffer.format.sampleRate)) }
         if fillGaps {
@@ -73,18 +82,24 @@ final class TrackWriter: @unchecked Sendable {
                 Log.note("meeting: microphone missing for \(String(format: "%.1f", missing))s, kept as silence")
             } else { lead = max(lead, now) }
         }
+        // Converted even when paused, so the resampling carries on smoothly after Resume.
         let samples = convert(buffer)
         guard !samples.isEmpty else { return }
-        var peak: Float = 0
+        var peak: Float = 0, sum: Float = 0
         var ints = [Int16](repeating: 0, count: samples.count)
-        for i in 0..<samples.count {
-            let v = max(-1, min(1, samples[i]))
-            peak = max(peak, abs(v))
-            ints[i] = Int16(v * 32767).littleEndian
+        if !mute {
+            for i in 0..<samples.count {
+                let v = max(-1, min(1, samples[i]))
+                peak = max(peak, abs(v)); sum += v * v
+                ints[i] = Int16(v * 32767).littleEndian
+            }
         }
         let data = ints.withUnsafeBufferPointer { Data(buffer: $0) }
         do { try handle.write(contentsOf: data) } catch { Log.note("meeting: write failed on \(url.lastPathComponent), \(MeetingNotes.code(error))"); return }
-        lock.withLock { written += samples.count; loudest = max(loudest, peak) }
+        // Loudness for the bar: about -50 dB to 0 dB as 0 to 1, as the talking bar reads it.
+        let db = 20 * log10(max((sum / Float(samples.count)).squareRoot(), 1e-6))
+        let shown: Float = mute ? 0 : min(1, max(0, (db + 50) / 50))
+        lock.withLock { written += samples.count; loudest = max(loudest, peak); recent = shown }
     }
 
     /// Silence straight to disk, a second at a time, however long the stretch.
@@ -309,6 +324,7 @@ final class MeetingRecording {
         tap.stop()
         me.close(); others.close()
         manifest.stopped = Date()
+        if var p = manifest.pauses, p.isPaused { p.resume(at: seconds); manifest.pauses = p }
         saveManifest()
         let rate = Double(MeetingManifest.rate)
         Log.note("meeting: stopped, me \(String(format: "%.0f", Double(me.frames) / rate))s peak \(String(format: "%.3f", me.peak)), others \(String(format: "%.0f", Double(others.frames) / rate))s peak \(String(format: "%.3f", others.peak))")
@@ -316,6 +332,28 @@ final class MeetingRecording {
     }
 
     var seconds: Double { Date().timeIntervalSince(started) }
+    /// The time the bar shows: recorded time, standing still while paused.
+    var recorded: Double { (manifest.pauses ?? MeetingPauses()).recorded(at: seconds) }
+    var isPaused: Bool { manifest.pauses?.isPaused ?? false }
+    /// Me and Others loudness now, 0 to 1.
+    var levels: (me: Float, others: Float) { (me.level, others.level) }
+
+    /// Pause (D-957): from now on both tracks get silence, so nothing is recorded and the times after stay true.
+    func pause() {
+        guard !isPaused else { return }
+        var p = manifest.pauses ?? MeetingPauses(); p.pause(at: seconds); manifest.pauses = p
+        me.paused = true; others.paused = true
+        saveManifest()
+        Log.note("meeting: paused at \(Log.int(seconds))s")
+    }
+
+    func resume() {
+        guard isPaused, var p = manifest.pauses else { return }
+        p.resume(at: seconds); manifest.pauses = p
+        me.paused = false; others.paused = false
+        saveManifest()
+        Log.note("meeting: resumed, paused \(Log.int(p.done.last?.seconds ?? 0))s")
+    }
     /// Nothing at all heard from the Mac so far: most likely the system audio permission is off.
     var macSilent: Bool { others.peak == 0 }
 }

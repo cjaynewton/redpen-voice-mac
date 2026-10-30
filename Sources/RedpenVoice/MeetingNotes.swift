@@ -158,7 +158,9 @@ enum MeetingNotes {
             let echo = Meeting.dropEcho(me: mine, others: others)
             let fix = { (s: MeetingSegment) in MeetingSegment(start: s.start, end: s.end, text: names.apply(s.text)) }
             // Whisper's own repeats out, then one paragraph per turn, so it reads like people talking.
-            let lines = Meeting.paragraphs(Meeting.dropRepeats(Meeting.merge(me: echo.kept.map(fix), others: others.map(fix))))
+            // Pauses marked where they began; anything written inside one (silence) goes.
+            let pauses = (manifest.pauses ?? MeetingPauses()).all(closingAt: length)
+            let lines = Meeting.withPauses(Meeting.paragraphs(Meeting.dropRepeats(Meeting.merge(me: echo.kept.map(fix), others: others.map(fix)))), pauses)
             Log.note("meeting: wrote \(Log.int(meSecs + othersSecs))s of audio in \(Log.int(Date().timeIntervalSince(t0)))s, me \(echo.kept.count) lines (\(echo.dropped) echo), others \(others.count) lines")
             result = (echo.kept.count, others.count, echo.dropped)
             let base = Meeting.uniqueBase(Meeting.baseName(manifest.started)) { b in
@@ -167,7 +169,8 @@ enum MeetingNotes {
             file = folder.appendingPathComponent(base + ".md")
             let audio = keepAudio ? [base + " Me.m4a", base + " Others.m4a"] : []
             transcript = Meeting.markdown(start: manifest.started, seconds: length, lines: lines, audio: audio, echoDropped: echo.dropped,
-                                          engine: engineName(config.engine), notes: othersPeak == 0 && length > 15 ? [Meeting.silentMacNote] : [])
+                                          engine: engineName(config.engine), notes: othersPeak == 0 && length > 15 ? [Meeting.silentMacNote] : [],
+                                          paused: pauses.reduce(0) { $0 + $1.seconds })
             try transcript.write(to: file, atomically: true, encoding: .utf8)
             try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
             manifest.notesFile = file.path

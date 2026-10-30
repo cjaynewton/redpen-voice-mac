@@ -19,6 +19,7 @@ struct MenuState {
     var testing = false
     /// When the meeting being recorded started (D-951), how far its notes have got, and meetings never written up.
     var meetingStarted: Date?
+    var meetingPaused = false
     var notesStatus: String?
     var unfinished = 0
     /// A newer version found by the daily check, shown instead of a window over your work.
@@ -42,6 +43,7 @@ final class MenuModel: ObservableObject {
     var stats: () -> Void = {}
     var updates: () -> Void = {}
     var meeting: () -> Void = {}
+    var pauseMeeting: () -> Void = {}
     var copyNotice: () -> Void = {}
     var unfinished: () -> Void = {}
 }
@@ -117,8 +119,9 @@ struct MenuPanel: View {
         VStack(alignment: .leading, spacing: 0) {
             if let started = s.meetingStarted {
                 TimelineView(.periodic(from: started, by: 1)) { ctx in
-                    action("Stop meeting notes (\(Meeting.clock(ctx.date.timeIntervalSince(started))))", red: true, model.meeting)
+                    action("Stop meeting notes (\(Meeting.clock(ctx.date.timeIntervalSince(started))))", keys: "⌃⌥M", red: true, model.meeting)
                 }
+                action(s.meetingPaused ? "Resume meeting notes" : "Pause meeting notes", keys: "⌃⌥P", model.pauseMeeting)
             } else {
                 action("Start meeting notes", model.meeting)
             }

@@ -2,7 +2,7 @@ import Foundation
 
 /// Meeting notes (D-951): the parts with no microphone, tap or model in them. Two tracks, "Me" from the microphone
 /// and "Others" from what the Mac plays, so there are two speakers without any voiceprint.
-public enum Speaker: String, Codable, Sendable { case me = "Me", others = "Others" }
+public enum Speaker: String, Codable, Sendable { case me = "Me", others = "Others", pause = "Paused" }
 
 /// A stretch of one track the engine wrote, in seconds from the start of the meeting.
 public struct MeetingSegment: Codable, Equatable, Sendable {
@@ -22,7 +22,41 @@ public struct MeetingLine: Equatable, Sendable {
     public init(start: Double, speaker: Speaker, text: String, end: Double? = nil) {
         self.start = start; self.speaker = speaker; self.text = text; self.end = max(start, end ?? start)
     }
-    public var markdown: String { "[\(Meeting.clock(start))] \(speaker.rawValue): \(text)" }
+    public var markdown: String {
+        speaker == .pause ? "[\(Meeting.clock(start))] [\(text)]" : "[\(Meeting.clock(start))] \(speaker.rawValue): \(text)"
+    }
+}
+
+/// A stretch of a meeting that was paused, in seconds from its start. Nothing is recorded in it: both tracks hold
+/// silence there, so every time in the notes stays true to the clock and to the audio files.
+public struct MeetingPause: Codable, Equatable, Sendable {
+    public var start: Double
+    public var end: Double
+    public init(start: Double, end: Double) { self.start = start; self.end = max(start, end) }
+    public var seconds: Double { end - start }
+}
+
+/// Pause and resume while a meeting records, and the time the bar shows: recorded time, which stands still while paused.
+public struct MeetingPauses: Codable, Equatable, Sendable {
+    public private(set) var done: [MeetingPause] = []
+    /// When the pause in progress began, if one is.
+    public private(set) var pausedAt: Double?
+    public init() {}
+    public var isPaused: Bool { pausedAt != nil }
+
+    public mutating func pause(at t: Double) { if pausedAt == nil { pausedAt = t } }
+    public mutating func resume(at t: Double) {
+        guard let p = pausedAt else { return }
+        done.append(MeetingPause(start: p, end: max(p, t))); pausedAt = nil
+    }
+    /// Every pause, the one in progress closed at `now` (a stop or a crash while paused).
+    public func all(closingAt now: Double) -> [MeetingPause] {
+        done + (pausedAt.map { [MeetingPause(start: $0, end: max($0, now))] } ?? [])
+    }
+    /// Seconds recorded by `now`: the time since the start less every pause.
+    public func recorded(at now: Double) -> Double {
+        max(0, now - all(closingAt: now).reduce(0) { $0 + $1.seconds })
+    }
 }
 
 /// A word with its time, from engines that give words rather than phrases (Parakeet).
@@ -39,6 +73,31 @@ public enum Meeting {
         let s = max(0, Int(seconds))
         let h = s / 3600, m = (s % 3600) / 60, sec = s % 60
         return h > 0 ? String(format: "%d:%02d:%02d", h, m, sec) : String(format: "%02d:%02d", m, sec)
+    }
+
+    /// The bar's timer: `0:21`, `12:34`, `1:02:10`, whole seconds so far.
+    public static func clockShort(_ seconds: Double) -> String { span(Double(Int(max(0, seconds)))) }
+
+    /// `2:10`, `0:05`, or `1:02:10`: how long a pause lasted.
+    public static func span(_ seconds: Double) -> String {
+        let s = max(0, Int(seconds.rounded()))
+        let h = s / 3600, m = (s % 3600) / 60, sec = s % 60
+        return h > 0 ? String(format: "%d:%02d:%02d", h, m, sec) : String(format: "%d:%02d", m, sec)
+    }
+
+    /// Lines with each pause marked where it began, `[12:34] [paused 2:10]`, and nothing the engines wrote inside a
+    /// pause (silence there can only give Whisper's inventions). Pauses shorter than a second are left unmarked.
+    public static func withPauses(_ lines: [MeetingLine], _ pauses: [MeetingPause]) -> [MeetingLine] {
+        let real = pauses.filter { $0.seconds >= 1 }
+        let kept = lines.filter { l in
+            let mid = (l.start + l.end) / 2
+            return !real.contains { mid > $0.start && mid < $0.end }
+        }
+        let marks = real.map { MeetingLine(start: $0.start, speaker: .pause, text: "paused \(span($0.seconds))", end: $0.end) }
+        return (kept + marks).enumerated().sorted {
+            $0.element.start != $1.element.start ? $0.element.start < $1.element.start
+                : ($0.element.speaker == .pause) != ($1.element.speaker == .pause) ? $0.element.speaker == .pause : $0.offset < $1.offset
+        }.map(\.element)
     }
 
     /// `42 min`, `1 h 5 min`, or `40 s` for a short test.
@@ -163,7 +222,7 @@ public enum Meeting {
     /// The notes: date, start and length, where the audio is, then the transcript, one line per paragraph so any
     /// Markdown reader keeps them apart.
     public static func markdown(start: Date, seconds: Double, lines: [MeetingLine], audio: [String], echoDropped: Int,
-                                engine: String, notes: [String] = [], calendar: Calendar = .current, locale: Locale = Locale(identifier: "en_CA")) -> String {
+                                engine: String, notes: [String] = [], paused: Double = 0, calendar: Calendar = .current, locale: Locale = Locale(identifier: "en_CA")) -> String {
         let day = DateFormatter(); day.locale = locale; day.calendar = calendar; day.timeZone = calendar.timeZone
         day.dateFormat = "EEEE d MMMM yyyy"
         let iso = DateFormatter(); iso.locale = Locale(identifier: "en_US_POSIX"); iso.calendar = calendar; iso.timeZone = calendar.timeZone
@@ -174,6 +233,7 @@ public enum Meeting {
         out += "- Date: \(iso.string(from: start))\n"
         out += "- Started: \(time.string(from: start))\n"
         out += "- Length: \(length(seconds))\n"
+        if paused >= 1 { out += "- Paused: \(length(paused)), nothing recorded then\n" }
         out += "- Written by: \(engine), on this Mac\n"
         if !audio.isEmpty { out += "- Audio: " + audio.map { "[\($0)](<\($0)>)" }.joined(separator: ", ") + "\n" }
         out += "\n"
@@ -347,6 +407,8 @@ public struct MeetingManifest: Codable, Equatable, Sendable {
     public var stopped: Date?
     /// Set once the transcript is saved, so a second try finishes the same file instead of writing another.
     public var notesFile: String?
+    /// Pauses, with the one in progress if the app stopped while paused.
+    public var pauses: MeetingPauses?
     public init(started: Date) { self.started = started }
 
     public static let meFile = "me.pcm", othersFile = "others.pcm", file = "meeting.json"

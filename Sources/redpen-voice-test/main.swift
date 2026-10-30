@@ -1186,6 +1186,34 @@ do {
     let merged = Meeting.merge(me: [MeetingSegment(start: 5, end: 6, text: "b"), MeetingSegment(start: 1, end: 2, text: "a")],
                                others: [MeetingSegment(start: 5, end: 7, text: "q"), MeetingSegment(start: 9, end: 10, text: "c")])
     check("meeting.merge", merged.map(\.text) == ["a", "q", "b", "c"] && merged[1].speaker == .others, "\(merged.map(\.text))")
+    // Pause and resume (D-957): the bar's time stands still while paused, the notes mark each pause where it began,
+    // and nothing written inside a pause survives.
+    var pz = MeetingPauses()
+    check("pause.none", pz.recorded(at: 100) == 100 && !pz.isPaused)
+    pz.pause(at: 60); pz.pause(at: 70)  // a second press while paused changes nothing
+    check("pause.frozen", pz.isPaused && pz.recorded(at: 60) == 60 && pz.recorded(at: 190) == 60)
+    pz.resume(at: 190)
+    check("pause.resumed", !pz.isPaused && pz.recorded(at: 250) == 120 && pz.done == [MeetingPause(start: 60, end: 190)])
+    pz.resume(at: 300)  // resume when not paused does nothing
+    check("pause.resumeTwice", pz.done.count == 1)
+    pz.pause(at: 400)
+    check("pause.openClosedAtStop", pz.all(closingAt: 430) == [MeetingPause(start: 60, end: 190), MeetingPause(start: 400, end: 430)]
+          && pz.recorded(at: 430) == 270)
+    check("pause.codable", (try? JSONDecoder().decode(MeetingPauses.self, from: JSONEncoder().encode(pz))) == pz)
+    check("pause.clockShort", Meeting.clockShort(21.9) == "0:21" && Meeting.clockShort(754.2) == "12:34" && Meeting.clockShort(-1) == "0:00")
+    check("pause.span", Meeting.span(130) == "2:10" && Meeting.span(5) == "0:05" && Meeting.span(3730) == "1:02:10")
+    let talk2 = [MeetingLine(start: 50, speaker: .me, text: "Before.", end: 58),
+                 MeetingLine(start: 100, speaker: .others, text: "Thank you.", end: 101),   // invented in the silence
+                 MeetingLine(start: 190, speaker: .others, text: "After.", end: 195)]
+    let marked = Meeting.withPauses(talk2, [MeetingPause(start: 60, end: 190), MeetingPause(start: 300, end: 300.4)])
+    check("pause.marked", marked.map(\.markdown) == ["[00:50] Me: Before.", "[01:00] [paused 2:10]", "[03:10] Others: After."], "\(marked.map(\.markdown))")
+    check("pause.atSameSecondFirst", Meeting.withPauses([MeetingLine(start: 60, speaker: .me, text: "x", end: 59.5)],
+                                                       [MeetingPause(start: 60, end: 70)]).first?.speaker == .pause)
+    let pmd = Meeting.markdown(start: start, seconds: 300, lines: marked, audio: [], echoDropped: 0, engine: "Whisper", paused: 130, calendar: cal)
+    check("pause.header", pmd.contains("- Paused: 2 min, nothing recorded then\n") && pmd.contains("[01:00] [paused 2:10]"))
+    var mfp = MeetingManifest(started: start); mfp.pauses = pz
+    check("pause.manifest", (try? JSONDecoder().decode(MeetingManifest.self, from: JSONEncoder().encode(mfp)))?.pauses == pz)
+
     // Repeats and paragraphs (from the first live test): "Okay." "Okay." goes, a turn reads as one paragraph.
     let said2 = [MeetingLine(start: 0, speaker: .others, text: "The serene waters of.", end: 1.5),
                  MeetingLine(start: 2, speaker: .others, text: "The serene waters of", end: 3),

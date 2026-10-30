@@ -65,6 +65,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var notesQueue: [URL] = []
     private var notesWorking: URL?
     private var notesStatus: String?
+    /// The meeting control on screen (D-957), and its two shortcuts, held only while a meeting records.
+    private let meetingBar = MeetingBar()
+    private var meetingBarReady = false
+    private var stopMeetingKey: Shortcut?
+    private var pauseMeetingKey: Shortcut?
 
     func applicationDidFinishLaunching(_ n: Notification) {
         mediaPauseMonitor.onPlaybackResumed = { [weak self] peak in
@@ -457,6 +462,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 exit(0)
             }
+            return
+        }
+        // `--meeting-bar-shot folder` draws the meeting bar in each of its states to pictures and quits (D-957).
+        if let i = CommandLine.arguments.firstIndex(of: "--meeting-bar-shot"), i + 1 < CommandLine.arguments.count {
+            meetingBar.snapshots(to: URL(fileURLWithPath: CommandLine.arguments[i + 1], isDirectory: true)) { exit(0) }
             return
         }
         // `--menu-shot out.png [dark]` draws the menu bar panel to a picture and quits.
@@ -1744,6 +1754,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.settings = { [weak self] in self?.panel.close(); self?.openSettings() }
         menu.updates = { [weak self] in self?.panel.close(); Updates.shared.checkNow() }
         menu.meeting = { [weak self] in self?.panel.close(); self?.toggleMeeting() }
+        menu.pauseMeeting = { [weak self] in self?.panel.close(); self?.togglePause() }
         menu.copyNotice = { [weak self] in self?.panel.close(); self?.copyNotice() }
         menu.unfinished = { [weak self] in self?.panel.close(); self?.offerUnfinishedMeetings(asked: true) }
         refreshMenu()
@@ -1800,6 +1811,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.canTakeBack = Insert.last != nil
         m.testing = testFile != nil
         m.meetingStarted = meeting?.started
+        m.meetingPaused = meeting?.isPaused ?? false
         m.notesStatus = notesStatus
         m.unfinished = notesWorking == nil ? MeetingNotes.unfinished(except: meeting?.folder).filter { !notesQueue.contains($0) }.count : 0
         return m
@@ -1929,11 +1941,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setIcon() { status?.button?.image = VoiceMenuBarIcon.image(recording: meeting != nil) }
 
+    private func setUpMeetingBar() {
+        guard !meetingBarReady else { return }
+        meetingBarReady = true
+        meetingBar.source = { [weak self] in
+            guard let m = self?.meeting else { return nil }
+            let l = m.levels
+            // A refused permission doesn't fail the tap, it hears silence: said on the bar after 20 s, not after the meeting.
+            return MeetingBar.Now(recorded: m.recorded, paused: m.isPaused, me: l.me, others: l.others,
+                                  noSound: m.seconds >= 20 && m.macSilent && !m.isPaused)
+        }
+        meetingBar.dictating = { [weak self] in guard let self else { return false }; return self.session != nil || self.writing > 0 }
+        meetingBar.onStop = { [weak self] in if self?.meeting != nil { self?.toggleMeeting() } }
+        meetingBar.onPause = { [weak self] in self?.togglePause() }
+        meetingBar.onAllow = { SystemSettingsLink.systemAudio.open { NSWorkspace.shared.open($0) } }
+    }
+
+    /// Pause and Resume (D-957): while paused, nothing is recorded and the notes mark the gap.
+    private func togglePause() {
+        guard let m = meeting else { return }
+        if m.isPaused { m.resume() } else { m.pause() }
+        refreshMenu()
+    }
+
     private func toggleMeeting() {
+        setUpMeetingBar()
         if let m = meeting {
             let work = m.stop()
             meeting = nil
+            stopMeetingKey = nil; pauseMeetingKey = nil
             setIcon()
+            meetingBar.showWriting(0, "Writing notes…")
             // The mic again as dictation wants it: any change made during the meeting (the mic, the Mac's input, the
             // engine's format) waited for it to end.
             warmMic()
@@ -1954,14 +1992,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let heardMac = m.start()
             meeting = m
             setIcon()
-            hud.flash(heardMac ? "Meeting notes on" : "Meeting notes on, your mic only. Allow system audio in Privacy settings.", ok: heardMac, for: heardMac ? 2 : 4)
-            // A refused permission doesn't fail the tap, it hears silence: say so early, not after the meeting.
-            if heardMac {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self, weak m] in
-                    guard let self, let m, self.meeting === m, m.macSilent else { return }
-                    Log.note("meeting: no sound from the Mac after 20 s")
-                    self.hud.flash("No sound from the Mac yet. If others are talking, allow System Audio Recording for Redpen Voice in Privacy & Security.", for: 6)
-                }
+            meetingBar.showRecording()
+            // Held only while a meeting records, so the rest of the time these keys belong to other apps.
+            stopMeetingKey = Shortcut(id: 10, keyCode: kVK_ANSI_M, name: "Control-Option-M") { [weak self] in if self?.meeting != nil { self?.toggleMeeting() } }
+            pauseMeetingKey = Shortcut(id: 11, keyCode: kVK_ANSI_P, name: "Control-Option-P") { [weak self] in self?.togglePause() }
+            if !heardMac { hud.flash("Meeting notes on, your mic only. Allow system audio in Privacy settings.", for: 4) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self, weak m] in
+                guard let self, let m, self.meeting === m, m.macSilent, !m.isPaused else { return }
+                Log.note("meeting: no sound from the Mac after 20 s")
             }
         } catch {
             Log.note("meeting: could not start, \(MeetingNotes.code(error))")
@@ -2015,13 +2053,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 Log.note("meeting: notes saved, \(Log.int(r.seconds))s meeting, summary \(r.summary)")
                 await self.whenNotDictating()
-                self.hud.flash("Notes saved", ok: true, for: 2.5)
+                if self.meeting == nil { self.meetingBar.finish("Notes saved", ok: true) }
                 // Never over a meeting being recorded: the file waits in the folder.
                 if self.meeting == nil { NSWorkspace.shared.open(r.file) }
             } catch {
                 Log.note("meeting: notes failed, \(MeetingNotes.code(error))")
                 await self.whenNotDictating()
-                self.hud.flash("Couldn't write the notes. The recording is kept.", for: 3.5)
+                if self.meeting == nil { self.meetingBar.finish("Couldn't write the notes. The recording is kept.", ok: false) }
+                else { self.hud.flash("Couldn't write the notes. The recording is kept.", for: 3.5) }
             }
             self.notesWorking = nil
             self.notesStatus = nil
@@ -2031,7 +2070,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func notesProgress(_ pct: Int, _ words: String) {
         notesStatus = pct >= 100 ? nil : "\(words.replacingOccurrences(of: "…", with: "")) \(pct)%"
-        if session == nil, writing == 0, pct < 100 { hud.show("\(words) \(pct)%", level: false) }
+        // The bar shows how far along, unless a newer meeting is recording; it steps aside by itself during a dictation.
+        if meeting == nil, pct < 100 { setUpMeetingBar(); meetingBar.showWriting(pct, words) }
         if panel.isShown { refreshMenu() }
     }
 
