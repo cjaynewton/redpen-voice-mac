@@ -206,8 +206,13 @@ public enum Meeting {
     /// else (a name the model made up) becomes "Not clear".
     public static func who(_ name: String, transcript: String) -> String {
         let n = name.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
-        if n.caseInsensitiveCompare("me") == .orderedSame || n.caseInsensitiveCompare("I") == .orderedSame { return "Me" }
-        if n.caseInsensitiveCompare("others") == .orderedSame || n.caseInsensitiveCompare("other") == .orderedSame { return "Others" }
+        // Me or Others only when that track says anything at all: with a silent microphone, nothing is Me's.
+        if n.caseInsensitiveCompare("me") == .orderedSame || n.caseInsensitiveCompare("I") == .orderedSame {
+            return transcript.contains("] Me: ") ? "Me" : "Not clear"
+        }
+        if n.caseInsensitiveCompare("others") == .orderedSame || n.caseInsensitiveCompare("other") == .orderedSame {
+            return transcript.contains("] Others: ") ? "Others" : "Not clear"
+        }
         let said = Set(keys(transcript))
         let parts = keys(n)
         if !parts.isEmpty, parts.allSatisfy(said.contains) { return n }
@@ -217,7 +222,7 @@ public enum Meeting {
     /// Names in the summary (capitalised words inside a sentence) that are nowhere in the transcript.
     public static func unknownNames(_ summary: String, transcript: String) -> [String] {
         let said = Set(keys(transcript))
-        let known: Set<String> = ["me", "others", "i", "not", "clear"]
+        let known: Set<String> = ["me", "others", "i", "not", "clear", "am", "pm"]
         var seen = Set<String>(), out: [String] = []
         for sentence in summary.components(separatedBy: CharacterSet(charactersIn: ".!?:\n")) {
             let words = sentence.split(whereSeparator: { !($0.isLetter || $0.isNumber || $0 == "'") })

@@ -20,9 +20,16 @@ final class TrackWriter: @unchecked Sendable {
     private var closed = false
     /// Called once, on the writer's queue, when the first samples arrive.
     var onFirst: ((Date) -> Void)?
+    /// The microphone track: a stretch that never arrived (a Bluetooth mic dropping out) is written as silence, by
+    /// the time buffers arrive, so later lines keep their true time against the other track.
+    private let fillGaps: Bool
+    private var firstArrival: Date?
+    private var heardSeconds = 0.0
+    private var lead = -Double.infinity
 
-    init(url: URL) throws {
+    init(url: URL, fillGaps: Bool = false) throws {
         self.url = url
+        self.fillGaps = fillGaps
         queue = DispatchQueue(label: "redpen.meeting.\(url.deletingPathExtension().lastPathComponent)")
         guard FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
             throw NSError(domain: "RedpenVoice", code: 20, userInfo: [NSLocalizedDescriptionKey: "Cannot create \(url.lastPathComponent)"])
@@ -52,6 +59,20 @@ final class TrackWriter: @unchecked Sendable {
     private func append(_ buffer: AVAudioPCMBuffer, arrived: Date) {
         guard !lock.withLock({ closed }), buffer.frameLength > 0 else { return }
         if !started { started = true; onFirst?(arrived.addingTimeInterval(-Double(buffer.frameLength) / buffer.format.sampleRate)) }
+        if fillGaps {
+            let first = firstArrival ?? arrived
+            firstArrival = first
+            heardSeconds += Double(buffer.frameLength) / buffer.format.sampleRate
+            // How far the audio runs ahead of the clock; steady while buffers flow, and it drops by however long a
+            // stretch went missing.
+            let now = heardSeconds - arrived.timeIntervalSince(first)
+            if now < lead - 1 {
+                let missing = lead - now
+                appendSilence(missing)
+                heardSeconds += missing
+                Log.note("meeting: microphone missing for \(String(format: "%.1f", missing))s, kept as silence")
+            } else { lead = max(lead, now) }
+        }
         let samples = convert(buffer)
         guard !samples.isEmpty else { return }
         var peak: Float = 0
@@ -65,6 +86,21 @@ final class TrackWriter: @unchecked Sendable {
         do { try handle.write(contentsOf: data) } catch { Log.note("meeting: write failed on \(url.lastPathComponent), \(error.localizedDescription)"); return }
         lock.withLock { written += samples.count; loudest = max(loudest, peak) }
     }
+
+    /// Silence straight to disk, a second at a time, however long the stretch.
+    func appendSilence(_ seconds: Double) {
+        var left = Int(seconds * target.sampleRate)
+        let second = Data(count: Int(target.sampleRate) * 2)
+        while left > 0 {
+            let n = min(left, Int(target.sampleRate))
+            do { try handle.write(contentsOf: n == Int(target.sampleRate) ? second : Data(count: n * 2)) } catch { return }
+            lock.withLock { written += n }
+            left -= n
+        }
+    }
+
+    /// Silence for a stretch of the Mac's sound the tap never delivered, written in order with the rest.
+    func writeSilence(_ seconds: Double) { queue.async { [self] in if !lock.withLock({ closed }) { appendSilence(seconds) } } }
 
     /// To 16 kHz mono float. Same format passes straight through; anything else goes through one converter kept for
     /// the whole track, so the resampling carries on smoothly from one buffer to the next.
@@ -194,7 +230,7 @@ final class SystemTap {
             // after it keeps its true time.
             let rate = clock.rate
             if let gap = clock.gap(at: time.pointee, frames: mono.count), gap > 0 {
-                writer.write(mono: [Float](repeating: 0, count: gap), rate: rate)
+                writer.writeSilence(Double(gap) / rate)
                 Log.note("meeting: Mac sound missing for \(String(format: "%.1f", Double(gap) / rate))s, kept as silence")
             }
             writer.write(mono: parts == 1 ? mono : mono.map { $0 / Float(parts) }, rate: rate)
@@ -241,7 +277,7 @@ final class MeetingRecording {
         folder = MeetingNotes.workDir.appendingPathComponent(name, isDirectory: true)
         try fm.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         manifest = MeetingManifest(started: started)
-        me = try TrackWriter(url: folder.appendingPathComponent(MeetingManifest.meFile))
+        me = try TrackWriter(url: folder.appendingPathComponent(MeetingManifest.meFile), fillGaps: true)
         others = try TrackWriter(url: folder.appendingPathComponent(MeetingManifest.othersFile))
         try MeetingNotes.save(manifest, in: folder)
     }
@@ -254,11 +290,12 @@ final class MeetingRecording {
         }
         var tapOK = true
         do { try tap.start(into: others) } catch { tapOK = false }
-        // The pre-roll comes first and is older than now: its own time is worked out from its length below.
+        // The pre-roll comes first and is older than the moment the mic is handed over: its time is worked out from
+        // its length, after however long the tap took to start.
         let rate = recorder.format?.sampleRate ?? Double(MeetingManifest.rate)
-        recorder.begin(onBuffer: { [me] in me.write($0) }, onLevel: { _ in })
-        let pre = Double(recorder.pushedFrames) / rate
-        manifest.meOffset = -pre
+        let handed = Date()
+        let pre = Double(recorder.begin(onBuffer: { [me] in me.write($0) }, onLevel: { _ in })) / rate
+        manifest.meOffset = handed.timeIntervalSince(started) - pre
         saveManifest()
         Log.note("meeting: recording, mic \(recorder.inputName), pre-roll \(String(format: "%.2f", pre))s, Mac sound \(tapOK ? "on" : "off")")
         return tapOK
@@ -279,4 +316,6 @@ final class MeetingRecording {
     }
 
     var seconds: Double { Date().timeIntervalSince(started) }
+    /// Nothing at all heard from the Mac so far: most likely the system audio permission is off.
+    var macSilent: Bool { others.peak == 0 }
 }

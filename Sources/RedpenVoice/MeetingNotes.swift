@@ -168,29 +168,30 @@ enum MeetingNotes {
             try? save(manifest, in: work)
         }
 
-        // The audio beside the notes, then the recording's own folder goes.
+        // The audio beside the notes (wherever they were saved, even if the folder setting changed since).
         await progress(82, "Saving the audio…")
-        let base = file.deletingPathExtension().lastPathComponent
+        let base = file.deletingPathExtension().lastPathComponent, beside = file.deletingLastPathComponent()
         if keepAudio {
             do {
-                try exportAudio(othersTrack, to: folder.appendingPathComponent(base + " Others.m4a"))
-                try exportAudio(meTrack, to: folder.appendingPathComponent(base + " Me.m4a"))
+                try exportAudio(othersTrack, to: beside.appendingPathComponent(base + " Others.m4a"))
+                try exportAudio(meTrack, to: beside.appendingPathComponent(base + " Me.m4a"))
             } catch {
                 Log.note("meeting: audio not saved, \(error.localizedDescription); the raw tracks stay in the recording folder")
                 throw error
             }
         }
-        try? fm.removeItem(at: work)
-
         var summaryNote = "skipped"
         if summarize, !transcript.contains("\n## Summary\n") {
             await progress(85, "Writing the summary…")
-            let section = await MeetingSummary.section(for: transcript) { p in Task { @MainActor in progress(85 + p * 14 / 100, "Writing the summary…") } }
+            let said = transcript.components(separatedBy: "\n").filter { $0.hasPrefix("[") }.joined(separator: "\n")
+            let section = await MeetingSummary.section(for: said) { p in Task { @MainActor in progress(85 + p * 14 / 100, "Writing the summary…") } }
             summaryNote = section.note
             if let h = try? FileHandle(forWritingTo: file) {
                 h.seekToEndOfFile(); h.write(Data(("\n" + section.text).utf8)); try? h.close()
             }
         }
+        // Only now does the recording's own folder go: a quit before this finishes the same notes next launch.
+        try? fm.removeItem(at: work)
         await progress(100, "Notes saved")
         return Result(file: file, seconds: length, meLines: result.me, othersLines: result.others, echoDropped: result.echo, summary: summaryNote)
     }
@@ -220,7 +221,8 @@ enum MeetingSummary {
     static let instructions = """
     You write meeting notes from a transcript. Each line starts with a time and a speaker. "Me" is the person taking \
     the notes. "Others" is everyone else on the call. Use only what is in the transcript. Never invent names: write \
-    Me or Others unless a person's name is said in the transcript. Do not add advice or opinions.
+    Me or Others unless a person's name is said in the transcript. A to-do belongs to Me only when a line marked Me \
+    says they will do it. List only things someone clearly said they would do. Do not add advice or opinions.
     """
 
     static let combineInstructions = """

@@ -1097,6 +1097,8 @@ do {
     let said = "[00:01] Others: Thanks Priya, can you send the deck? [00:04] Me: Sure."
     check("meeting.whoMe", Meeting.who("me", transcript: said) == "Me" && Meeting.who("I", transcript: said) == "Me")
     check("meeting.whoOthers", Meeting.who("Others", transcript: said) == "Others")
+    check("meeting.whoSilentMe", Meeting.who("Me", transcript: "[00:01] Others: I'll send it.") == "Not clear")
+    check("meeting.unknownTime", Meeting.unknownNames("Meet Friday at 10 AM.", transcript: "[00:01] Others: Friday at ten") == [])
     check("meeting.whoSaid", Meeting.who("Priya", transcript: said) == "Priya")
     check("meeting.whoInvented", Meeting.who("John Smith", transcript: said) == "Not clear")
     check("meeting.unknownSlash", Meeting.unknownNames("Back after the July/August break.", transcript: "[00:01] Others: July and August off") == [])

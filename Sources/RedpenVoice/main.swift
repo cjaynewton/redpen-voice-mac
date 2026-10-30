@@ -114,6 +114,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         Config.ensureNamesFile()
         names = Names(text: Config.loadNames()); Insert.keepNames = Set(names.spellings)
+        // `--meeting-test me.wav others.wav out-folder` runs everything after a meeting stops on two files (D-951),
+        // before the engine's ready hook would warm the mic.
+        if let i = CommandLine.arguments.firstIndex(of: "--meeting-test") {
+            let args = Array(CommandLine.arguments[(i + 1)...].prefix { !$0.hasPrefix("--") })
+            Task { [config, engine] in exit(await MeetingTest.run(args, engine: engine, config: config, names: Names(text: Config.loadNames()))) }
+            return
+        }
         engine.onState = { [weak self] s in
             self?.refreshMenu()
             self?.firstRun?.refresh()
@@ -305,12 +312,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 do { print(try await engine.transcribeFile(url, config: config)) } catch { print("error: \(error)") }
                 exit(0)
             }
-            return
-        }
-        // `--meeting-test me.wav others.wav out-folder` runs everything after a meeting stops on two files (D-951).
-        if let i = CommandLine.arguments.firstIndex(of: "--meeting-test") {
-            let args = Array(CommandLine.arguments[(i + 1)...].prefix { !$0.hasPrefix("--") })
-            Task { [config, engine] in exit(await MeetingTest.run(args, engine: engine, config: config, names: Names(text: Config.loadNames()))) }
             return
         }
         // `--media-check` logs which apps hold the speakers and how loud the Mac is playing right now.
@@ -1799,9 +1800,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let work = m.stop()
             meeting = nil
             setIcon()
-            // A mic change made during the meeting waited for it to end.
-            if !config.inputDevice.isEmpty, config.inputDevice != recorder.currentUID { warmMic() }
-            else { remicIfDefaultMoved(reason: "meeting stopped") }
+            // The mic again as dictation wants it: any change made during the meeting (the mic, the Mac's input, the
+            // engine's format) waited for it to end.
+            warmMic()
             notesQueue.append(work)
             writeNextNotes()
             return
@@ -1809,17 +1810,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard session == nil, writing == 0, testFile == nil else { hud.flash("Finish the dictation first"); return }
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { hud.flash("Allow the microphone"); return }
         if !(config.meetingTipShown ?? false) { guard firstMeetingTip() else { return } }
-        if recorder.inputName.isEmpty {
+        if !recorder.isRunning {
             let fmt = engine.audioFormat ?? AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
             do { try recorder.start(format: fmt) } catch { Log.note("meeting: mic failed \(error.localizedDescription)") }
         }
-        guard !recorder.inputName.isEmpty else { hud.flash("Mic not ready"); return }
+        guard recorder.isRunning else { hud.flash("Mic not ready"); return }
         do {
             let m = try MeetingRecording(recorder: recorder)
             let heardMac = m.start()
             meeting = m
             setIcon()
             hud.flash(heardMac ? "Meeting notes on" : "Meeting notes on, your mic only. Allow system audio in Privacy settings.", ok: heardMac, for: heardMac ? 2 : 4)
+            // A refused permission doesn't fail the tap, it hears silence: say so early, not after the meeting.
+            if heardMac {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self, weak m] in
+                    guard let self, let m, self.meeting === m, m.macSilent else { return }
+                    Log.note("meeting: no sound from the Mac after 20 s")
+                    self.hud.flash("No sound from the Mac yet. If others are talking, allow System Audio Recording for Redpen Voice in Privacy & Security.", for: 6)
+                }
+            }
         } catch {
             Log.note("meeting: could not start, \(error.localizedDescription)")
             hud.flash("Couldn't start meeting notes", for: 2.5)
@@ -1873,7 +1882,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Log.note("meeting: notes saved, \(Log.int(r.seconds))s meeting, summary \(r.summary)")
                 await self.whenNotDictating()
                 self.hud.flash("Notes saved", ok: true, for: 2.5)
-                NSWorkspace.shared.open(r.file)
+                // Never over a meeting being recorded: the file waits in the folder.
+                if self.meeting == nil { NSWorkspace.shared.open(r.file) }
             } catch {
                 Log.note("meeting: notes failed, \(error.localizedDescription)")
                 await self.whenNotDictating()
@@ -1891,20 +1901,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if panel.isShown { refreshMenu() }
     }
 
-    /// Waits for a dictation to finish (a minute at most), so a message or a window never lands on top of it.
+    /// Waits for a dictation to finish, so a message or a window never lands on top of it.
     private func whenNotDictating() async {
-        var tries = 0
-        while session != nil || writing > 0, tries < 120 { try? await Task.sleep(for: .milliseconds(500)); tries += 1 }
+        while session != nil || writing > 0 { try? await Task.sleep(for: .milliseconds(500)) }
     }
 
     /// Meetings recorded but never written up (a quit or crash): offered at launch, and from the menu.
     private func offerUnfinishedMeetings(asked: Bool) {
         let left = MeetingNotes.unfinished(except: meeting?.folder).filter { !notesQueue.contains($0) && $0 != notesWorking }
         guard !left.isEmpty, firstRun?.isOpen != true else { if asked { hud.flash("No unfinished meetings") }; return }
-        let minutes = left.map { MeetingNotes.seconds($0.appendingPathComponent(MeetingManifest.othersFile)) }
+        let minutes = left.map { max(MeetingNotes.seconds($0.appendingPathComponent(MeetingManifest.othersFile)),
+                                     MeetingNotes.seconds($0.appendingPathComponent(MeetingManifest.meFile))) }
         let a = NSAlert()
         a.messageText = left.count == 1 ? "A meeting's notes weren't written" : "\(left.count) meetings' notes weren't written"
-        a.informativeText = "Voice stopped before writing them. The audio was saved as it recorded (\(minutes.map { Meeting.length($0) }.joined(separator: ", "))). Write the notes now?"
+        a.informativeText = "Their audio was saved as it recorded (\(minutes.map { Meeting.length($0) }.joined(separator: ", "))). Write the notes now?"
         a.addButton(withTitle: "Write the notes")
         a.addButton(withTitle: "Not now")
         NSApp.activate(ignoringOtherApps: true)
