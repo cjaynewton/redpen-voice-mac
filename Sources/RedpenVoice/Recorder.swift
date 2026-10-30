@@ -9,6 +9,8 @@ final class Recorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     private var session: AVCaptureSession?
     private let queue = DispatchQueue(label: "redpen.voice.mic")
     private var target: AVAudioFormat?
+    /// The format buffers are handed over in (the engine's), once the mic has started.
+    var format: AVAudioFormat? { target }
     private let lock = NSLock()
     private var ring: [AVAudioPCMBuffer] = []
     private var ringFrames: AVAudioFrameCount = 0

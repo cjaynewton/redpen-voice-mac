@@ -961,6 +961,114 @@ final class Transcriber {
                 "hyp": s.text, "pieces": s.pieces.count, "tail_secs": s.tail, "stream_secs": Date().timeIntervalSince(t0)]
     }
 
+    /// One piece of a meeting track (16 kHz mono, a couple of minutes at most) as timed lines, in seconds from the
+    /// piece's start (D-951). Whisper gives its own phrases with times and splits at pauses into its 30-second window
+    /// itself (WhisperKit's VAD chunking); Instant gives words with times, grouped into lines here; Apple's engine
+    /// gives phrases with their time ranges.
+    func meetingSegments(_ audio: [Float], config: Config) async throws -> [MeetingSegment] {
+        guard !audio.isEmpty else { return [] }
+        let rate = Double(Chunker.rate)
+        func peak(_ start: Double, _ end: Double) -> Float {
+            let a = max(0, min(audio.count, Int(start * rate))), b = max(a, min(audio.count, Int(end * rate) + 1))
+            var p: Float = 0
+            for i in a..<b { p = max(p, abs(audio[i])) }
+            return p
+        }
+        if config.engine == "whisper" {
+            guard let whisper else { throw NSError(domain: "RedpenVoice", code: 4, userInfo: [NSLocalizedDescriptionKey: "Whisper is not loaded"]) }
+            let options = DecodingOptions(language: "en", detectLanguage: false, skipSpecialTokens: true, withoutTimestamps: false,
+                                          chunkingStrategy: .vad)
+            func run(_ a: [Float], _ o: DecodingOptions, from: Double) async throws -> [MeetingSegment] {
+                try await Self.gate.acquire()
+                let results: [TranscriptionResult]
+                do {
+                    do { results = try await whisper.transcribe(audioArray: a, decodeOptions: o) }
+                    catch {
+                        Log.note("meeting: whisper failed once, trying again")
+                        try await Task.sleep(for: .milliseconds(150))
+                        results = try await whisper.transcribe(audioArray: a, decodeOptions: o)
+                    }
+                } catch { await Self.gate.release(); throw error }
+                await Self.gate.release()
+                return results.flatMap(\.segments).compactMap { s in
+                    let start = Double(s.start) + from, end = Double(max(s.end, s.start)) + from
+                    let text = Silence.clean(s.text.trimmingCharacters(in: .whitespaces), peak: peak(start, end))
+                    return text.isEmpty ? nil : MeetingSegment(start: start, end: end, text: text)
+                }
+            }
+            var segs = try await run(audio, options, from: 0)
+            // Whisper now and then judges a whole 30-second window to be silence and skips it (three on the Fathom
+            // test meeting). A long stretch with no line that still sounds like talk is asked again without that skip,
+            // as a quiet dictation is.
+            var retry = options
+            retry.noSpeechThreshold = nil; retry.logProbThreshold = nil; retry.firstTokenLogProbThreshold = nil
+            var asked = 0, found = 0
+            for g in Meeting.gaps(segs, length: Double(audio.count) / rate, minimum: 6) {
+                let a = max(0, Int(g.lowerBound * rate)), b = min(audio.count, Int(g.upperBound * rate))
+                guard b - a > Int(rate), Meeting.talkSeconds(audio[a..<b]) >= 1.5 else { continue }
+                let more = try await run(Array(audio[a..<b]), retry, from: Double(a) / rate)
+                asked += 1; found += more.count
+                segs += more
+            }
+            if asked > 0 { Log.note("meeting: asked whisper again on \(asked) quiet stretches, \(found) lines back") }
+            return segs.sorted { $0.start < $1.start }
+        }
+        if config.engine == "live" {
+            guard let live else { throw NSError(domain: "RedpenVoice", code: 4, userInfo: [NSLocalizedDescriptionKey: "Instant is not loaded"]) }
+            let gate = liveGate
+            try await gate.acquire()
+            var words: [TimedWord] = []
+            do {
+                try await live.reset()
+                let f = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: 1, interleaved: false)!
+                for i in stride(from: 0, to: audio.count, by: 16_000 * 10) {
+                    let n = min(16_000 * 10, audio.count - i)
+                    let b = AVAudioPCMBuffer(pcmFormat: f, frameCapacity: AVAudioFrameCount(n))!
+                    b.frameLength = AVAudioFrameCount(n)
+                    audio.withUnsafeBufferPointer { b.floatChannelData![0].update(from: $0.baseAddress! + i, count: n) }
+                    try await live.appendAudio(b)
+                    try await live.processBufferedAudio()
+                    words += await live.consumeWordTimings().map { TimedWord($0.word, start: $0.startTime, end: $0.endTime) }
+                }
+                _ = try await live.finish()
+                words += await live.consumeWordTimings().map { TimedWord($0.word, start: $0.startTime, end: $0.endTime) }
+                try? await live.reset()
+            } catch { try? await live.reset(); await gate.release(); throw error }
+            await gate.release()
+            return Meeting.group(words).compactMap { s in
+                let text = Silence.clean(s.text, peak: peak(s.start, s.end))
+                return text.isEmpty ? nil : MeetingSegment(start: s.start, end: s.end, text: text)
+            }
+        }
+        // Apple's engine, from a short file of the piece: long-form, so the dictation module without its short-form hint.
+        let m: any SpeechModule = config.engine == "transcription"
+            ? SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [], attributeOptions: [])
+            : DictationTranscriber(locale: locale, contentHints: [], transcriptionOptions: [.punctuation], reportingOptions: [], attributeOptions: [])
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("redpen-meeting-\(UUID().uuidString).caf")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let f = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: 1, interleaved: false)!
+        do {
+            let out = try AVAudioFile(forWriting: tmp, settings: f.settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+            let b = AVAudioPCMBuffer(pcmFormat: f, frameCapacity: AVAudioFrameCount(audio.count))!
+            b.frameLength = AVAudioFrameCount(audio.count)
+            audio.withUnsafeBufferPointer { b.floatChannelData![0].update(from: $0.baseAddress!, count: audio.count) }
+            try out.write(from: b)
+        }
+        var segs: [MeetingSegment] = []
+        let collect: Task<[MeetingSegment], Error>
+        func seg(_ range: CMTimeRange, _ text: String) -> MeetingSegment {
+            MeetingSegment(start: range.start.seconds, end: range.end.seconds, text: text.trimmingCharacters(in: .whitespaces))
+        }
+        if let d = m as? DictationTranscriber { collect = Task { var o: [MeetingSegment] = []; for try await r in d.results { o.append(seg(r.range, String(r.text.characters))) }; return o } }
+        else if let t = m as? SpeechTranscriber { collect = Task { var o: [MeetingSegment] = []; for try await r in t.results { o.append(seg(r.range, String(r.text.characters))) }; return o } }
+        else { return [] }
+        let a = SpeechAnalyzer(modules: [m], options: SpeechAnalyzer.Options(priority: .userInitiated, modelRetention: .whileInUse))
+        _ = try await a.analyzeSequence(from: try AVAudioFile(forReading: tmp))
+        try await a.finalizeAndFinishThroughEndOfInput()
+        segs = try await collect.value
+        return segs.filter { !$0.text.isEmpty }
+    }
+
     /// Runs the engine over an audio file and returns the text. For checking the engine without a microphone.
     func transcribeFile(_ url: URL, config: Config) async throws -> String {
         if config.engine == "parakeet", let parakeet {

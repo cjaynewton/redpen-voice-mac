@@ -48,6 +48,17 @@ struct Config: Codable {
     var historyKeep: String?
     /// Offers recurring names after dictations, at most once a day. On when missing.
     var suggestWords: Bool?
+    /// Meeting notes (D-951): the folder they go in. ~/Redpen Meetings when missing, never Documents or Desktop,
+    /// which sync to iCloud on many Macs.
+    var meetingsFolder: String?
+    /// Keep each meeting's audio beside its notes, one file for you and one for the others. On when missing.
+    var keepMeetingAudio: Bool?
+    /// The first meeting's tip about telling people has been shown.
+    var meetingTipShown: Bool?
+    var meetingsDir: URL {
+        meetingsFolder.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Redpen Meetings", isDirectory: true)
+    }
 
     /// The same plain list Settings opens. Preserve comments, fixes and existing spelling.
     @discardableResult

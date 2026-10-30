@@ -56,6 +56,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let panel = NSPopover()
     /// The app you were in when the panel opened, so Paste and Take back land there.
     private var panelOrigin: NSRunningApplication?
+    /// Meeting notes (D-951): the meeting being recorded, the recordings waiting for notes, and the one being written.
+    private var meeting: MeetingRecording?
+    private var notesQueue: [URL] = []
+    private var notesWorking: URL?
+    private var notesStatus: String?
 
     func applicationDidFinishLaunching(_ n: Notification) {
         // `--hud-demo [style]` shows the talking bar for four seconds with a fake voice, then two of writing, so its
@@ -300,6 +305,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 do { print(try await engine.transcribeFile(url, config: config)) } catch { print("error: \(error)") }
                 exit(0)
             }
+            return
+        }
+        // `--meeting-test me.wav others.wav out-folder` runs everything after a meeting stops on two files (D-951).
+        if let i = CommandLine.arguments.firstIndex(of: "--meeting-test") {
+            let args = Array(CommandLine.arguments[(i + 1)...].prefix { !$0.hasPrefix("--") })
+            Task { [config, engine] in exit(await MeetingTest.run(args, engine: engine, config: config, names: Names(text: Config.loadNames()))) }
             return
         }
         // `--media-check` logs which apps hold the speakers and how loud the Mac is playing right now.
@@ -562,6 +573,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Updates.shared.start()
         updateWatch = Updates.shared.$waiting.sink { [weak self] _ in DispatchQueue.main.async { self?.refreshMenu() } }
         Log.note("launched")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.offerUnfinishedMeetings(asked: false) }
         Log.note("keyboard: AppleFnUsageType \(FnKey.usage)\(FnKey.problem.map { ", \($0)" } ?? "")")
     }
 
@@ -637,6 +649,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Quit asked while you are talking: finish the dictation and write the words first, then go.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // A meeting being recorded is closed off on disk; the next launch offers to write its notes.
+        if let m = meeting { _ = m.stop(); meeting = nil; Log.note("meeting: quit mid-meeting, the recording is kept for the next launch") }
         guard session != nil else {
             // Words still being written are dropped on quit; the video they paused is put back.
             if pausedMedia, config.resumeMedia ?? true { pausedMedia = false; Media.pressPlayPause(); Log.note("media: resumed on quit") }
@@ -715,7 +729,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Restarts the warm mic on the Mac's current input if it has moved. Waits if a dictation is running.
     private func remicIfDefaultMoved(reason: String) {
-        guard config.inputDevice.isEmpty, session == nil, testFile == nil,
+        guard config.inputDevice.isEmpty, session == nil, testFile == nil, meeting == nil,
               let now = Mics.defaultInput()?.uid, now != recorder.currentUID else { return }
         Log.note("mic: \(reason), moving to \(Mics.defaultInput()?.name ?? now)")
         recorder.stopEngine()
@@ -723,11 +737,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func warmMic() {
+        // Restarting the mic mid-meeting would end the Me track: the change waits for the meeting to stop.
+        guard meeting == nil else { Log.note("mic: change waits until the meeting stops"); return }
         guard let format = engine.audioFormat, AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { return }
         do { try recorder.start(format: format) } catch { Log.note("mic warm failed: \(error.localizedDescription)") }
     }
 
     private func begin() {
+        if meeting != nil { hud.flash("Meeting notes are on", for: 1.5); return }
         guard !busy, session == nil, testFile == nil else { return }
         if firstRun?.isOpen == true { firstRun?.keySeen() }
         guard engine.state == .ready, let format = engine.audioFormat else { hud.flash(engineWord == "ready" ? "Not ready" : "Engine " + engineWord); return }
@@ -1589,6 +1606,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.words = { [weak self] in self?.panel.close(); self?.editNames() }
         menu.settings = { [weak self] in self?.panel.close(); self?.openSettings() }
         menu.updates = { [weak self] in self?.panel.close(); Updates.shared.checkNow() }
+        menu.meeting = { [weak self] in self?.panel.close(); self?.toggleMeeting() }
+        menu.copyNotice = { [weak self] in self?.panel.close(); self?.copyNotice() }
+        menu.unfinished = { [weak self] in self?.panel.close(); self?.offerUnfinishedMeetings(asked: true) }
         refreshMenu()
     }
 
@@ -1642,6 +1662,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.last = (all.last ?? lastSaid).map(\.text)
         m.canTakeBack = Insert.last != nil
         m.testing = testFile != nil
+        m.meetingStarted = meeting?.started
+        m.notesStatus = notesStatus
+        m.unfinished = notesWorking == nil ? MeetingNotes.unfinished(except: meeting?.folder).filter { !notesQueue.contains($0) }.count : 0
         return m
     }
 
@@ -1765,6 +1788,125 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         a.runModal()
     }
 
+    // MARK: Meeting notes (D-951)
+
+    private func setIcon() { status?.button?.image = VoiceMenuBarIcon.image(recording: meeting != nil) }
+
+    private func toggleMeeting() {
+        if let m = meeting {
+            let work = m.stop()
+            meeting = nil
+            setIcon()
+            notesQueue.append(work)
+            writeNextNotes()
+            return
+        }
+        guard session == nil, writing == 0, testFile == nil else { hud.flash("Finish the dictation first"); return }
+        guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { hud.flash("Allow the microphone"); return }
+        if !(config.meetingTipShown ?? false) { guard firstMeetingTip() else { return } }
+        if recorder.inputName.isEmpty {
+            let fmt = engine.audioFormat ?? AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
+            do { try recorder.start(format: fmt) } catch { Log.note("meeting: mic failed \(error.localizedDescription)") }
+        }
+        guard !recorder.inputName.isEmpty else { hud.flash("Mic not ready"); return }
+        do {
+            let m = try MeetingRecording(recorder: recorder)
+            let heardMac = m.start()
+            meeting = m
+            setIcon()
+            hud.flash(heardMac ? "Meeting notes on" : "Meeting notes on, your mic only. Allow system audio in Privacy settings.", ok: heardMac, for: heardMac ? 2 : 4)
+        } catch {
+            Log.note("meeting: could not start, \(error.localizedDescription)")
+            hud.flash("Couldn't start meeting notes", for: 2.5)
+        }
+        refreshMenu()
+    }
+
+    /// The first meeting: tell people, with the notice ready to paste. Returns false when you'd rather not start.
+    private func firstMeetingTip() -> Bool {
+        let a = NSAlert()
+        a.messageText = "Tell people you're taking notes"
+        a.informativeText = "Say so at the start, or paste a notice in the meeting chat. Your microphone is Me, what the Mac plays is Others, and both stay on this Mac.\n\nOn laptop speakers the microphone also hears the others. Headphones keep each voice to its own track."
+        a.addButton(withTitle: "Start")
+        a.addButton(withTitle: "Copy notice and start")
+        a.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        let r = a.runModal()
+        if r == .alertThirdButtonReturn { return false }
+        var c = Config.load(); c.meetingTipShown = true; c.save(); config.meetingTipShown = true; syncSettings()
+        if r == .alertSecondButtonReturn { copyNotice() }
+        return true
+    }
+
+    private func copyNotice() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(Meeting.notice, forType: .string)
+        hud.flash("Notice copied. Paste it in the meeting chat.", ok: true, for: 2.5)
+    }
+
+    /// Writes the notes for each recording in turn. The bar shows how far along, unless you are dictating.
+    private func writeNextNotes() {
+        guard notesWorking == nil, !notesQueue.isEmpty else { refreshMenu(); return }
+        let work = notesQueue.removeFirst()
+        notesWorking = work
+        let names = Names(text: Config.loadNames())
+        Task { [weak self] in
+            guard let self else { return }
+            self.notesProgress(0, "Writing notes…")
+            // The engine may still be loading (a launch that offered an unfinished meeting).
+            var waited = 0
+            while self.engine.state != .ready, waited < 600 {
+                if case .failed = self.engine.state { break }
+                if self.engine.state == .unsupported { break }
+                try? await Task.sleep(for: .seconds(1)); waited += 1
+            }
+            do {
+                guard self.engine.state == .ready else { throw NSError(domain: "RedpenVoice", code: 23, userInfo: [NSLocalizedDescriptionKey: "engine not ready"]) }
+                let r = try await MeetingNotes.write(work, engine: self.engine, config: self.config, names: names) { [weak self] pct, words in
+                    self?.notesProgress(pct, words)
+                }
+                Log.note("meeting: notes saved, \(Log.int(r.seconds))s meeting, summary \(r.summary)")
+                await self.whenNotDictating()
+                self.hud.flash("Notes saved", ok: true, for: 2.5)
+                NSWorkspace.shared.open(r.file)
+            } catch {
+                Log.note("meeting: notes failed, \(error.localizedDescription)")
+                await self.whenNotDictating()
+                self.hud.flash("Couldn't write the notes. The recording is kept.", for: 3.5)
+            }
+            self.notesWorking = nil
+            self.notesStatus = nil
+            self.writeNextNotes()
+        }
+    }
+
+    private func notesProgress(_ pct: Int, _ words: String) {
+        notesStatus = pct >= 100 ? nil : "\(words.replacingOccurrences(of: "…", with: "")) \(pct)%"
+        if session == nil, writing == 0, pct < 100 { hud.show("\(words) \(pct)%", level: false) }
+        if panel.isShown { refreshMenu() }
+    }
+
+    /// Waits for a dictation to finish (a minute at most), so a message or a window never lands on top of it.
+    private func whenNotDictating() async {
+        for _ in 0..<120 where session != nil || writing > 0 { try? await Task.sleep(for: .milliseconds(500)) }
+    }
+
+    /// Meetings recorded but never written up (a quit or crash): offered at launch, and from the menu.
+    private func offerUnfinishedMeetings(asked: Bool) {
+        let left = MeetingNotes.unfinished(except: meeting?.folder).filter { !notesQueue.contains($0) && $0 != notesWorking }
+        guard !left.isEmpty, firstRun?.isOpen != true else { if asked { hud.flash("No unfinished meetings") }; return }
+        let minutes = left.map { MeetingNotes.seconds($0.appendingPathComponent(MeetingManifest.othersFile)) }
+        let a = NSAlert()
+        a.messageText = left.count == 1 ? "A meeting's notes weren't written" : "\(left.count) meetings' notes weren't written"
+        a.informativeText = "Voice stopped before writing them. The audio was saved as it recorded (\(minutes.map { Meeting.length($0) }.joined(separator: ", "))). Write the notes now?"
+        a.addButton(withTitle: "Write the notes")
+        a.addButton(withTitle: "Not now")
+        NSApp.activate(ignoringOtherApps: true)
+        guard a.runModal() == .alertFirstButtonReturn else { Log.note("meeting: \(left.count) unfinished, not now"); refreshMenu(); return }
+        notesQueue += left
+        writeNextNotes()
+    }
+
     // MARK: Test recording
 
     private var testFile: AVAudioFile?
@@ -1775,6 +1917,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// engines against each other on real talking. Stops itself at ten minutes or from the menu.
     @objc private func toggleTestRecording() {
         if testFile != nil { endTestRecording(); return }
+        if meeting != nil { hud.flash("Meeting notes are on"); return }
         guard let format = engine.audioFormat, !recorder.inputName.isEmpty else { hud.flash("Mic not ready"); return }
         let stamp = { let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd-HHmm"; return f.string(from: Date()) }()
         let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop/redpen-voice-test-\(stamp).wav")

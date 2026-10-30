@@ -193,6 +193,8 @@ struct SettingsView: View {
                     Toggle("", isOn: Binding(get: { model.config.suggestWords ?? true }, set: { model.config.suggestWords = $0 }))
                         .labelsHidden().toggleStyle(.switch).tint(Ink.red)
                 }.padding(.top, 12)
+                heading("Meeting notes")
+                meetingRows
                 heading("Time saved")
                 typingRow
                 footer
@@ -429,6 +431,35 @@ struct SettingsView: View {
             Divider().overlay(Ink.line)
             row("Click at start and stop") { Toggle("", isOn: $model.config.sounds).labelsHidden().toggleStyle(.switch).tint(Ink.red) }
         }
+    }
+
+    /// Where the notes go and whether the audio stays beside them (D-951).
+    private var meetingRows: some View {
+        let dir = model.config.meetingsDir.path
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let shown = dir.hasPrefix(home + "/") ? "~" + dir.dropFirst(home.count) : dir
+        let syncs = Meeting.mightSync(dir, home: home)
+        return VStack(alignment: .leading, spacing: 0) {
+            row("Folder", syncs ? "\(shown). This folder may sync to iCloud, so meetings could leave this Mac." : shown) {
+                Button("Change…") { chooseMeetingsFolder() }
+            }
+            row("Keep the audio", "One file for you and one for the others, beside the notes, so any line can be checked.") {
+                Toggle("", isOn: Binding(get: { model.config.keepMeetingAudio ?? true }, set: { model.config.keepMeetingAudio = $0 }))
+                    .labelsHidden().toggleStyle(.switch).tint(Ink.red)
+            }
+            Text("Start meeting notes from the menu. Your microphone is Me and what the Mac plays is Others. Everything stays on this Mac, and the notes are plain Markdown files.")
+                .font(.system(size: 12.5)).foregroundStyle(Ink.dim).fixedSize(horizontal: false, vertical: true).padding(.top, 4)
+        }
+    }
+
+    private func chooseMeetingsFolder() {
+        let p = NSOpenPanel()
+        p.canChooseDirectories = true; p.canChooseFiles = false; p.canCreateDirectories = true; p.allowsMultipleSelection = false
+        p.directoryURL = model.config.meetingsDir
+        p.message = "Pick the folder for meeting notes"
+        p.prompt = "Use this folder"
+        guard p.runModal() == .OK, let url = p.url else { return }
+        model.config.meetingsFolder = url.path
     }
 
     /// Your typing speed, next to the line it changes (D-837).
