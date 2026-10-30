@@ -859,7 +859,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         finishingDrafting?.checksStopped = true; finishingDrafting?.draftsStopped = true
         drafting = nil
         if config.engine == "whisper", s.drafter != nil, config.mode != "rewrite" {
-            drafting = Drafting(owner: s, startBox: startBox)
+            drafting = Drafting(owner: s, startBox: startBox, keys: keys)
             s.onDraft = { [weak self, weak s] i, t in DispatchQueue.main.async { if let s { self?.draft(i, t, from: s) } } }
             s.onCheck = { [weak self, weak s] r, t in DispatchQueue.main.async { if let s { self?.check(r, t, from: s) } } }
             s.streamDrafts()
@@ -1002,6 +1002,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let owner: Transcriber.Session
         let startedAt = Date()
         let startedUptime = ProcessInfo.processInfo.systemUptime
+        let input: DraftInput
+        var hardwareSample: DraftSafety.HardwareSample?
         var reportedFailures: Set<DraftSafety.Failure> = []
         var runs: [Run] = []
         var nextDraft = 0
@@ -1011,7 +1013,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var firstLag: Double?
         var checks = 0, changed = 0, words = 0
         let startBox: StartBox?
-        init(owner: Transcriber.Session, startBox: StartBox?) { self.owner = owner; self.startBox = startBox }
+        @MainActor init(owner: Transcriber.Session, startBox: StartBox?, keys: HoldKey) {
+            self.owner = owner; self.startBox = startBox
+            input = keys.trackDraft(since: startedUptime)
+        }
         /// Anything actually typed (empty drafts leave nothing in the box).
         var typedAny: Bool { runs.contains { !$0.text.isEmpty } }
     }
@@ -1032,20 +1037,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @discardableResult
     private func draftBlocked(_ d: Drafting, _ reason: DraftSafety.Failure, during path: String) -> Bool {
         if d.reportedFailures.insert(reason).inserted {
-            Log.note("draft blocked: \(reason.rawValue) (\(path))")
+            var detail = ""
+            if reason == .hardwareKey, let sample = d.hardwareSample {
+                let nearest = sample.nearestTalkAt.map { String(format: "%.6f", $0) } ?? "none"
+                let gap = sample.nearestTalkAt.map { String(format: "%.3fms", (sample.keyAt - $0) * 1000) } ?? "none"
+                detail = "; keyAt \(String(format: "%.6f", sample.keyAt)), nearest talk \(nearest), difference \(gap)"
+            }
+            Log.note("draft blocked: \(reason.rawValue) (\(path))\(detail)")
         }
         return false
     }
 
     /// Sample hardware throughout typing, when queued NSEvent callbacks may not have run yet.
     private func draftQuiet(_ d: Drafting, during path: String) -> Bool {
-        let now = ProcessInfo.processInfo.systemUptime
-        let failure = DraftSafety.hardwareFailure(since: d.startedUptime, at: now,
-            keyDownAgo: CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .keyDown),
-            leftClickAgo: CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .leftMouseDown),
-            rightClickAgo: CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .rightMouseDown),
-            talkKeyDownAt: keys.lastTalkKeyDownAt, typingKeyDownAt: keys.lastTypingKeyDownAt)
-        if let failure { return draftBlocked(d, failure, during: path) }
+        let sample = DraftSafety.resolveHardware(since: d.startedUptime) {
+            // Read counters before taking the listener snapshot, giving that thread time to identify the key.
+            let now = ProcessInfo.processInfo.systemUptime
+            let keyAgo = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .keyDown)
+            let leftAgo = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .leftMouseDown)
+            let rightAgo = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .rightMouseDown)
+            let input = d.input.snapshot()
+            return DraftSafety.HardwareSample(now: now, keyDownAgo: keyAgo, leftClickAgo: leftAgo,
+                rightClickAgo: rightAgo, talkKeyDownTimes: input.talkTimes, typingKeyDownAt: input.typingAt)
+        }
+        d.hardwareSample = sample
+        if let failure = sample.failure(since: d.startedUptime) { return draftBlocked(d, failure, during: path) }
         if userActedAt >= d.startedAt { return draftBlocked(d, .userActed, during: path) }
         return true
     }

@@ -12,7 +12,9 @@ import VoiceCore
 final class HoldKey {
     struct Key: Equatable { let code: Int; let name: String }
 
-    var keys: [Key] = [HoldKey.fn, HoldKey.rightOption]
+    var keys: [Key] = [HoldKey.fn, HoldKey.rightOption] {
+        didSet { draftInputMonitor.configure(keys.map(\.code)) }
+    }
     var doubleTap = true
     var onDown: () -> Bool = { false }
     var canBegin: () -> Bool = { true }
@@ -27,6 +29,8 @@ final class HoldKey {
     private var state = TalkKeyState()
     private var releaseTimer: Timer?
     private var inputSequence = 0
+    private let draftInputMonitor = DraftInputMonitor()
+    func trackDraft(since: Double) -> DraftInput { draftInputMonitor.track(since: since) }
     var handsFree: Bool { state.handsFree }
     var lastTalkKeyDownAt: Double? { state.lastTalkKeyDownAt }
     var lastTypingKeyDownAt: Double? { state.lastTypingKeyDownAt }
@@ -61,6 +65,8 @@ final class HoldKey {
     }
 
     func start() {
+        draftInputMonitor.configure(self.keys.map(\.code))
+        draftInputMonitor.start()
         let flags: (NSEvent) -> Void = { [weak self] e in self?.flagsChanged(e) }
         if let g = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged, handler: flags) { monitors.append(g) }
         if let l = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged, handler: { e in flags(e); return e }) { monitors.append(l) }
@@ -109,8 +115,12 @@ final class HoldKey {
         let code = Int(e.keyCode)
         if isTalkKey(code) {
             if Self.modifiers[code] == nil { receive(e, down: e.type == .keyDown) }
-            else if e.type == .keyDown, !isOwn(e) { state.noteKeyDown(talkKey: true, at: e.timestamp) }
+            else if e.type == .keyDown, !isOwn(e) {
+                state.noteKeyDown(talkKey: true, at: e.timestamp)
+                draftInputMonitor.record(talkKey: true, at: e.timestamp)
+            }
         } else if e.type == .keyDown, !isOwn(e) {
+            draftInputMonitor.record(talkKey: false, at: e.timestamp)
             apply(state.otherKey(at: e.timestamp))
         }
     }
@@ -128,7 +138,10 @@ final class HoldKey {
             Log.note("talk raw: key \(code), \(down ? "down" : "up"), hardware \(hardware), confirmed \(down == hardware), pid \(pid), own \(own), repeat \(repeated), event \(String(format: "%.6f", e.timestamp)), uptime \(String(format: "%.6f", ProcessInfo.processInfo.systemUptime))")
         }
         guard !own else { return }
-        if down { state.noteKeyDown(talkKey: true, at: e.timestamp) }
+        if down {
+            state.noteKeyDown(talkKey: true, at: e.timestamp)
+            draftInputMonitor.record(talkKey: true, at: e.timestamp)
+        }
         guard !repeated else { return }
         inputSequence += 1
         let sequence = inputSequence

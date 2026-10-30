@@ -118,7 +118,7 @@ do {
                  leftAt: Double = 90, rightAt: Double = 90) -> DraftSafety.Failure? {
         DraftSafety.hardwareFailure(since: start, at: now, keyDownAgo: now - hardwareKeyAt,
             leftClickAgo: now - leftAt, rightClickAgo: now - rightAt,
-            talkKeyDownAt: key.lastTalkKeyDownAt, typingKeyDownAt: key.lastTypingKeyDownAt)
+            talkKeyDownTimes: key.lastTalkKeyDownAt.map { [$0] } ?? [], typingKeyDownAt: key.lastTypingKeyDownAt)
     }
     check("draftSafety.idleHardwareIsSafe", failure() == nil)
     check("draftSafety.unobservedHardwareKeyBlocks", failure(hardwareKeyAt: 110) == .hardwareKey)
@@ -133,7 +133,11 @@ do {
     check("draftSafety.singleStopTapIsSafe", failure(hardwareKeyAt: 115) == nil)
     talk(false, 115.1, ready: false)
     check("draftSafety.releaseDoesNotMaskNewerTyping", key.lastTalkKeyDownAt == 115)
+    _ = key.otherKey(at: 115.05)
     check("draftSafety.keyBetweenStopDownAndReleaseBlocks", failure(hardwareKeyAt: 115.05) == .hardwareKey)
+    // Continue this stop-only scenario with a fresh gesture record.
+    key = TalkKeyState()
+    talk(true, 115, ready: false); talk(false, 115.1, ready: false)
     talk(true, 115.2, ready: false); talk(false, 115.3, ready: false)
     check("draftSafety.blockedSecondStopTapRecorded", key.lastTalkKeyDownAt == 115.2)
     check("draftSafety.doubleStopTapIsSafe", failure(hardwareKeyAt: 115.2) == nil)
@@ -142,7 +146,7 @@ do {
     check("draftSafety.stopAllowsCompleteEnding", failure(hardwareKeyAt: 115.2) == nil &&
         ending?.expected == "Prefix. Checked words and the ending.")
     check("draftSafety.counterRoundingTolerated", failure(hardwareKeyAt: 115.201) == nil)
-    check("draftSafety.laterHardwareKeyBlocks", failure(hardwareKeyAt: 115.21) == .hardwareKey)
+    check("draftSafety.laterHardwareKeyBlocks", failure(hardwareKeyAt: 115.23) == .hardwareKey)
     check("draftSafety.earlierUnmatchedHardwareKeyBlocks", failure(hardwareKeyAt: 114) == .hardwareKey)
     talk(true, 119, own: true)
     check("draftSafety.ownEventCannotExemptRealKey", key.lastTalkKeyDownAt == 115.2 && failure(hardwareKeyAt: 119) == .hardwareKey)
@@ -169,6 +173,83 @@ do {
     _ = key.otherKey(at: 107)
     key.noteKeyDown(talkKey: true, at: 108)
     check("draftSafety.shortcutTypingCannotBeHiddenByRepeat", failure(hardwareKeyAt: 108) == .hardwareKey)
+}
+
+// Round 2: use the same per-dictation evidence and bounded reconciliation as the production while/ending guard.
+// All input is injected into the time ledger. No keys or events are posted.
+do {
+    let input = DraftInput(since: 100)
+    var now = 120.0, hardwareAt = 115.0, leftAt = 90.0, rightAt = 90.0
+    var waits = 0
+    var onWait: (() -> Void)?
+    func sample() -> DraftSafety.HardwareSample {
+        let evidence = input.snapshot()
+        return .init(now: now, keyDownAgo: now - hardwareAt, leftClickAgo: now - leftAt,
+            rightClickAgo: now - rightAt, talkKeyDownTimes: evidence.talkTimes, typingKeyDownAt: evidence.typingAt)
+    }
+    func resolved() -> DraftSafety.HardwareSample {
+        DraftSafety.resolveHardware(since: 100, sample: sample, wait: { delay in
+            now += delay; waits += 1; onWait?()
+        })
+    }
+    input.record(talkKey: true, at: 99) // another dictation
+    check("draftR2.ignoresPreviousDictation", input.snapshot().talkTimes.isEmpty)
+    input.record(talkKey: true, at: 115)
+    input.record(talkKey: true, at: 115.15)
+    input.record(talkKey: true, at: 115) // same event from passive and main-thread paths
+    check("draftR2.remembersBothStopDowns", input.snapshot().talkTimes.count == 2)
+    check("draftR2.counterCanMatchFirstOfDoubleStop", resolved().failure(since: 100) == nil)
+    hardwareAt = 115.1545
+    check("draftR2.handledDoubleTapWithRealisticGap", resolved().failure(since: 100) == nil && waits == 0)
+    check("draftR2.diagnosticNearestAndGap", abs((sample().nearestTalkAt ?? 0) - 115.15) < 0.000001 &&
+        abs((sample().keyAt - (sample().nearestTalkAt ?? 0)) - 0.0045) < 0.000001)
+    hardwareAt = 116
+    onWait = { if waits == 24 { input.record(talkKey: true, at: 116) } }
+    check("draftR2.counterBeforeCallbackWaitsAndResolves", resolved().failure(since: 100) == nil && waits == 24)
+    // A second counter/event race during a later chunk must also reconcile. Completing the chunk keeps
+    // its known suffix available for the checked ending instead of creating an uncertain partial edit.
+    var typed = ""
+    var complete = true
+    for chunk in ["Draft ", "words", " and tail"] {
+        hardwareAt += 1
+        onWait = { input.record(talkKey: true, at: hardwareAt) }
+        guard resolved().failure(since: 100) == nil else { complete = false; break }
+        typed += chunk
+    }
+    let ending = DraftReplacement(expectedBox: "Prefix. " + typed, actual: "Prefix. " + typed,
+        cursor: NSRange(location: ("Prefix. " + typed).utf16.count, length: 0),
+        draft: typed, replacement: "Checked words and ending.")
+    check("draftR2.stopDuringChunkFinishesKnownDraft", complete && typed == "Draft words and tail")
+    check("draftR2.sameGuardAllowsCheckedEnding", resolved().failure(since: 100) == nil &&
+        ending?.expected == "Prefix. Checked words and ending.")
+    hardwareAt += 1; onWait = nil; waits = 0
+    let beforeTimeout = now
+    let timedOut = resolved()
+    check("draftR2.unidentifiedKeyStillBlocks", timedOut.failure(since: 100) == .hardwareKey)
+    check("draftR2.waitIsBounded", now - beforeTimeout <= 0.250001 && waits <= 51)
+    leftAt = now - 0.001; waits = 0
+    check("draftR2.clickDoesNotWaitForUnidentifiedKey", resolved().failure(since: 100) != nil && waits == 0)
+    leftAt = 90; rightAt = now - 0.001
+    check("draftR2.rightClickStillBlocks", resolved().failure(since: 100) != nil && waits == 0)
+    rightAt = 90
+    onWait = { input.record(talkKey: false, at: hardwareAt) }
+    check("draftR2.delayedRealKeyBlocks", resolved().failure(since: 100) == .hardwareKey && waits == 1)
+    input.record(talkKey: true, at: hardwareAt + 0.001)
+    hardwareAt += 0.001; waits = 0
+    check("draftR2.talkWithinToleranceCannotMaskTyping", resolved().failure(since: 100) == .hardwareKey && waits == 0)
+    let next = DraftInput(since: now + 1)
+    next.record(talkKey: false, at: now)
+    check("draftR2.nextDictationHasNoStickyOldTyping", next.snapshot().typingAt == nil)
+    // Actual concurrent delivery, without dispatching a main-thread NSEvent or pumping its run loop.
+    let concurrent = DraftInput(since: ProcessInfo.processInfo.systemUptime - 1)
+    let keyAt = ProcessInfo.processInfo.systemUptime
+    DispatchQueue.global().asyncAfter(deadline: .now() + 0.03) { concurrent.record(talkKey: true, at: keyAt) }
+    let raced = DraftSafety.resolveHardware(since: concurrent.since) {
+        let evidence = concurrent.snapshot(), time = ProcessInfo.processInfo.systemUptime
+        return .init(now: time, keyDownAgo: time - keyAt, leftClickAgo: 10, rightClickAgo: 10,
+            talkKeyDownTimes: evidence.talkTimes, typingKeyDownAt: evidence.typingAt)
+    }
+    check("draftR2.independentThreadResolvesWhileMainWaits", raced.failure(since: concurrent.since) == nil)
 }
 
 // Talk gestures run without posting keys, opening windows, or using the microphone.
