@@ -1,9 +1,10 @@
 import AppKit
 import VoiceCore
 
-/// Observes only. Never sends play/pause, changes the pause owner, or saves audio.
+/// Never sends play/pause or saves audio. Reports a restart so the owner can give up its pause.
 @MainActor
 final class MediaPauseMonitor {
+    var onPlaybackResumed: ((Float) -> Void)?
     private var players: [Media.Player] = []
     private var pausedAt = 0.0
     private var generation = 0
@@ -76,6 +77,7 @@ final class MediaPauseMonitor {
                     // not prove it is listening or that it sent play, so the log calls this out explicitly.
                     let dictation = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.inputmethod.ironwood")
                     Log.note("media: playing again while pause held, \(String(format: "%.1f", elapsed))s since pause, apps [\(current.map(\.name).joined(separator: ", "))], loudness \(String(format: "%.4f", peak ?? 0)), frontmost \(front?.localizedName ?? "unknown") (\(front?.bundleIdentifier ?? "unknown")), Apple dictation process DictationIM running \(!dictation.isEmpty), pids [\(dictation.map { String($0.processIdentifier) }.joined(separator: ", "))] (process presence only)")
+                    self.onPlaybackResumed?(peak ?? 0)
                 } else { self.schedule() }
             }
         }

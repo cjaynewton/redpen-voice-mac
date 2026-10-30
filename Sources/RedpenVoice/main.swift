@@ -33,10 +33,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The engine the dictation in progress started with, for its day's numbers (D-837).
     private var sessionEngine = "dictation"
     private let mediaPauseMonitor = MediaPauseMonitor()
-    private var pausedMedia = false {
-        didSet {
-            if pausedMedia { mediaPauseMonitor.resume() }
-            else { mediaPauseMonitor.stop() }
+    private var mediaPause = MediaPauseOwnership()
+    private var pausedMedia: Bool {
+        get { mediaPause.paused }
+        set {
+            if newValue { mediaPause.hold(); mediaPauseMonitor.resume() }
+            else { mediaPause.release(); mediaPauseMonitor.stop() }
         }
     }
     private var settleWork: DispatchWorkItem?
@@ -58,6 +60,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panelOrigin: NSRunningApplication?
 
     func applicationDidFinishLaunching(_ n: Notification) {
+        mediaPauseMonitor.onPlaybackResumed = { [weak self] peak in
+            guard let self, self.mediaPause.relinquishIfPlaying(peak: peak) else { return }
+            self.mediaPauseMonitor.stop()
+            self.resumeWork?.cancel(); self.resumeWork = nil
+            Log.note("media: someone else pressed play, Voice lets go of the pause")
+        }
         // `--hud-demo [style]` shows the talking bar for four seconds with a fake voice, then two of writing, so its
         // look can be checked on screen.
         if let i = CommandLine.arguments.firstIndex(of: "--hud-demo") {
@@ -764,6 +772,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pendingMedia = PendingMedia()
         if resumeWork != nil { resumeWork?.cancel(); resumeWork = nil }  // pressed again before the video came back
         if pausedMedia {
+            // Invalidate an older resume listen, even if this press ends before its callback arrives.
+            pausedMedia = true
             Log.note("media: still paused from the last press")
         } else if config.pauseMedia {
             let players = Media.playingApps()
@@ -1365,7 +1375,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard MediaGate.shouldResume(paused: pausedMedia, recordingAgain: session != nil || writing > 0) else { return }
         if quitting { resumeNow(); return }
         resumeWork?.cancel()
-        let w = DispatchWorkItem { [weak self] in self?.resumeNow() }
+        let pauseToken = mediaPause.generation
+        let w = DispatchWorkItem { [weak self] in
+            guard let self, self.mediaPause.owns(pauseToken) else { return }
+            self.resumeNow()
+        }
         resumeWork = w
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: w)
     }
@@ -1374,27 +1388,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func resumeNow() {
         resumeWork = nil
         guard MediaGate.shouldResume(paused: pausedMedia, recordingAgain: session != nil || writing > 0) else { return }
-        pausedMedia = false
+        let pauseToken = mediaPause.generation
         // "Play again when I stop talking" off: pause only, so nothing ever starts by itself.
-        guard config.resumeMedia ?? true else { Log.note("media: left paused, play again is off"); return }
+        guard config.resumeMedia ?? true else { pausedMedia = false; Log.note("media: left paused, play again is off"); return }
         // Quitting: no time to listen, the app is about to go.
-        if quitting { Media.pressPlayPause(); Log.note("media: resumed on quit"); return }
+        if quitting { pausedMedia = false; Media.pressPlayPause(); Log.note("media: resumed on quit"); return }
         let players = Media.playingApps()
-        guard !players.isEmpty else { Media.pressPlayPause(); Log.note("media: resumed"); return }
+        guard !players.isEmpty else { pausedMedia = false; Media.pressPlayPause(); Log.note("media: resumed"); return }
         SoundTap.loudness(of: players.map(\.object), for: 0.2) { peak in
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
+                guard let self, self.mediaPause.owns(pauseToken) else { return }
                 let playing = MediaGate.isPlaying(peak: peak)
                 if self.session != nil || self.writing > 0 {
                     // A new press started while this listened: it takes the pause over and puts it back later.
-                    if !playing { self.pausedMedia = true }
+                    if playing { self.pausedMedia = false }
                     Log.note("media: new press while resuming, \(playing ? "already playing" : "still paused")")
                 } else if peak == nil {
+                    self.pausedMedia = false
                     Log.note("media: not resumed, couldn't listen to [\(players.map(\.name).joined(separator: ", "))]")
                 } else if MediaGate.shouldResume(paused: true, playingNow: playing) {
+                    self.pausedMedia = false
                     Media.pressPlayPause()
                     Log.note("media: resumed")
                 } else {
+                    self.pausedMedia = false
                     Log.note("media: not resumed, already playing in [\(players.map(\.name).joined(separator: ", "))]")
                 }
             }

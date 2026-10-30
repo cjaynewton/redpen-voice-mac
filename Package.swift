@@ -20,5 +20,6 @@ let package = Package(
                                                             .product(name: "FluidAudio", package: "FluidAudio")],
                           linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]),
         .executableTarget(name: "redpen-voice-test", dependencies: ["VoiceCore"]),
+        .testTarget(name: "VoiceCoreTests", dependencies: ["VoiceCore"], path: "Tests", exclude: ["private"]),
     ]
 )
