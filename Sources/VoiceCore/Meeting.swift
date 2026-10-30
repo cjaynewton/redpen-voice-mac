@@ -17,7 +17,11 @@ public struct MeetingLine: Equatable, Sendable {
     public var start: Double
     public var speaker: Speaker
     public var text: String
-    public init(start: Double, speaker: Speaker, text: String) { self.start = start; self.speaker = speaker; self.text = text }
+    /// When the line stops; the start when not known.
+    public var end: Double
+    public init(start: Double, speaker: Speaker, text: String, end: Double? = nil) {
+        self.start = start; self.speaker = speaker; self.text = text; self.end = max(start, end ?? start)
+    }
     public var markdown: String { "[\(Meeting.clock(start))] \(speaker.rawValue): \(text)" }
 }
 
@@ -118,11 +122,40 @@ public enum Meeting {
 
     /// Both tracks, by time. At the same moment Others comes first: the question before the answer.
     public static func merge(me: [MeetingSegment], others: [MeetingSegment]) -> [MeetingLine] {
-        let a = me.map { MeetingLine(start: $0.start, speaker: .me, text: $0.text) }
-        let b = others.map { MeetingLine(start: $0.start, speaker: .others, text: $0.text) }
+        let a = me.map { MeetingLine(start: $0.start, speaker: .me, text: $0.text, end: $0.end) }
+        let b = others.map { MeetingLine(start: $0.start, speaker: .others, text: $0.text, end: $0.end) }
         return (b + a).enumerated().sorted {
             $0.element.start != $1.element.start ? $0.element.start < $1.element.start : $0.offset < $1.offset
         }.map(\.element)
+    }
+
+    /// Whisper sometimes writes the same short line twice ("Okay." "Okay."). A line is dropped when it is exactly
+    /// the same words (case and punctuation aside) as the same speaker's line before it, starting within `within`
+    /// seconds of that line's end.
+    public static func dropRepeats(_ lines: [MeetingLine], within: Double = 2) -> [MeetingLine] {
+        var last: [Speaker: MeetingLine] = [:], out: [MeetingLine] = []
+        for l in lines {
+            if let p = last[l.speaker], !keys(l.text).isEmpty, keys(p.text) == keys(l.text), l.start - p.end <= within {
+                last[l.speaker]?.end = max(p.end, l.end)
+                continue
+            }
+            out.append(l); last[l.speaker] = l
+        }
+        return out
+    }
+
+    /// One paragraph per turn: lines from the same speaker in a row are joined under the first one's time, and a
+    /// new paragraph starts when the speaker changes or after a pause of `gap` seconds.
+    public static func paragraphs(_ lines: [MeetingLine], gap: Double = 3) -> [MeetingLine] {
+        var out: [MeetingLine] = []
+        for l in lines {
+            if var p = out.last, p.speaker == l.speaker, l.start - p.end <= gap {
+                p.text += " " + l.text
+                p.end = max(p.end, l.end)
+                out[out.count - 1] = p
+            } else { out.append(l) }
+        }
+        return out
     }
 
     // MARK: The file

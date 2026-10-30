@@ -1186,6 +1186,30 @@ do {
     let merged = Meeting.merge(me: [MeetingSegment(start: 5, end: 6, text: "b"), MeetingSegment(start: 1, end: 2, text: "a")],
                                others: [MeetingSegment(start: 5, end: 7, text: "q"), MeetingSegment(start: 9, end: 10, text: "c")])
     check("meeting.merge", merged.map(\.text) == ["a", "q", "b", "c"] && merged[1].speaker == .others, "\(merged.map(\.text))")
+    // Repeats and paragraphs (from the first live test): "Okay." "Okay." goes, a turn reads as one paragraph.
+    let said2 = [MeetingLine(start: 0, speaker: .others, text: "The serene waters of.", end: 1.5),
+                 MeetingLine(start: 2, speaker: .others, text: "The serene waters of", end: 3),
+                 MeetingLine(start: 3.2, speaker: .me, text: "Okay.", end: 3.6),
+                 MeetingLine(start: 3.8, speaker: .others, text: "Then the match.", end: 5),
+                 MeetingLine(start: 4.0, speaker: .me, text: "Okay.", end: 4.3),
+                 MeetingLine(start: 9, speaker: .me, text: "Okay.", end: 9.5)]
+    let dr = Meeting.dropRepeats(said2)
+    check("meeting.repeatDropped", dr.map(\.text) == ["The serene waters of.", "Okay.", "Then the match.", "Okay."], "\(dr.map(\.text))")
+    check("meeting.repeatLaterKept", dr.last?.start == 9)
+    check("meeting.repeatNotOtherSpeaker", Meeting.dropRepeats([MeetingLine(start: 0, speaker: .others, text: "Yes.", end: 1),
+                                                                MeetingLine(start: 1, speaker: .me, text: "Yes.", end: 2)]).count == 2)
+    check("meeting.repeatDifferentWordsKept", Meeting.dropRepeats([MeetingLine(start: 0, speaker: .me, text: "Okay.", end: 1),
+                                                                   MeetingLine(start: 1, speaker: .me, text: "Okay, okay.", end: 2)]).count == 2)
+    let turns = [MeetingLine(start: 0, speaker: .me, text: "The WSL.", end: 1), MeetingLine(start: 1.5, speaker: .me, text: "Yes.", end: 2),
+                 MeetingLine(start: 4.5, speaker: .me, text: "Okay.", end: 5),
+                 MeetingLine(start: 9, speaker: .me, text: "After a pause.", end: 10),
+                 MeetingLine(start: 10.5, speaker: .others, text: "Their turn.", end: 11),
+                 MeetingLine(start: 11.5, speaker: .me, text: "Mine again.", end: 12)]
+    let ps2 = Meeting.paragraphs(turns)
+    check("meeting.paragraphJoin", ps2.first?.text == "The WSL. Yes. Okay." && ps2.first?.start == 0, "\(ps2.map(\.text))")
+    check("meeting.paragraphGapAndTurns", ps2.map(\.text) == ["The WSL. Yes. Okay.", "After a pause.", "Their turn.", "Mine again."], "\(ps2.map(\.text))")
+    check("meeting.paragraphEmpty", Meeting.paragraphs([]).isEmpty && Meeting.dropRepeats([]).isEmpty)
+    check("meeting.mergeKeepsEnd", Meeting.merge(me: [MeetingSegment(start: 1, end: 4, text: "x")], others: []).first?.end == 4)
     check("meeting.line", MeetingLine(start: 252, speaker: .me, text: "Hi.").markdown == "[04:12] Me: Hi.")
 
     // The file: header, transcript in order, audio links, no em dashes.
