@@ -151,6 +151,8 @@ enum MeetingNotes {
                 Task { @MainActor in progress(pct, "Writing notes…") }
             }
             let t0 = Date()
+            // The tap delivers nothing at all while the Mac is quiet, so a silent meeting can leave no Others audio:
+            // the note goes by the meeting's length, not the track's.
             let (others, othersPeak) = try await transcribe(othersTrack, offset: manifest.othersOffset ?? 0, engine: engine, config: config, done: tick)
             let mine = try await transcribe(meTrack, offset: manifest.meOffset ?? 0, engine: engine, config: config, done: tick).lines
             let echo = Meeting.dropEcho(me: mine, others: others)
@@ -164,7 +166,7 @@ enum MeetingNotes {
             file = folder.appendingPathComponent(base + ".md")
             let audio = keepAudio ? [base + " Me.m4a", base + " Others.m4a"] : []
             transcript = Meeting.markdown(start: manifest.started, seconds: length, lines: lines, audio: audio, echoDropped: echo.dropped,
-                                          engine: engineName(config.engine), notes: othersPeak == 0 && othersSecs > 30 ? [Meeting.silentMacNote] : [])
+                                          engine: engineName(config.engine), notes: othersPeak == 0 && length > 15 ? [Meeting.silentMacNote] : [])
             try transcript.write(to: file, atomically: true, encoding: .utf8)
             try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
             manifest.notesFile = file.path
