@@ -28,6 +28,8 @@ final class HoldKey {
     private var releaseTimer: Timer?
     private var inputSequence = 0
     var handsFree: Bool { state.handsFree }
+    var lastTalkKeyDownAt: Double? { state.lastTalkKeyDownAt }
+    var lastTypingKeyDownAt: Double? { state.lastTypingKeyDownAt }
     var ownerName: String? { state.owner.flatMap { o in keys.first { $0.code == o }?.name } }
 
     static let fn = Key(code: kVK_Function, name: "Fn")
@@ -105,10 +107,11 @@ final class HoldKey {
 
     private func key(_ e: NSEvent) {
         let code = Int(e.keyCode)
-        if isTalkKey(code), Self.modifiers[code] == nil {
-            receive(e, down: e.type == .keyDown)
+        if isTalkKey(code) {
+            if Self.modifiers[code] == nil { receive(e, down: e.type == .keyDown) }
+            else if e.type == .keyDown, !isOwn(e) { state.noteKeyDown(talkKey: true, at: e.timestamp) }
         } else if e.type == .keyDown, !isOwn(e) {
-            apply(state.otherKey())
+            apply(state.otherKey(at: e.timestamp))
         }
     }
 
@@ -124,8 +127,9 @@ final class HoldKey {
             let pid = e.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) ?? -1
             Log.note("talk raw: key \(code), \(down ? "down" : "up"), hardware \(hardware), confirmed \(down == hardware), pid \(pid), own \(own), repeat \(repeated), event \(String(format: "%.6f", e.timestamp)), uptime \(String(format: "%.6f", ProcessInfo.processInfo.systemUptime))")
         }
-        guard !repeated else { return }
         guard !own else { return }
+        if down { state.noteKeyDown(talkKey: true, at: e.timestamp) }
+        guard !repeated else { return }
         inputSequence += 1
         let sequence = inputSequence
         state.doubleTap = doubleTap

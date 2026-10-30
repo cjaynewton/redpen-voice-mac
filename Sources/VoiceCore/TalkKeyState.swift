@@ -11,6 +11,8 @@ public struct TalkKeyState {
     public private(set) var held = false
     public private(set) var active = false
     public private(set) var handsFree = false
+    public private(set) var lastTalkKeyDownAt: Double?
+    public private(set) var lastTypingKeyDownAt: Double?
     private var pressedAt = 0.0
     private var lastTap: (key: Int, at: Double)?
     private var secondTap = false
@@ -23,6 +25,7 @@ public struct TalkKeyState {
     public mutating func event(key: Int, down: Bool, ownEvent: Bool = false,
                                canBegin: Bool = true, at now: Double) -> Action? {
         guard !ownEvent else { return nil }
+        if down { noteKeyDown(talkKey: true, at: now) }
         // Either configured talk key can stop hands-free. While held, only its owner controls the press.
         if let owner, key != owner, !(handsFree && down) { return nil }
         guard down != held else { return nil }
@@ -85,7 +88,14 @@ public struct TalkKeyState {
         return release(at: eventAt, quick: true)
     }
 
-    public mutating func otherKey() -> Action? {
+    /// Repeats still advance the hardware counter, even though they do not change the talk gesture.
+    public mutating func noteKeyDown(talkKey: Bool, at time: Double) {
+        if talkKey { lastTalkKeyDownAt = max(lastTalkKeyDownAt ?? time, time) }
+        else { lastTypingKeyDownAt = max(lastTypingKeyDownAt ?? time, time) }
+    }
+
+    public mutating func otherKey(at time: Double? = nil) -> Action? {
+        if let time { noteKeyDown(talkKey: false, at: time) }
         guard held, active, !handsFree else { return nil }
         active = false; lastTap = nil; secondTap = false
         return .cancel

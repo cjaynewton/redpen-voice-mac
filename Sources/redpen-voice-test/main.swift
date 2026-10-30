@@ -108,6 +108,69 @@ do {
     check("delivery.tapBoundaryIsHold", !boundary.cancel(at: zero.addingTimeInterval(DictationDelivery.tapLength)) && boundary.current == 1)
 }
 
+// Draft guards use recorded times only. Reproduce a stop tap being counted as hardware typing.
+do {
+    var key = TalkKeyState()
+    func talk(_ down: Bool, _ time: Double, own: Bool = false, ready: Bool = true) {
+        _ = key.event(key: 63, down: down, ownEvent: own, canBegin: ready, at: time)
+    }
+    func failure(start: Double = 100, now: Double = 120, hardwareKeyAt: Double = 90,
+                 leftAt: Double = 90, rightAt: Double = 90) -> DraftSafety.Failure? {
+        DraftSafety.hardwareFailure(since: start, at: now, keyDownAgo: now - hardwareKeyAt,
+            leftClickAgo: now - leftAt, rightClickAgo: now - rightAt,
+            talkKeyDownAt: key.lastTalkKeyDownAt, typingKeyDownAt: key.lastTypingKeyDownAt)
+    }
+    check("draftSafety.idleHardwareIsSafe", failure() == nil)
+    check("draftSafety.unobservedHardwareKeyBlocks", failure(hardwareKeyAt: 110) == .hardwareKey)
+    talk(true, 99.9); talk(false, 99.98)
+    talk(true, 100.1); talk(false, 100.2)
+    check("draftSafety.startDoubleTapLatches", key.handsFree)
+    check("draftSafety.startTapAfterDraftStartIsSafe", failure(hardwareKeyAt: 100.1) == nil)
+    talk(true, 115, ready: false)
+    check("draftSafety.stopDownRecordedBeforeEnding", key.lastTalkKeyDownAt == 115 && !key.handsFree)
+    // The old decision is false for this same stop tap. The new decision accepts it.
+    check("draftSafety.oldCounterGuardRejectsStop", 120.0 - 115 < 120.0 - 100)
+    check("draftSafety.singleStopTapIsSafe", failure(hardwareKeyAt: 115) == nil)
+    talk(false, 115.1, ready: false)
+    check("draftSafety.releaseDoesNotMaskNewerTyping", key.lastTalkKeyDownAt == 115)
+    check("draftSafety.keyBetweenStopDownAndReleaseBlocks", failure(hardwareKeyAt: 115.05) == .hardwareKey)
+    talk(true, 115.2, ready: false); talk(false, 115.3, ready: false)
+    check("draftSafety.blockedSecondStopTapRecorded", key.lastTalkKeyDownAt == 115.2)
+    check("draftSafety.doubleStopTapIsSafe", failure(hardwareKeyAt: 115.2) == nil)
+    let ending = DraftReplacement(expectedBox: "Prefix. Draft words", actual: "Prefix. Draft words",
+        cursor: NSRange(location: 19, length: 0), draft: " Draft words", replacement: " Checked words and the ending.")
+    check("draftSafety.stopAllowsCompleteEnding", failure(hardwareKeyAt: 115.2) == nil &&
+        ending?.expected == "Prefix. Checked words and the ending.")
+    check("draftSafety.counterRoundingTolerated", failure(hardwareKeyAt: 115.201) == nil)
+    check("draftSafety.laterHardwareKeyBlocks", failure(hardwareKeyAt: 115.21) == .hardwareKey)
+    check("draftSafety.earlierUnmatchedHardwareKeyBlocks", failure(hardwareKeyAt: 114) == .hardwareKey)
+    talk(true, 119, own: true)
+    check("draftSafety.ownEventCannotExemptRealKey", key.lastTalkKeyDownAt == 115.2 && failure(hardwareKeyAt: 119) == .hardwareKey)
+    check("draftSafety.leftClickBlocksAfterStop", failure(hardwareKeyAt: 115.2, leftAt: 116) == .hardwareClick)
+    check("draftSafety.rightClickBlocksAfterStop", failure(hardwareKeyAt: 115.2, rightAt: 116) == .hardwareClick)
+    check("draftSafety.clickStillBlocksWhenTalkIsLatest", failure(hardwareKeyAt: 115.2, leftAt: 110) == .hardwareClick)
+    _ = key.otherKey(at: 115.2005)
+    check("draftSafety.observedTypingWithinToleranceBlocks", failure(hardwareKeyAt: 115.2005) == .hardwareKey)
+    talk(true, 116, ready: false); talk(false, 116.1, ready: false)
+    check("draftSafety.stopCannotHideEarlierRealTyping", failure(hardwareKeyAt: 116) == .hardwareKey)
+    check("draftSafety.oldTypingDoesNotBlockNextDictation", failure(start: 117, hardwareKeyAt: 116) == nil)
+    key.noteKeyDown(talkKey: true, at: 118)
+    key.noteKeyDown(talkKey: true, at: 117.9)
+    check("draftSafety.repeatRecordedAndTimeCannotGoBack", key.lastTalkKeyDownAt == 118 && failure(start: 117, hardwareKeyAt: 118) == nil)
+    key = TalkKeyState()
+    talk(true, 99); talk(false, 101)
+    check("draftSafety.holdReleaseIsSafe", failure(hardwareKeyAt: 99) == nil)
+    key = TalkKeyState()
+    key.doubleTap = false
+    _ = key.event(key: 96, down: true, at: 99)
+    key.noteKeyDown(talkKey: true, at: 105) // ordinary talk key repeating while held
+    check("draftSafety.ordinaryTalkRepeatIsSafe", failure(hardwareKeyAt: 105) == nil)
+    check("draftSafety.ordinaryTalkKeyDoesNotDisableTypingGuard", failure(hardwareKeyAt: 106) == .hardwareKey)
+    _ = key.otherKey(at: 107)
+    key.noteKeyDown(talkKey: true, at: 108)
+    check("draftSafety.shortcutTypingCannotBeHiddenByRepeat", failure(hardwareKeyAt: 108) == .hardwareKey)
+}
+
 // Talk gestures run without posting keys, opening windows, or using the microphone.
 do {
     var key = TalkKeyState()

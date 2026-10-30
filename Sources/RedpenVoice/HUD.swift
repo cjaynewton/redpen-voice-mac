@@ -24,6 +24,7 @@ final class HUD {
     private var started = Date()
     /// The newest words written while you talk, shown beside the line.
     private var captionText = ""
+    private var typingStopped = false
     /// Captured on key-down. Layout, captions, writing and completion messages keep this screen.
     private var dictationScreen: NSScreen?
     private let addWord = NSButton(title: "Add", target: nil, action: nil)
@@ -99,6 +100,7 @@ final class HUD {
 
     /// Bars only while talking; words only when something needs saying.
     func show(_ text: String, level: Bool, ok: Bool = false) {
+        typingStopped = false
         clearSuggestion()
         hideAt?.cancel()
         self.ok = ok
@@ -116,6 +118,7 @@ final class HUD {
 
     /// After the key comes up: the bar stays, quietly moving, until the words land or a message replaces it.
     func writing() {
+        guard !typingStopped else { return }
         guard style != "classic", panel.isVisible else { hide(); return }
         meter.writing = true
         meter.silent = false
@@ -130,6 +133,7 @@ final class HUD {
 
     /// Shows the end of what has been written so far while you are still talking.
     func caption(_ text: String) {
+        guard !typingStopped else { return }
         captionText = text.count > 46 ? "…" + text.suffix(45) : text
         guard panel.isVisible, !meter.writing, !meter.silent else { return }
         label.stringValue = captionText
@@ -140,8 +144,16 @@ final class HUD {
 
     /// Captions normally update an existing bar. Stopped live typing must also restore a hidden bar.
     func listeningCaption(_ text: String) {
+        guard !typingStopped else { return }
         if !panel.isVisible || meter.writing || meter.flat { show("", level: true) }
         caption(text)
+    }
+
+    /// Keep a clear, fixed message until completion. Later engine callbacks must not look like live typing.
+    func stoppedTyping() {
+        guard !typingStopped else { return }
+        show(DraftSafety.stoppedMessage, level: false)
+        typingStopped = true
     }
 
     /// Saves the bar as it looks now, at 2x, for checking its shape without a screen recording (--hud-snapshot).
@@ -163,7 +175,7 @@ final class HUD {
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: w)
     }
 
-    func hide() { hideAt?.cancel(); tick?.invalidate(); tick = nil; clearSuggestion(); panel.orderOut(nil) }
+    func hide() { typingStopped = false; hideAt?.cancel(); tick?.invalidate(); tick = nil; clearSuggestion(); panel.orderOut(nil) }
 
     /// Never replaces a warning or the listening/writing bar, and never makes the target app lose focus.
     @discardableResult
