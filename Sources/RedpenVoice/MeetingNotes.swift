@@ -24,6 +24,9 @@ enum MeetingNotes {
         let summary: String
     }
 
+    /// An error for the log: its kind and number only. macOS's own wording can name the meeting's file or folder.
+    static func code(_ e: Error) -> String { let n = e as NSError; return "\(n.domain) \(n.code)" }
+
     static func save(_ m: MeetingManifest, in folder: URL) throws {
         let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]; enc.dateEncodingStrategy = .iso8601
         let url = folder.appendingPathComponent(MeetingManifest.file)
@@ -176,7 +179,7 @@ enum MeetingNotes {
                 try exportAudio(othersTrack, to: beside.appendingPathComponent(base + " Others.m4a"))
                 try exportAudio(meTrack, to: beside.appendingPathComponent(base + " Me.m4a"))
             } catch {
-                Log.note("meeting: audio not saved, \(error.localizedDescription); the raw tracks stay in the recording folder")
+                Log.note("meeting: audio not saved, \(code(error)); the raw tracks stay in the recording folder")
                 throw error
             }
         }

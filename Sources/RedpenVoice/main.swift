@@ -1946,7 +1946,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !(config.meetingTipShown ?? false) { guard firstMeetingTip() else { return } }
         if !recorder.isRunning {
             let fmt = engine.audioFormat ?? AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
-            do { try recorder.start(format: fmt) } catch { Log.note("meeting: mic failed \(error.localizedDescription)") }
+            do { try recorder.start(format: fmt) } catch { Log.note("meeting: mic failed, \(MeetingNotes.code(error))") }
         }
         guard recorder.isRunning else { hud.flash("Mic not ready"); return }
         do {
@@ -1964,7 +1964,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         } catch {
-            Log.note("meeting: could not start, \(error.localizedDescription)")
+            Log.note("meeting: could not start, \(MeetingNotes.code(error))")
             hud.flash("Couldn't start meeting notes", for: 2.5)
         }
         refreshMenu()
@@ -2019,7 +2019,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Never over a meeting being recorded: the file waits in the folder.
                 if self.meeting == nil { NSWorkspace.shared.open(r.file) }
             } catch {
-                Log.note("meeting: notes failed, \(error.localizedDescription)")
+                Log.note("meeting: notes failed, \(MeetingNotes.code(error))")
                 await self.whenNotDictating()
                 self.hud.flash("Couldn't write the notes. The recording is kept.", for: 3.5)
             }

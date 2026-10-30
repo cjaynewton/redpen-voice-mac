@@ -83,7 +83,7 @@ final class TrackWriter: @unchecked Sendable {
             ints[i] = Int16(v * 32767).littleEndian
         }
         let data = ints.withUnsafeBufferPointer { Data(buffer: $0) }
-        do { try handle.write(contentsOf: data) } catch { Log.note("meeting: write failed on \(url.lastPathComponent), \(error.localizedDescription)"); return }
+        do { try handle.write(contentsOf: data) } catch { Log.note("meeting: write failed on \(url.lastPathComponent), \(MeetingNotes.code(error))"); return }
         lock.withLock { written += samples.count; loudest = max(loudest, peak) }
     }
 
