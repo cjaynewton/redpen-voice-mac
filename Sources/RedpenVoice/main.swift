@@ -432,7 +432,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // `ready`: drawn as a Mac where the chosen engine has finished loading (for the README pictures).
             if CommandLine.arguments.contains("ready") { model.engineState = .ready }
             let v = NSHostingView(rootView: SettingsView(model: model).buttonBorderShape(.roundedRectangle(radius: 4)))
-            v.frame = NSRect(x: 0, y: 0, width: 540, height: 2000)
+            v.frame = NSRect(x: 0, y: 0, width: 540, height: 2300)
             let w = NSWindow(contentRect: v.frame, styleMask: [.borderless], backing: .buffered, defer: false)
             w.contentView = v; v.layoutSubtreeIfNeeded(); v.display()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
@@ -460,6 +460,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.state.totalWords = total.words; menu.state.totalSaved = total.minutesSaved
             // `ready`: drawn as a set-up Mac (engine loaded, Fn key already set), for the README pictures.
             if CommandLine.arguments.contains("ready") { menu.state.ready = true; menu.state.status = "Ready"; menu.state.warning = nil }
+            // `meeting`: drawn 12:34 into meeting notes, with an earlier meeting's notes being written (D-951).
+            if CommandLine.arguments.contains("meeting") { menu.state.meetingStarted = Date().addingTimeInterval(-754); menu.state.notesStatus = "Writing notes 40%" }
             let v = NSHostingView(rootView: MenuPanel(model: menu))
             v.frame = NSRect(origin: .zero, size: v.fittingSize)
             Self.shoot(v, to: CommandLine.arguments[i + 1])
@@ -1797,6 +1799,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let work = m.stop()
             meeting = nil
             setIcon()
+            // A mic change made during the meeting waited for it to end.
+            if !config.inputDevice.isEmpty, config.inputDevice != recorder.currentUID { warmMic() }
+            else { remicIfDefaultMoved(reason: "meeting stopped") }
             notesQueue.append(work)
             writeNextNotes()
             return
@@ -1888,7 +1893,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Waits for a dictation to finish (a minute at most), so a message or a window never lands on top of it.
     private func whenNotDictating() async {
-        for _ in 0..<120 where session != nil || writing > 0 { try? await Task.sleep(for: .milliseconds(500)) }
+        var tries = 0
+        while session != nil || writing > 0, tries < 120 { try? await Task.sleep(for: .milliseconds(500)); tries += 1 }
     }
 
     /// Meetings recorded but never written up (a quit or crash): offered at launch, and from the menu.

@@ -5,7 +5,8 @@ import VoiceCore
 /// `--meeting-test me.wav others.wav out-folder [--engine whisper] [--no-summary]`: the whole after-stop pipeline on
 /// two files, without a microphone or tap. Each file goes through the same track writer a meeting uses, 0.1 s at a
 /// time, into a recording folder inside `out-folder`, then the notes are written there. `silent` as the first file
-/// is a muted microphone as long as the other track. Everything stays in `out-folder`.
+/// is a muted microphone as long as the other track; `echo` is the other track heard again by the microphone, a
+/// little later and quieter, as on laptop speakers. Everything stays in `out-folder`.
 enum MeetingTest {
     static func run(_ args: [String], engine: Transcriber, config base: Config, names: Names) async -> Int32 {
         guard args.count >= 3 else { print("usage: --meeting-test me.wav|silent others.wav out-folder"); return 2 }
@@ -32,7 +33,15 @@ enum MeetingTest {
             let others = try TrackWriter(url: work.appendingPathComponent(MeetingManifest.othersFile))
             let othersSecs = try feed(othersURL, into: others)
             let me = try TrackWriter(url: work.appendingPathComponent(MeetingManifest.meFile))
-            let meSecs = args[0] == "silent" ? feedSilence(seconds: othersSecs, into: me) : try feed(URL(fileURLWithPath: args[0]), into: me)
+            let meSecs: Double
+            switch args[0] {
+            case "silent": meSecs = feedSilence(seconds: othersSecs, into: me)
+            case "echo":
+                // Laptop speakers: the microphone hears the others a little later and quieter.
+                _ = feedSilence(seconds: 0.04, into: me)
+                meSecs = try feed(othersURL, into: me, gain: 0.3) + 0.04
+            default: meSecs = try feed(URL(fileURLWithPath: args[0]), into: me)
+            }
             others.close(); me.close()
             var m = MeetingManifest(started: Date()); m.meOffset = 0; m.othersOffset = 0; m.stopped = Date()
             try MeetingNotes.save(m, in: work)
@@ -71,13 +80,16 @@ enum MeetingTest {
     }
 
     /// A file into a track writer, a tenth of a second at a time. Returns its seconds.
-    private static func feed(_ url: URL, into w: TrackWriter) throws -> Double {
+    private static func feed(_ url: URL, into w: TrackWriter, gain: Float = 1) throws -> Double {
         let f = try AVAudioFile(forReading: url)
         let step = AVAudioFrameCount(f.processingFormat.sampleRate / 10)
         while f.framePosition < f.length {
             guard let b = AVAudioPCMBuffer(pcmFormat: f.processingFormat, frameCapacity: step) else { break }
             try f.read(into: b, frameCount: min(step, AVAudioFrameCount(f.length - f.framePosition)))
             if b.frameLength == 0 { break }
+            if gain != 1, let d = b.floatChannelData {
+                for c in 0..<Int(b.format.channelCount) { for i in 0..<Int(b.frameLength) { d[c][i] *= gain } }
+            }
             // More than one channel: the first, as the mic path reads one channel.
             if f.processingFormat.channelCount > 1, let mono = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: f.processingFormat.sampleRate, channels: 1, interleaved: false),
                let m = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: b.frameLength), let src = b.floatChannelData?[0] {
