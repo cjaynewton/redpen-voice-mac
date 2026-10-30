@@ -175,6 +175,20 @@ do {
     check("draftSafety.shortcutTypingCannotBeHiddenByRepeat", failure(hardwareKeyAt: 108) == .hardwareKey)
 }
 
+// Oct 30 live log: the counter's key-down time matched the Fn release, not the press.
+do {
+    let input = DraftInput(since: 998648.0)
+    input.record(talkKey: true, at: 998671.739563); input.record(talkKey: true, at: 998671.830269)
+    input.record(talkKey: true, at: 998671.888730); input.record(talkKey: true, at: 998672.029599)
+    let t = input.snapshot()
+    func fail(_ keyAt: Double) -> DraftSafety.Failure? {
+        DraftSafety.hardwareFailure(since: 998648.0, at: 998673.0, keyDownAgo: 998673.0 - keyAt,
+            leftClickAgo: 999, rightClickAgo: 999, talkKeyDownTimes: t.talkTimes, typingKeyDownAt: t.typingAt)
+    }
+    check("draftR3.stopTapReleaseIsTalkKey", fail(998672.029619) == nil)
+    check("draftR3.keyLongAfterReleaseBlocks", fail(998672.5) == .hardwareKey)
+}
+
 // Round 2: use the same per-dictation evidence and bounded reconciliation as the production while/ending guard.
 // All input is injected into the time ledger. No keys or events are posted.
 do {

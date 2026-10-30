@@ -63,11 +63,10 @@ final class DraftInputMonitor: @unchecked Sendable {
         let code = Int(event.getIntegerValueField(.keyboardEventKeycode))
         lock.lock(); let talk = talkCodes.contains(code); lock.unlock()
         if type == .flagsChanged {
-            // The event's flags carry direction even if the physical key is already up when handled.
-            let flags: [Int: CGEventFlags] = [63: .maskSecondaryFn, 61: .maskAlternate, 58: .maskAlternate,
-                54: .maskCommand, 55: .maskCommand, 62: .maskControl, 59: .maskControl,
-                60: .maskShift, 56: .maskShift]
-            guard talk, let flag = flags[code], event.flags.contains(flag) else { return }
+            // Both directions: the Mac's key-down counter moves on the Fn release too (Oct 30: every blocked
+            // ending sat within 0.1 ms of the stop tap's release, 120 to 180 ms after its press).
+            let modifierCodes: Set<Int> = [63, 61, 58, 54, 55, 62, 59, 60, 56]
+            guard talk, modifierCodes.contains(code) else { return }
         } else if type != .keyDown { return }
         record(talkKey: talk, at: Double(event.timestamp) / 1_000_000_000)
     }
