@@ -1052,6 +1052,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let input: DraftInput
         var hardwareSample: DraftSafety.HardwareSample?
         var reportedFailures: Set<DraftSafety.Failure> = []
+        var lastFailure: DraftSafety.Failure?
         var runs: [Run] = []
         var nextDraft = 0
         var box: (pid: pid_t, element: AXUIElement)?
@@ -1083,6 +1084,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @discardableResult
     private func draftBlocked(_ d: Drafting, _ reason: DraftSafety.Failure, during path: String) -> Bool {
+        d.lastFailure = reason
         if d.reportedFailures.insert(reason).inserted {
             var detail = ""
             if reason == .hardwareKey, let sample = d.hardwareSample {
@@ -1243,7 +1245,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 drafts: d.runs[0].drafts.lowerBound..<max(d.runs[0].drafts.lowerBound + 1, s.draftCount),
                 with: text, during: "ending")
         }
-        if showResult {
+        // You did something else in the seconds after you stopped (another app, a key, a click), but the box itself
+        // wasn't touched: the ending waits and goes in when you're back in that box (Oct 30: most "didn't confirm"
+        // endings were a key or app switch while Whisper was still finishing).
+        let away: Set<DraftSafety.Failure> = [.hardwareKey, .hardwareClick, .userActed, .appChanged, .elementChanged]
+        let holding = !landed && !s.echoFailed && !text.isEmpty && !d.runs.isEmpty && !d.deliveryUncertain
+            && d.lastFailure.map { away.contains($0) } == true
+        if holding { holdEnding(d, text: text) }
+        if showResult, !holding {
             if landed { hud.hide() }
             else { hud.flash("Didn't confirm all the words. Press ⌃⌥V to paste the checked text", for: 3.5) }
         }
@@ -1363,6 +1372,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Words that finished while your cursor wasn't in a text box. They go in when you click into one.
     private var waitingText: String?
     private var waitTimer: Timer?
+    private var endingTimer: Timer?
+
+    /// A finished dictation whose drafts are still in the box, waiting for you to be back in that box with nothing
+    /// changed. Then the drafts are swapped for the checked text. Changed box, a new dictation, or 10 minutes: it
+    /// gives up and the checked text stays on Control-Option-V.
+    private func holdEnding(_ d: Drafting, text: String) {
+        endingTimer?.invalidate()
+        guard let b = d.box, let start = d.startBox, let expected = start.print.text else { return }
+        let typed = d.runs.map(\.text).joined()
+        let lead = typed.first == " " ? " " : ""
+        let fixed = lead + text.trimmingCharacters(in: .whitespaces)
+        let until = Date().addingTimeInterval(600)
+        var told = false
+        Log.note("draft: ending waits for the box you started in")
+        let tick = { [weak self] (t: Timer) in
+            MainActor.assumeIsolated {
+                guard let self else { t.invalidate(); return }
+                guard self.session == nil, self.writing == 0, Date() < until else {
+                    t.invalidate(); self.endingTimer = nil
+                    Log.note("draft: held ending dropped (new dictation or 10 minutes), kept for Paste last"); return
+                }
+                let here = NSWorkspace.shared.frontmostApplication?.processIdentifier == b.pid
+                    && Insert.focusedElement().map { CFEqual($0.0, b.element) } == true
+                guard here else {
+                    if !told { told = true; self.hud.flash("Your words go in when you're back in \(start.app)", for: 2.5) }
+                    return
+                }
+                t.invalidate(); self.endingTimer = nil
+                guard self.isAt(start) else {
+                    self.hud.flash("That box changed. Press ⌃⌥V to paste the checked text", for: 3)
+                    Log.note("draft: held ending, box changed, kept for Paste last"); return
+                }
+                let after = Date().addingTimeInterval(0.05)
+                let quiet: () -> Bool = { Date() < after || AppDelegate.userQuietSince(after, keys: true) }
+                let ok = Insert.replaceDraft(typed, with: fixed, expectedBox: expected, in: b.element, while: quiet)
+                if ok { self.rememberOwnTyping(in: start); Insert.forgetLast(); self.hud.hide() }
+                else { self.hud.flash("Didn't confirm all the words. Press ⌃⌥V to paste the checked text", for: 3.5) }
+                Log.note("draft: held ending \(ok ? "went in" : "not confirmed, kept for Paste last")")
+            }
+        }
+        let timer = Timer(timeInterval: 0.3, repeats: true, block: tick)
+        RunLoop.main.add(timer, forMode: .common)
+        endingTimer = timer
+    }
     private var waitSeen = 0
     private var waitPid: pid_t = 0
 
