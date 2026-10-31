@@ -204,11 +204,12 @@ public enum Meeting {
     }
 
     /// One paragraph per turn: lines from the same speaker in a row are joined under the first one's time, and a
-    /// new paragraph starts when the speaker changes or after a pause of `gap` seconds.
-    public static func paragraphs(_ lines: [MeetingLine], gap: Double = 3) -> [MeetingLine] {
+    /// new paragraph starts when the speaker changes, after a pause of `gap` seconds, or once a paragraph has run
+    /// `most` seconds. That cap keeps a long turn (or a call where everyone is Others) in parts a time can point at.
+    public static func paragraphs(_ lines: [MeetingLine], gap: Double = 3, most: Double = 45) -> [MeetingLine] {
         var out: [MeetingLine] = []
         for l in lines {
-            if var p = out.last, p.speaker == l.speaker, l.start - p.end <= gap {
+            if var p = out.last, p.speaker == l.speaker, l.start - p.end <= gap, l.start - p.start < most {
                 p.text += " " + l.text
                 p.end = max(p.end, l.end)
                 out[out.count - 1] = p
@@ -254,26 +255,7 @@ public enum Meeting {
     /// Under the header when the Mac's sound was silent the whole meeting: most likely the permission is off.
     public static let silentMacNote = "The Mac's sound was silent for the whole meeting, so only your microphone is here. If others were talking, allow Redpen Voice under System Audio Recording in Privacy & Security, then try again."
 
-    /// The label above every summary.
-    public static let summaryLabel = "*Written on this Mac by Apple's model. Check it against the transcript.*"
-
     // MARK: The summary
-
-    public struct ToDo: Equatable, Sendable {
-        public var who: String
-        public var task: String
-        public init(who: String, task: String) { self.who = who; self.task = task }
-    }
-
-    public struct Summary: Equatable, Sendable {
-        public var points: [String]
-        public var decisions: [String]
-        public var todos: [ToDo]
-        public init(points: [String] = [], decisions: [String] = [], todos: [ToDo] = []) {
-            self.points = points; self.decisions = decisions; self.todos = todos
-        }
-        public var isEmpty: Bool { points.isEmpty && decisions.isEmpty && todos.isEmpty }
-    }
 
     /// The transcript in pieces of at most `maxChars`, whole lines only, so each fits the on-device model's window.
     /// A single line longer than that is cut at a space.
@@ -314,31 +296,21 @@ public enum Meeting {
 
     /// Names in the summary (capitalised words inside a sentence) that are nowhere in the transcript.
     public static func unknownNames(_ summary: String, transcript: String) -> [String] {
-        let said = Set(keys(transcript))
+        // "Hogan's" and "IDs" in either text are Hogan and ID.
+        let plain = { (k: String) in k.count > 2 && k.hasSuffix("s") ? String(k.dropLast()) : k }
+        let said = Set(keys(transcript).flatMap { [$0, plain($0)] })
         let known: Set<String> = ["me", "others", "i", "not", "clear", "am", "pm"]
         var seen = Set<String>(), out: [String] = []
         for sentence in summary.components(separatedBy: CharacterSet(charactersIn: ".!?:\n")) {
             let words = sentence.split(whereSeparator: { !($0.isLetter || $0.isNumber || $0 == "'") })
             for w in words.dropFirst() {
-                let bare = w.filter { $0.isLetter || $0.isNumber }
+                // "Friday's" is Friday.
+                let bare = (w.hasSuffix("'s") ? w.dropLast(2) : w[...]).filter { $0.isLetter || $0.isNumber }
                 guard let f = bare.first, f.isUppercase, bare.count > 1 else { continue }
                 let k = bare.lowercased()
-                if !said.contains(k), !known.contains(k), seen.insert(k).inserted { out.append(String(bare)) }
+                if !said.contains(k), !said.contains(plain(k)), !known.contains(k), seen.insert(k).inserted { out.append(String(bare)) }
             }
         }
-        return out
-    }
-
-    /// The summary as Markdown, under its label. Sections with nothing in them say so.
-    public static func summaryMarkdown(_ s: Summary, transcript: String) -> String {
-        func list(_ items: [String]) -> String { items.isEmpty ? "None heard.\n" : items.map { "- \($0)" }.joined(separator: "\n") + "\n" }
-        var out = "## Summary\n\n\(summaryLabel)\n\n"
-        out += "### Key points\n\n" + list(s.points) + "\n"
-        out += "### Decisions\n\n" + list(s.decisions) + "\n"
-        out += "### To-dos\n\n" + list(s.todos.map { "\(who($0.who, transcript: transcript)): \($0.task)" })
-        let body = (s.points + s.decisions + s.todos.map(\.task)).joined(separator: ". ")
-        let odd = unknownNames(body, transcript: transcript)
-        if !odd.isEmpty { out += "\nNot in the transcript, so check them: \(odd.joined(separator: ", ")).\n" }
         return out
     }
 

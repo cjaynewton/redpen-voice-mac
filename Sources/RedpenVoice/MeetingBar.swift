@@ -10,7 +10,9 @@ final class MeetingBar: NSObject {
     /// What the bar shows while recording, read ten times a second.
     struct Now { var recorded: Double; var paused: Bool; var me: Float; var others: Float; var noSound: Bool }
 
-    enum Mode: Equatable { case recording, writing(Int, String), done(String, Bool) }
+    /// `offer`: notes saved, with a button for a better summary from this helper ("claude", "chatgpt", "gemini",
+    /// "cursor", "command" or "mac"; D-956, D-1010, D-1012). `busy`: waiting on it.
+    enum Mode: Equatable { case recording, writing(Int, String), done(String, Bool), offer(String), busy(String) }
 
     var source: () -> Now? = { nil }
     /// True while a dictation is on screen: the bar steps aside.
@@ -18,6 +20,8 @@ final class MeetingBar: NSObject {
     var onStop: () -> Void = {}
     var onPause: () -> Void = {}
     var onAllow: () -> Void = {}
+    /// Better summary clicked, with the helper the button named.
+    var onBetter: (String) -> Void = { _ in }
 
     private let panel: Panel
     private let box = NSView()
@@ -31,6 +35,8 @@ final class MeetingBar: NSObject {
     private let allow = NSButton(title: "Allow it", target: nil, action: nil)
     private let pause = NSButton(title: "Pause", target: nil, action: nil)
     private let stop = NSButton(title: "Stop", target: nil, action: nil)
+    private let better = NSButton(title: "Better summary", target: nil, action: nil)
+    private let notNow = NSButton(title: "Not now", target: nil, action: nil)
     private let message = NSTextField(labelWithString: "")
     private let progress = NSView(), progressFill = NSView()
     private let tick = NSTextField(labelWithString: "✓")
@@ -84,7 +90,8 @@ final class MeetingBar: NSObject {
         for l in [meLabel, othersLabel] { l.font = NSFont.systemFont(ofSize: 11.5); l.textColor = Self.dim }
         warn.font = NSFont.systemFont(ofSize: 13, weight: .medium); warn.textColor = Self.warnText
         for s in [sep1, sep2] { s.wantsLayer = true; s.layer?.backgroundColor = NSColor(white: 1, alpha: 0.16).cgColor }
-        for (b, title, act) in [(pause, "Pause", #selector(pauseTapped)), (stop, "Stop", #selector(stopTapped)), (allow, "Allow it", #selector(allowTapped))] {
+        for (b, title, act) in [(pause, "Pause", #selector(pauseTapped)), (stop, "Stop", #selector(stopTapped)), (allow, "Allow it", #selector(allowTapped)),
+                                (better, "Better summary", #selector(betterTapped)), (notNow, "Not now", #selector(notNowTapped))] {
             b.title = title
             b.isBordered = false
             b.wantsLayer = true
@@ -97,6 +104,10 @@ final class MeetingBar: NSObject {
         pause.layer?.borderColor = NSColor(white: 1, alpha: 0.30).cgColor
         pause.layer?.borderWidth = 1
         pause.toolTip = "Pause: nothing is recorded until you resume (⌃⌥P)"
+        better.layer?.backgroundColor = NSColor(white: 1, alpha: 0.10).cgColor
+        better.layer?.borderColor = NSColor(white: 1, alpha: 0.30).cgColor
+        better.layer?.borderWidth = 1
+        notNow.attributedTitle = NSAttributedString(string: "Not now", attributes: [.foregroundColor: Self.dim, .font: NSFont.systemFont(ofSize: 12.5)])
         stop.attributedTitle = NSAttributedString(string: "Stop", attributes: [.foregroundColor: NSColor(srgbRed: 0.106, green: 0.027, blue: 0.02, alpha: 1),
                                                                                .font: NSFont.systemFont(ofSize: 12.5, weight: .semibold)])
         stop.layer?.backgroundColor = Self.red.cgColor
@@ -109,7 +120,7 @@ final class MeetingBar: NSObject {
         progress.addSubview(progressFill)
         tick.font = NSFont.systemFont(ofSize: 14, weight: .semibold)
         tick.textColor = NSColor(srgbRed: 0.3, green: 0.77, blue: 0.43, alpha: 1)
-        for v in [rec, time, pausedLabel, sep1, meBars, meLabel, othersBars, othersLabel, warn, allow, sep2, pause, stop, message, progress, tick] as [NSView] {
+        for v in [rec, time, pausedLabel, sep1, meBars, meLabel, othersBars, othersLabel, warn, allow, sep2, pause, stop, message, progress, tick, better, notNow] as [NSView] {
             box.addSubview(v)
         }
         NotificationCenter.default.addObserver(self, selector: #selector(moved), name: NSWindow.didMoveNotification, object: panel)
@@ -137,6 +148,23 @@ final class MeetingBar: NSObject {
         let w = DispatchWorkItem { [weak self] in self?.hide() }
         hideWork = w
         DispatchQueue.main.asyncAfter(deadline: .now() + (ok ? 2.5 : 4), execute: w)
+    }
+
+    /// "Notes saved" with the offer of a better summary from `helper`; it goes after a minute untouched.
+    func offer(_ helper: String) {
+        mode = .offer(helper)
+        start()
+        let w = DispatchWorkItem { [weak self] in if case .offer = self?.mode { self?.hide() } }
+        hideWork?.cancel()
+        hideWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60, execute: w)
+    }
+
+    /// While the better summary is being written.
+    func showBusy(_ text: String) {
+        hideWork?.cancel()
+        mode = .busy(text)
+        start()
     }
 
     func hide() {
@@ -171,7 +199,7 @@ final class MeetingBar: NSObject {
     private func layout(_ now: Now?) {
         let h: CGFloat = 40
         var x: CGFloat = 14
-        let all: [NSView] = [rec, time, pausedLabel, sep1, meBars, meLabel, othersBars, othersLabel, warn, allow, sep2, pause, stop, message, progress, tick]
+        let all: [NSView] = [rec, time, pausedLabel, sep1, meBars, meLabel, othersBars, othersLabel, warn, allow, sep2, pause, stop, message, progress, tick, better, notNow]
         var visible: [NSView] = []
         func put(_ v: NSView, _ w: CGFloat, _ vh: CGFloat, gap: CGFloat = 10) {
             v.frame = NSRect(x: x, y: ((h - vh) / 2).rounded(), width: w, height: vh); x += w + gap; visible.append(v)
@@ -225,6 +253,18 @@ final class MeetingBar: NSObject {
             if ok { tick.sizeToFit(); put(tick, ceil(tick.frame.width), 18, gap: 8) }
             message.stringValue = text
             label(message, gap: 16)
+        case .offer(let helper):
+            tick.sizeToFit(); put(tick, ceil(tick.frame.width), 18, gap: 8)
+            message.stringValue = "Notes saved"
+            label(message, gap: 14)
+            better.attributedTitle = NSAttributedString(string: BetterSummary.button(helper),
+                                                        attributes: [.foregroundColor: Self.text, .font: NSFont.systemFont(ofSize: 12.5, weight: .medium)])
+            better.toolTip = BetterSummary.tip(helper)
+            button(better)
+            button(notNow, padding: 8, gap: 8)
+        case .busy(let text):
+            message.stringValue = text
+            label(message, gap: 16)
         }
         for v in all { v.isHidden = !visible.contains(v) }
         let width = folded && mode == .recording ? 40 : x - (mode == .recording ? 8 : 0) + 6
@@ -267,6 +307,8 @@ final class MeetingBar: NSObject {
     @objc private func stopTapped() { onStop() }
     @objc private func pauseTapped() { onPause() }
     @objc private func allowTapped() { onAllow() }
+    @objc private func betterTapped() { if case .offer(let h) = mode { onBetter(h) } }
+    @objc private func notNowTapped() { hide() }
 
     /// Five small bars that move with the sound; flat and grey when there is none to show.
     final class Bars: NSView {
@@ -299,6 +341,10 @@ final class MeetingBar: NSObject {
             ("folded", .recording, Now(recorded: 754, paused: false, me: 0.6, others: 0.4, noSound: false), true),
             ("writing", .writing(40, "Writing notes…"), nil, false),
             ("saved", .done("Notes saved", true), nil, false),
+            ("offer", .offer("claude"), nil, false),
+            ("busy", .busy("Asking Claude for a better summary…"), nil, false),
+            ("offer-mac", .offer(BetterSummary.onMac), nil, false),
+            ("busy-mac", .busy("Writing a better summary on this Mac…"), nil, false),
         ]
         var i = 0
         func next() {

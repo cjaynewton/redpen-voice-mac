@@ -1510,6 +1510,9 @@ do {
     let ps2 = Meeting.paragraphs(turns)
     check("meeting.paragraphJoin", ps2.first?.text == "The WSL. Yes. Okay." && ps2.first?.start == 0, "\(ps2.map(\.text))")
     check("meeting.paragraphGapAndTurns", ps2.map(\.text) == ["The WSL. Yes. Okay.", "After a pause.", "Their turn.", "Mine again."], "\(ps2.map(\.text))")
+    let longTurn = (0..<20).map { MeetingLine(start: Double($0) * 6, speaker: .others, text: "Line \($0).", end: Double($0) * 6 + 5) }
+    let capped = Meeting.paragraphs(longTurn)
+    check("meeting.paragraphCap", capped.count == 3 && capped.map(\.start) == [0, 48, 96] && capped.allSatisfy { $0.end - $0.start <= 50 }, "\(capped.map(\.start))")
     check("meeting.paragraphEmpty", Meeting.paragraphs([]).isEmpty && Meeting.dropRepeats([]).isEmpty)
     check("meeting.mergeKeepsEnd", Meeting.merge(me: [MeetingSegment(start: 1, end: 4, text: "x")], others: []).first?.end == 4)
     check("meeting.line", MeetingLine(start: 252, speaker: .me, text: "Hi.").markdown == "[04:12] Me: Hi.")
@@ -1549,11 +1552,132 @@ do {
     check("meeting.whoInvented", Meeting.who("John Smith", transcript: said) == "Not clear")
     check("meeting.unknownSlash", Meeting.unknownNames("Back after the July/August break.", transcript: "[00:01] Others: July and August off") == [])
     check("meeting.unknownNames", Meeting.unknownNames("Priya will send the deck to Marcus by Friday.", transcript: said) == ["Marcus", "Friday"])
-    let sm = Meeting.summaryMarkdown(Meeting.Summary(points: ["The deck is late."], decisions: [],
-                                                     todos: [Meeting.ToDo(who: "Priya", task: "Send the deck."), Meeting.ToDo(who: "Bob", task: "Book a room.")]),
-                                     transcript: said)
-    check("meeting.summaryLabel", sm.hasPrefix("## Summary\n\n" + Meeting.summaryLabel + "\n\n"))
-    check("meeting.summaryLists", sm.contains("### Decisions\n\nNone heard.\n") && sm.contains("- Priya: Send the deck.") && sm.contains("- Not clear: Book a room."))
+    // Summary v2 (D-956): times, the citation check, the to-do filter, reading a written summary, where it goes.
+    check("summary.seconds", Meeting.seconds("12:34") == 754 && Meeting.seconds("1:02:03") == 3723 && Meeting.seconds("[00:05]") == 5)
+    check("summary.secondsBad", Meeting.seconds("12:3") == nil && Meeting.seconds("12:60") == nil && Meeting.seconds("soon") == nil && Meeting.seconds("1:2:03") == nil)
+    check("summary.citedEnd", Meeting.cited("The deck is late. [01:10]") == ("The deck is late.", 70))
+    check("summary.citedSeveral", Meeting.cited("Budget up 20% [00:05, 01:10].").at == 5 && Meeting.cited("Budget up 20% [00:05, 01:10].").text == "Budget up 20%")
+    check("summary.citedStart", Meeting.cited("[02:30] Book the studio.") == ("Book the studio.", 150))
+    check("summary.citedNone", Meeting.cited("No time here.") == ("No time here.", nil) && Meeting.cited("Costs (about 5%) rose.").at == nil)
+    let tx = """
+    [00:05] Others: Thanks for joining. The plan is to raise the marketing budget by 20% for Q3 and focus on Gen Z this time.
+
+    [00:40] Others: Our numbers last quarter were strong across every channel, especially video and podcasts, and the board was happy with how the launch went overall.
+
+    [01:10] Me: I'll send the revised budget deck to Priya by Friday.
+
+    [02:30] Others: Can you book the studio for the March 3 shoot?
+
+    [02:50] [paused 1:00]
+
+    [03:00] Others: Great, have a lovely weekend everyone.
+    """
+    let heard = Meeting.said(tx)
+    check("summary.said", heard.count == 5 && heard[2] == Meeting.Said(at: 70, speaker: "Me", text: "I'll send the revised budget deck to Priya by Friday."))
+    let file = "# Meeting notes\n\n- Date: 2026-10-31\n\n## Transcript\n\n" + tx + "\n"
+    check("summary.transcriptInFile", Meeting.said(Meeting.transcript(inFile: file)).count == 5 && Meeting.transcript(inFile: "# No transcript\n").isEmpty)
+    let raw = Meeting.Summary(
+        overview: "A planning call about the Q3 budget.",
+        points: [Meeting.Cited("The marketing budget rises 20% for Q3.", at: 5),
+                 Meeting.Cited("The marketing budget rises 20% in Q3.", at: 150),
+                 Meeting.Cited("The marketing budget rises 30% for Q3.", at: 5),
+                 Meeting.Cited("The studio is booked for the March 3 shoot.", at: nil),
+                 Meeting.Cited("Sales doubled in Europe.", at: 40)],
+        decisions: [],
+        todos: [Meeting.ToDo(who: "Me", task: "Send the revised budget deck to Priya by Friday.", at: 70),
+                Meeting.ToDo(who: "Others", task: "Have a lovely weekend.", at: 180),
+                Meeting.ToDo(who: "Others", task: "Focus the marketing on Gen Z.", at: 5),
+                Meeting.ToDo(who: "Bob", task: "Book the studio for the March 3 shoot.", at: 150),
+                Meeting.ToDo(who: "Me", task: "Book the studio for the March 3 shoot.", at: 9999)])
+    let ck = Meeting.check(raw, transcript: tx)
+    check("summary.checkKept", ck.summary.points.first == Meeting.Cited("The marketing budget rises 20% for Q3.", at: 5), "\(ck.summary.points)")
+    check("summary.checkMoved", ck.summary.points.contains(Meeting.Cited("The marketing budget rises 20% in Q3.", at: 5)) && ck.moved == 1, "\(ck.moved)")
+    check("summary.checkWrongNumber", !ck.summary.points.contains { $0.text.contains("30%") })
+    check("summary.checkUncitedFound", ck.summary.points.contains(Meeting.Cited("The studio is booked for the March 3 shoot.", at: 150)))
+    check("summary.checkNotSaid", !ck.summary.points.contains { $0.text.contains("Europe") } && ck.dropped == 2, "\(ck.dropped)")
+    check("summary.checkUncitedCount", ck.uncited == 2, "\(ck.uncited)")
+    check("summary.todoKept", ck.summary.todos.first == Meeting.ToDo(who: "Me", task: "Send the revised budget deck to Priya by Friday.", at: 70), "\(ck.summary.todos)")
+    check("summary.todoPleasantry", !ck.summary.todos.contains { $0.task.contains("weekend") })
+    check("summary.todoNotAsked", !ck.summary.todos.contains { $0.task.contains("Gen Z") } && ck.notTasks == 2, "\(ck.notTasks)")
+    check("summary.todoOwner", ck.summary.todos.contains(Meeting.ToDo(who: "Not clear", task: "Book the studio for the March 3 shoot.", at: 150)))
+    check("summary.todoBadTime", ck.summary.todos.contains(Meeting.ToDo(who: "Me", task: "Book the studio for the March 3 shoot.", at: 150)))
+    check("summary.commitment", Meeting.isCommitment("Sure, I’ll do that") && Meeting.isCommitment("Could you book it?") && !Meeting.isCommitment("The numbers were strong."))
+    check("summary.pleasantry", Meeting.isPleasantry("Thank everyone for coming") && Meeting.isPleasantry("Enjoy the weekend") && !Meeting.isPleasantry("Book the studio"))
+
+    // From the review: real to-dos that mention a weekend or thanks, numbers in words, predictions, times of day.
+    check("summary.pleasantryOnly", !Meeting.isPleasantry("Finish the budget report over the weekend") && !Meeting.isPleasantry("Send a thank-you note to the client")
+          && Meeting.isPleasantry("Have a lovely weekend everyone") && Meeting.isPleasantry("Thanks everyone for joining"))
+    check("summary.prediction", !Meeting.isCommitment("Sales are going to drop next quarter") && Meeting.isCommitment("We're going to send it Monday") && Meeting.isCommitment("Let me check with finance"))
+    check("summary.citedTimeOfDay", Meeting.cited("Next meeting Tuesday (10:30).") == ("Next meeting Tuesday (10:30).", nil))
+    let money = "[00:10] Others: The contract is worth five thousand dollars and nobody objected.\n\n[00:30] Others: We have twenty five stores, and two hundred fifty staff."
+    let mc = Meeting.check(Meeting.Summary(points: [Meeting.Cited("The contract is worth $5,000.", at: 10), Meeting.Cited("No one objected to the contract.", at: 10),
+                                                    Meeting.Cited("There are 25 stores and 250 staff.", at: 30), Meeting.Cited("The contract is worth $6,000.", at: 10)]), transcript: money)
+    check("summary.numberWords", mc.summary.points.count == 3 && mc.dropped == 1 && !mc.summary.points.contains { $0.text.contains("6,000") }, "\(mc.summary.points.map(\.text))")
+    let pc = Meeting.check(Meeting.Summary(todos: [Meeting.ToDo(who: "Others", task: "Sales drop 20% next quarter.", at: 5)]),
+                           transcript: "[00:05] Others: Sales are going to drop 20% next quarter, honestly.")
+    check("summary.predictionNotTask", pc.summary.todos.isEmpty && pc.notTasks == 1)
+    check("summary.parseBoldOverview", Meeting.parse(written: "### Overview\n**The team agreed to ship.**\nThen they left.\n### Key points\n- Ship it [00:05]")?.overview == "The team agreed to ship. Then they left.")
+
+    let pa = Meeting.Summary(overview: "A", points: [Meeting.Cited("Budget rises 20% for Q3.", at: 5), Meeting.Cited("Kids are sick this week.", at: 9)])
+    let pb = Meeting.Summary(overview: "B", points: [Meeting.Cited("The marketing budget rises 20% in Q3.", at: 400), Meeting.Cited("Studio booked for March 3.", at: 500)],
+                             todos: [Meeting.ToDo(who: "Me", task: "Send the deck.", at: 450)])
+    let joined = Meeting.merge([pa, pb], overview: "Both.", points: 3)
+    check("summary.mergeTurns", joined.points.map(\.text) == ["Budget rises 20% for Q3.", "Kids are sick this week.", "Studio booked for March 3."] && joined.todos.count == 1 && joined.overview == "Both.", "\(joined.points.map(\.text))")
+    check("summary.namesPossessive", Meeting.unknownNames("The list comes after Friday's meeting.", transcript: "[00:01] Others: on Friday at ten") == [])
+
+    let clockCk = Meeting.check(Meeting.Summary(todos: [Meeting.ToDo(who: "Others", task: "Send the list around 12:30 after the 10:00 meeting on Friday.", at: 5)]),
+                                transcript: "[00:05] Others: That's on Friday at 10, so I'll send you the list around 1230 after that meeting.")
+    check("summary.timeOfDay", clockCk.summary.todos.count == 1, "\(clockCk.dropped) \(clockCk.notTasks)")
+    check("summary.namesPlural", Meeting.unknownNames("Meet them at Hogan's. Tie it to ticket IDs.", transcript: "[00:01] Others: at Hogan's on the 17th, the ticket ID") == [])
+
+    let sm = Meeting.summaryMarkdown(ck, transcript: tx)
+    check("summary.mdLabel", sm.hasPrefix("## Summary\n\n" + Meeting.summaryLabel + "\n\n### Overview\n\nA planning call about the Q3 budget.\n\n"))
+    check("summary.mdTimes", sm.contains("- The marketing budget rises 20% for Q3. [00:05]") && sm.contains("- Me: Send the revised budget deck to Priya by Friday. [01:10]"))
+    check("summary.mdNone", sm.contains("### Decisions\n\nNone heard.\n"))
+    check("summary.mdDropped", sm.contains("2 more items were left out because no line of the transcript says them."))
+    let empty = Meeting.summaryMarkdown(Meeting.check(Meeting.Summary(), transcript: tx), transcript: tx)
+    check("summary.mdEmpty", empty.contains("### Overview\n\nNone heard.") && empty.contains("### To-dos\n\nNone heard.\n") && !empty.contains("left out"))
+    check("summary.mdNames", Meeting.summaryMarkdown(Meeting.Checked(summary: Meeting.Summary(overview: "The call was led by Marcus.")), transcript: tx).contains("check them: Marcus"))
+
+    let written = """
+    Here are the notes.
+
+    ### Overview
+    A planning call. The budget goes up.
+
+    ### Key points
+    - The marketing budget rises 20% for Q3. [00:05]
+    - **Studio** booked for March 3. [02:30]
+
+    ### Decisions
+    None heard.
+
+    ### To-dos
+    - Me: Send the deck to Priya by Friday. [01:10]
+    - Book the studio [02:30]
+    """
+    let parsed = Meeting.parse(written: written)
+    check("summary.parse", parsed?.overview == "A planning call. The budget goes up." && parsed?.points.count == 2 && parsed?.decisions.isEmpty == true, "\(String(describing: parsed))")
+    check("summary.parseItems", parsed?.points.last == Meeting.Cited("Studio booked for March 3.", at: 150)
+          && parsed?.todos == [Meeting.ToDo(who: "Me", task: "Send the deck to Priya by Friday.", at: 70), Meeting.ToDo(who: "Not clear", task: "Book the studio", at: 150)])
+    check("summary.parseBold", Meeting.parse(written: "**Overview**\nShort.\n**Key points**\n1. One thing [00:05]\n")?.points == [Meeting.Cited("One thing", at: 5)])
+    check("summary.parseNothing", Meeting.parse(written: "Sorry, I can't help with that.") == nil)
+
+    // Where it goes: above the transcript, once; a better summary on top with Apple's kept below it.
+    let free = "## Summary\n\n" + Meeting.summaryLabel + "\n\n### Overview\n\nFree.\n"
+    let better = "## Summary\n\n" + Meeting.betterLabel("Claude") + "\n\n### Overview\n\nBetter.\n"
+    let placed = Meeting.placing(free, in: file)
+    check("summary.placeAbove", placed.contains("- Date: 2026-10-31\n\n## Summary\n") && placed.range(of: "## Summary")!.lowerBound < placed.range(of: "## Transcript")!.lowerBound)
+    check("summary.placeOnce", Meeting.placing(free, in: placed) == placed)
+    check("summary.placeKeepsTranscript", Meeting.said(Meeting.transcript(inFile: placed)) == heard)
+    let oldFile = file + "\n" + free
+    check("summary.placeMovesOld", Meeting.placing(free, in: oldFile) == placed)
+    let both = Meeting.placingBetter(better, in: placed)
+    let iB = both.range(of: "Better.")!.lowerBound, iF = both.range(of: Meeting.freeHeading)!.lowerBound, iT = both.range(of: "## Transcript")!.lowerBound
+    check("summary.betterOnTop", iB < iF && iF < iT && both.components(separatedBy: "\n## Summary\n").count == 2)
+    check("summary.betterAgain", Meeting.placingBetter(better, in: both) == both)
+    check("summary.freeAfterBetter", Meeting.placing(free, in: both) == both)
+    check("summary.betterTranscript", Meeting.said(Meeting.transcript(inFile: both)) == heard)
     check("meeting.noSummary", Meeting.noSummary("Apple's model is off on this Mac.").contains("No summary was written. Apple's model"))
 
     // Cutting long audio: at the quietest moment before the target, never past it.
@@ -1583,6 +1707,85 @@ do {
     var mf = MeetingManifest(started: start); mf.meOffset = -0.6; mf.othersOffset = 0.12
     let back = try? JSONDecoder().decode(MeetingManifest.self, from: JSONEncoder().encode(mf))
     check("meeting.manifest", back == mf && MeetingManifest.samples(bytes: 32_000) == 16_000)
+}
+
+// Better summary on this Mac (D-1010): which writer each Mac gets, the pinned download, the hash check, and its
+// summary's place in the notes.
+do {
+    let gib: UInt64 = 1 << 30
+    check("writer.8GB", LocalWriter.forMac(memory: 8 * gib) == nil)
+    check("writer.justUnder16", LocalWriter.forMac(memory: 16 * gib - 1) == nil)
+    check("writer.16GB", LocalWriter.forMac(memory: 16 * gib) == .gemma)
+    check("writer.32GB", LocalWriter.forMac(memory: 32 * gib) == .gemma)
+    check("writer.36GB", LocalWriter.forMac(memory: 36 * gib) == .gemma)
+    check("writer.48GB", LocalWriter.forMac(memory: 48 * gib) == .qwen)
+    check("writer.128GB", LocalWriter.forMac(memory: 128 * gib) == .qwen)
+    check("writer.sizes", LocalWriter.qwen.sizeText == "20.4 GB" && LocalWriter.gemma.sizeText == "5.2 GB", "\(LocalWriter.qwen.sizeText) \(LocalWriter.gemma.sizeText)")
+    check("writer.gb", LocalWriter.gb(850_000_000) == "850 MB" && LocalWriter.gb(1_250_000_000) == "1.2 GB")
+    check("writer.progress", LocalWriter.gemma.progressText(done: 3_100_000_000) == "3.1 of 5.2 GB" && LocalWriter.gemma.progressText(done: 9_000_000_000) == "5.2 of 5.2 GB")
+    let hex40 = try! NSRegularExpression(pattern: "^[0-9a-f]{40}$")
+    for w in LocalWriter.all {
+        check("writer.\(w.id).pinned", hex40.firstMatch(in: w.revision, range: NSRange(location: 0, length: 40)) != nil)
+        check("writer.\(w.id).hashed", w.files.allSatisfy { ($0.sha256 == nil) != ($0.gitSHA1 == nil) && ($0.sha256?.count ?? 64) == 64 && ($0.gitSHA1?.count ?? 40) == 40 })
+        check("writer.\(w.id).needed", ["config.json", "tokenizer.json", "tokenizer_config.json", "chat_template.jinja"].allSatisfy { n in w.files.contains { $0.name == n } }
+              && !w.files.contains { $0.name == "README.md" || $0.name.hasPrefix(".") })
+        let u = w.url(w.files[0])
+        check("writer.\(w.id).url", u.scheme == "https" && u.host == "huggingface.co" && u.path == "/\(w.repo)/resolve/\(w.revision)/\(w.files[0].name)", u.absoluteString)
+        check("writer.\(w.id).named", LocalWriter.named(w.id) == w)
+    }
+    check("writer.hubFolder", LocalWriter.gemma.cacheSnapshot(hub: URL(fileURLWithPath: "/h")).path
+          == "/h/models--mlx-community--gemma-4-e4b-it-4bit/snapshots/475b9088d29754a3379866cf5aeb6b41acd313c2")
+    check("writer.ownFolder", LocalWriter.qwen.ownFolder(models: URL(fileURLWithPath: "/m")).path
+          == "/m/notes-writers/mlx-community/Qwen3.6-35B-A3B-4bit/38740b847e4cb78f352aba30aa41c76e08e6eb46")
+
+    // The hash check: "hello\n" as git stores it, and its SHA-256; one byte off or a wrong size fails.
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("rv-writer-\(UUID().uuidString)", isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let hello = dir.appendingPathComponent("hello.txt")
+    try? Data("hello\n".utf8).write(to: hello)
+    check("writer.matchGit", LocalWriter.matches(.init("hello.txt", 6, git: "ce013625030ba8dba906f756967f9e9ca394464a"), at: hello))
+    check("writer.matchSHA256", LocalWriter.matches(.init("hello.txt", 6, sha256: "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"), at: hello))
+    check("writer.wrongHash", !LocalWriter.matches(.init("hello.txt", 6, sha256: String(repeating: "0", count: 64)), at: hello))
+    check("writer.wrongSize", !LocalWriter.matches(.init("hello.txt", 7, git: "ce013625030ba8dba906f756967f9e9ca394464a"), at: hello))
+    check("writer.noHashNeverMatches", !LocalWriter.matches(.init("hello.txt", 6), at: hello))
+    check("writer.missing", !LocalWriter.matches(.init("gone.txt", 6, git: "ce013625030ba8dba906f756967f9e9ca394464a"), at: dir.appendingPathComponent("gone.txt")))
+    check("writer.cancelledCheck", !LocalWriter.matches(.init("hello.txt", 6, git: "ce013625030ba8dba906f756967f9e9ca394464a"), at: hello, cancelled: { true }))
+    // A whole writer by sizes alone, links followed as in Hugging Face's cache.
+    let one = LocalWriter(id: "t", name: "T", repo: "a/b", revision: String(repeating: "a", count: 40),
+                          files: [.init("hello.txt", 6, git: "ce013625030ba8dba906f756967f9e9ca394464a")], minimumGB: 1)
+    let linked = dir.appendingPathComponent("linked", isDirectory: true)
+    try? FileManager.default.createDirectory(at: linked, withIntermediateDirectories: true)
+    check("writer.incomplete", !one.complete(in: linked))
+    try? FileManager.default.createSymbolicLink(at: linked.appendingPathComponent("hello.txt"), withDestinationURL: hello)
+    check("writer.completeThroughLink", one.complete(in: linked) && LocalWriter.matches(one.files[0], at: linked.appendingPathComponent("hello.txt")))
+    try? FileManager.default.removeItem(at: dir)
+
+    // Thinking is never part of the notes.
+    check("writer.answerPlain", LocalWriter.answer("\n### Overview\nA call.\n") == "### Overview\nA call.")
+    check("writer.answerThink", LocalWriter.answer("<think>\nhmm\n</think>\n\n### Overview\nA call.") == "### Overview\nA call.")
+    check("writer.answerOpenThink", LocalWriter.answer("plan first\n</think>\n### Overview\nA call.") == "### Overview\nA call.")
+
+    // Its summary goes on top like Claude's, replaces itself or Claude's, and keeps Apple's below.
+    let notes = "# Meeting\n\n## Transcript\n\n[00:01] Me: Hello.\n"
+    let free = "## Summary\n\n" + Meeting.summaryLabel + "\n\n### Overview\n\nFree.\n"
+    let mine = "## Summary\n\n" + Meeting.localLabel("Gemma 4 small") + "\n\n### Overview\n\nLocal.\n"
+    let claude = "## Summary\n\n" + Meeting.betterLabel("Claude") + "\n\n### Overview\n\nBetter.\n"
+    let both = Meeting.placingBetter(mine, in: Meeting.placing(free, in: notes))
+    let iL = both.range(of: "Local.")!.lowerBound, iF = both.range(of: Meeting.freeHeading)!.lowerBound, iT = both.range(of: "## Transcript")!.lowerBound
+    check("writer.summaryOnTop", iL < iF && iF < iT && both.components(separatedBy: "\n## Summary\n").count == 2)
+    check("writer.summaryAgain", Meeting.placingBetter(mine, in: both) == both)
+    check("writer.freeAfterLocal", Meeting.placing(free, in: both) == both)
+    let swapped = Meeting.placingBetter(claude, in: both)
+    check("writer.claudeReplacesLocal", swapped.contains("Better.") && !swapped.contains("Local.") && swapped.contains("Free."))
+    check("writer.labelSaysMac", Meeting.localLabel("Qwen3.6 35B").contains("on this Mac") && !Meeting.localLabel("Qwen3.6 35B").contains("your account"))
+
+    // Your own command's summary (D-1012) is a better one too: a second one replaces it, Apple's stays below.
+    let cmd = "## Summary\n\n" + Meeting.commandLabel + "\n\n### Overview\n\nCommand.\n"
+    let withCmd = Meeting.placingBetter(cmd, in: Meeting.placing(free, in: notes))
+    check("command.summaryAgain", Meeting.placingBetter(cmd, in: withCmd) == withCmd)
+    check("command.freeAfter", Meeting.placing(free, in: withCmd) == withCmd)
+    let overCmd = Meeting.placingBetter(claude, in: withCmd)
+    check("command.claudeReplaces", overCmd.contains("Better.") && !overCmd.contains("Command.") && overCmd.contains("Free."))
 }
 
 print("\(pass) passed, \(fail) failed")

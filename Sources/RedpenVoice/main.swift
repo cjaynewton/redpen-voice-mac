@@ -75,6 +75,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The meeting control on screen (D-957), and its two shortcuts, held only while a meeting records.
     private let meetingBar = MeetingBar()
     private var meetingBarReady = false
+    /// The newest notes written, for the bar's Better summary button (D-956).
+    private var lastNotes: URL?
     private var stopMeetingKey: Shortcut?
     private var pauseMeetingKey: Shortcut?
 
@@ -141,6 +143,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let i = CommandLine.arguments.firstIndex(of: "--meeting-test") {
             let args = Array(CommandLine.arguments[(i + 1)...].prefix { !$0.hasPrefix("--") })
             Task { [config, engine] in exit(await MeetingTest.run(args, engine: engine, config: config, names: Names(text: Config.loadNames()))) }
+            return
+        }
+        // `--writer-test model-folder notes.md out.md`: Better summary on this Mac from a downloaded writer (D-1010).
+        if let i = CommandLine.arguments.firstIndex(of: "--writer-test") {
+            let args = Array(CommandLine.arguments[(i + 1)...].prefix { !$0.hasPrefix("--") })
+            Task { exit(await MeetingTest.writer(args)) }
+            return
+        }
+        // `--writer-download-test` with REDPEN_VOICE_DIR set: the writer download's small files, cancel and Remove (D-1010).
+        if CommandLine.arguments.contains("--writer-download-test") {
+            Task { exit(await MeetingTest.download()) }
+            return
+        }
+        // `--summary-test notes.md out.md [--better claude]`: the summary alone, on notes already written (D-956).
+        if let i = CommandLine.arguments.firstIndex(of: "--summary-test") {
+            let args = Array(CommandLine.arguments[(i + 1)...].prefix { !$0.hasPrefix("--") })
+            Task { exit(await MeetingTest.summary(args)) }
             return
         }
         engine.onState = { [weak self] s in
@@ -449,11 +468,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let i = CommandLine.arguments.firstIndex(of: "--settings-shot"), i + 1 < CommandLine.arguments.count {
             Ink.registerFonts()
             NSApp.appearance = NSAppearance(named: CommandLine.arguments.contains("dark") ? .darkAqua : .aqua)
-            let model = SettingsModel(config: config, engine: engine) { _ in }
+            // `command`: drawn with Better summary set to your own command. Given at init, so nothing is saved.
+            var shown = config
+            if CommandLine.arguments.contains("command") { shown.betterSummaryWith = "command"; shown.betterSummaryCommand = "ollama run llama3.2" }
+            let model = SettingsModel(config: shown, engine: engine) { _ in }
             let sample = StatsModel.sample(now: Date())
             model.statsTotal = { let s = Stats.score(sample); return (s.words, s.seconds) }
             // `ready`: drawn as a Mac where the chosen engine has finished loading (for the README pictures).
             if CommandLine.arguments.contains("ready") { model.engineState = .ready }
+            // Drawn as a Mac with Claude Code and Codex signed in, for Better summary's row (D-956).
+            if CommandLine.arguments.contains("ready") { model.summaryInstalled = ["claude", "chatgpt"] }
             let v = NSHostingView(rootView: SettingsView(model: model).buttonBorderShape(.roundedRectangle(radius: 4)))
             v.frame = NSRect(x: 0, y: 0, width: 540, height: 2300)
             let w = NSWindow(contentRect: v.frame, styleMask: [.borderless], backing: .buffered, defer: false)
@@ -2184,6 +2208,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         meetingBar.onStop = { [weak self] in if self?.meeting != nil { self?.toggleMeeting() } }
         meetingBar.onPause = { [weak self] in self?.togglePause() }
         meetingBar.onAllow = { SystemSettingsLink.systemAudio.open { NSWorkspace.shared.open($0) } }
+        meetingBar.onBetter = { [weak self] h in self?.betterSummary(with: h) }
+    }
+
+    /// Better summary (D-956), from the bar after the notes are saved. The first time for each company, it says
+    /// plainly where the transcript goes and waits for a yes. Nothing is sent before that click.
+    /// `h` is the helper the button named, whatever Settings says by the time it's clicked.
+    private func betterSummary(with h: String) {
+        guard let file = lastNotes else { meetingBar.hide(); return }
+        let who = BetterSummary.name(h), company = BetterSummary.company(h)
+        let command = h == "command" ? config.betterSummaryCommand : nil
+        let key = BetterSummary.agreement(h, command: command)
+        if h == "command", (command ?? "").trimmingCharacters(in: .whitespaces).isEmpty { meetingBar.finish(BetterSummary.missing(h), ok: false); return }
+        // On this Mac (D-1010) nothing is sent, so there is nothing to agree to.
+        if h != BetterSummary.onMac, !(config.betterSummaryAgreed ?? []).contains(key) {
+            let a = NSAlert()
+            if h == "command" {
+                a.messageText = "Give this meeting's transcript to your command?"
+                a.informativeText = "Better summary gives the whole transcript to the command set in Settings:\n\n\(command ?? "")\n\nWherever that command sends it, that service's terms apply. Everything else stays on this Mac.\n\nIf you told the others that nothing leaves your Mac, this may change that. You're asked again if the command changes."
+            } else {
+                a.messageText = "Send this meeting's transcript to \(company)?"
+                // Cursor passes it on to whichever model the account uses.
+                let onward = h == "cursor" ? " Cursor passes it on to the model your account uses." : ""
+                a.informativeText = "Better summary sends the whole transcript to \(company) through \(BetterSummary.tool(h)), under your own \(who) account, and \(company)'s terms for that account apply.\(onward) Everything else stays on this Mac.\n\nIf you told the others that nothing leaves your Mac, this changes that. You're asked once for \(who)."
+            }
+            a.addButton(withTitle: h == "command" ? "Run it" : "Send it")
+            a.addButton(withTitle: "Cancel")
+            NSApp.activate(ignoringOtherApps: true)
+            guard a.runModal() == .alertFirstButtonReturn else { return }
+            var c = Config.load(); c.betterSummaryAgreed = (c.betterSummaryAgreed ?? []) + [key]; c.save()
+            config.betterSummaryAgreed = c.betterSummaryAgreed; syncSettings()
+        }
+        meetingBar.showBusy(h == BetterSummary.onMac ? "Writing a better summary on this Mac…"
+                            : h == "command" ? "Running your command for a better summary…" : "Asking \(who) for a better summary…")
+        Task.detached { [weak self] in
+            let r = BetterSummary.write(file: file, helper: h, command: command)
+            await MainActor.run {
+                guard let self else { return }
+                let text = r.ok ? "\(BetterSummary.cap(who))'s summary is on top of the notes" : r.message
+                // Only over its own "Asking…": a newer meeting's offer or progress keeps the bar.
+                if self.meeting == nil, case .busy = self.meetingBar.mode { self.meetingBar.finish(text, ok: r.ok) } else { self.hud.flash(text, for: 3.5) }
+            }
+        }
     }
 
     /// Pause and Resume (D-957): while paused, nothing is recorded and the notes mark the gap.
@@ -2282,7 +2348,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 Log.note("meeting: notes saved, \(Log.int(r.seconds))s meeting, summary \(r.summary)")
                 await self.whenNotDictating()
-                if self.meeting == nil { self.meetingBar.finish("Notes saved", ok: true) }
+                if self.meeting == nil {
+                    self.lastNotes = r.file
+                    // A better summary is offered only when chosen in Settings and something was heard.
+                    if let h = self.config.betterSummaryWith, BetterSummary.canOffer(h, command: self.config.betterSummaryCommand),
+                       r.meLines + r.othersLines > 0, r.summary != "skipped" { self.meetingBar.offer(h) }
+                    else { self.meetingBar.finish("Notes saved", ok: true) }
+                }
                 // Never over a meeting being recorded: the file waits in the folder.
                 if self.meeting == nil { NSWorkspace.shared.open(r.file) }
             } catch {

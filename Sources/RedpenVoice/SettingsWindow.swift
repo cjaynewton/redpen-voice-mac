@@ -15,6 +15,11 @@ final class SettingsModel: ObservableObject {
     /// Whisper's background download: nil when idle, 0 to 1 while downloading, 1 while it loads.
     @Published var fetch: Double?
     @Published var fetchError: String?
+    /// Claude, ChatGPT and Gemini as installed on this Mac, for Better summary (D-956); nil before looking.
+    @Published var summaryInstalled: [String]?
+    /// Whether the chosen helper is signed in, once checked. Checked only after it is chosen: the check may ask
+    /// that company's servers.
+    @Published var summarySignedIn: [String: Bool] = [:]
     let onChange: (Config) -> Void
     /// Starts or stops a test recording to the Desktop, for comparing engines on real talking.
     var recordTest: () -> Void = {}
@@ -32,6 +37,22 @@ final class SettingsModel: ObservableObject {
         self.config = config; self.engine = engine; self.onChange = onChange
         engineState = engine.state
         openAtLogin = SMAppService.mainApp.status == .enabled
+    }
+
+    /// Looks for the helpers' files only: nothing is started or sent while Better summary is off.
+    func findSummaryHelpers() {
+        if summaryInstalled == nil { summaryInstalled = BetterSummary.installed() }
+        if let h = config.betterSummaryWith { checkSignIn(h) }
+    }
+
+    /// Whether the chosen helper is signed in. Starts that tool, off the main thread.
+    func checkSignIn(_ h: String) {
+        // On this Mac (D-1010) has no sign-in.
+        guard summarySignedIn[h] == nil, h != BetterSummary.onMac else { return }
+        Task.detached { [weak self] in
+            let ok = BetterSummary.ready(h)
+            await MainActor.run { self?.summarySignedIn[h] = ok }
+        }
     }
 
     // MARK: Other key
@@ -168,6 +189,8 @@ enum Ink {
 
 struct SettingsView: View {
     @ObservedObject var model: SettingsModel
+    /// The on-this-Mac writer's download (D-1010), which carries on when the window closes.
+    @ObservedObject private var writers = WriterDownloads.shared
     @State private var showTest = false
 
     var body: some View {
@@ -474,8 +497,87 @@ struct SettingsView: View {
                 Toggle("", isOn: Binding(get: { model.config.keepMeetingAudio ?? true }, set: { model.config.keepMeetingAudio = $0 }))
                     .labelsHidden().toggleStyle(.switch).tint(Ink.red)
             }
-            Text("Start meeting notes from the menu. Your microphone is Me and what the Mac plays is Others. Everything stays on this Mac, and the notes are plain Markdown files.")
+            Divider().overlay(Ink.line)
+            betterSummaryRow
+            Text("Start meeting notes from the menu. Your microphone is Me and what the Mac plays is Others. Everything stays on this Mac unless you ask Claude, ChatGPT, Gemini, Cursor or your own command for a better summary, and the notes are plain Markdown files.")
                 .font(.system(size: 12.5)).foregroundStyle(Ink.dim).fixedSize(horizontal: false, vertical: true).padding(.top, 4)
+        }
+    }
+
+    /// Off, Claude, ChatGPT, Gemini or Cursor through the user's own plan, from the ones installed on this Mac, the
+    /// user's own command for anything else (D-956, D-1012), or On this Mac, a writer downloaded and run inside the app,
+    /// offered when this Mac has the memory for one (D-1010). Nothing is started until one is chosen; then Settings
+    /// checks it is signed in and says how if it isn't. The user's own command is never run to check.
+    private var betterSummaryRow: some View {
+        let installed = (model.summaryInstalled ?? []) + (LocalNotes.writer == nil ? [] : [BetterSummary.onMac])
+        let chosen = model.config.betterSummaryWith
+        let choices = installed + (chosen.map { installed.contains($0) || $0 == "command" ? [] : [$0] } ?? []) + ["command"]
+        let note: String
+        if chosen == "command" {
+            note = "For OpenRouter or any other tool you run in Terminal. Nothing runs until you click the bar's button."
+        } else if chosen == BetterSummary.onMac {
+            note = LocalNotes.writer.map { "After the notes are saved, the bar offers a second summary written on this Mac by \($0.name). Nothing leaves the Mac." }
+                ?? "This Mac has less than 16 GB of memory, too little for a writer of its own. Apple's summary stays."
+        } else if let h = chosen, !installed.contains(h) {
+            note = BetterSummary.missing(h) + " It isn't on this Mac."
+        } else if let h = chosen, model.summarySignedIn[h] == false {
+            note = "\(BetterSummary.cap(BetterSummary.tool(h))) isn't signed in. " + BetterSummary.signIn(h)
+        } else if model.summaryInstalled != nil, installed.isEmpty {
+            note = "Claude Code, Codex, Google's Antigravity CLI or Cursor's command-line tool, signed in with your own plan, would show here. None is on this Mac. Your own command works with anything."
+        } else {
+            note = "After the notes are saved, the bar offers a second summary from your own plan. Nothing is sent until you click it. Then the transcript goes to that company."
+        }
+        return VStack(alignment: .leading, spacing: 0) {
+            row("Better summary with", note) {
+                Picker("", selection: Binding(get: { model.config.betterSummaryWith ?? "off" },
+                                              set: { model.config.betterSummaryWith = $0 == "off" ? nil : $0
+                                                     if $0 != "off", $0 != "command" { model.checkSignIn($0) } })) {
+                    Text("Off").tag("off")
+                    ForEach(choices, id: \.self) { h in Text(h == "command" ? "Your own command" : h == BetterSummary.onMac ? "On this Mac" : BetterSummary.name(h)).tag(h) }
+                }.labelsHidden().frame(width: 220, alignment: .trailing)
+            }
+            if chosen == BetterSummary.onMac, let w = LocalNotes.writer { writerRow(w) }
+            if chosen == "command" {
+                // The field is as wide as the page: a command line doesn't fit beside a label.
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Command").font(.system(size: 14)).foregroundStyle(Ink.text)
+                    CommandField(text: model.config.betterSummaryCommand ?? "") { t in
+                        let v = t.trimmingCharacters(in: .whitespaces)
+                        if (model.config.betterSummaryCommand ?? "") != v { model.config.betterSummaryCommand = v.isEmpty ? nil : v }
+                    }
+                    Text("It gets the instructions and the transcript on its input and prints the summary. It runs in a fresh shell that reads ~/.zprofile but not ~/.zshrc, so put any key it needs there or in the tool's own settings. For example: ollama run llama3.2")
+                        .font(.system(size: 12.5)).foregroundStyle(Ink.dim).fixedSize(horizontal: false, vertical: true)
+                }.padding(.vertical, 11)
+            }
+        }.onAppear { model.findSummaryHelpers() }
+    }
+
+    /// The writer for On this Mac (D-1010): its name and size before anything starts, then one click to download it
+    /// with a progress bar and Cancel, and Remove for Redpen's own copy.
+    @ViewBuilder private func writerRow(_ w: LocalWriter) -> some View {
+        let _ = writers.changed
+        if let done = writers.done {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Downloading \(w.name)").font(.system(size: 14)).foregroundStyle(Ink.text)
+                ProgressView(value: Double(done), total: Double(max(w.bytes, 1))).tint(Ink.red).padding(.top, 8)
+                HStack {
+                    Text(w.progressText(done: done)).font(.system(size: 12.5)).foregroundStyle(Ink.dim)
+                    Spacer()
+                    Button("Cancel") { writers.cancel() }.buttonStyle(.plain).foregroundStyle(Ink.red)
+                }.padding(.top, 4)
+            }.padding(.vertical, 11)
+        } else if LocalNotes.folder(w) != nil {
+            if LocalNotes.inHubCache(w) {
+                row(w.name, "Already on this Mac in Hugging Face's folder, so there is nothing to download. Redpen reads it there and never changes it.") { EmptyView() }
+            } else {
+                row("\(w.name), \(w.sizeText)", "Downloaded and checked. It runs only when you click the bar's button.") {
+                    Button("Remove") { writers.remove(w) }
+                }
+            }
+        } else {
+            row("\(w.name), a \(w.sizeText) download", "From Hugging Face, once, picked for this Mac's memory. After that it runs on this Mac and nothing leaves it." + (writers.error.map { "\n\($0)" } ?? "")) {
+                Button("Download") { writers.start(w) }
+            }
         }
     }
 
@@ -538,5 +640,28 @@ struct SettingsView: View {
             Spacer(minLength: 8)
             control()
         }.padding(.vertical, 11)
+    }
+}
+
+/// The command for Better summary, saved a moment after typing stops, and at once on Return or when the field is
+/// left, rather than on every key.
+private struct CommandField: View {
+    @State var text: String
+    let save: (String) -> Void
+    @FocusState private var focused: Bool
+    @State private var pending: Task<Void, Never>?
+
+    var body: some View {
+        TextField("", text: $text, prompt: Text("your command"))
+            .textFieldStyle(.roundedBorder).font(.system(size: 12.5, design: .monospaced))
+            .autocorrectionDisabled()
+            .focused($focused)
+            .onSubmit { save(text) }
+            .onChange(of: text) { _, t in
+                pending?.cancel()
+                pending = Task { try? await Task.sleep(for: .seconds(0.8)); if !Task.isCancelled { save(t) } }
+            }
+            .onChange(of: focused) { _, now in if !now { save(text) } }
+            .onDisappear { save(text) }
     }
 }
