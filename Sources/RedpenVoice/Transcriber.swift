@@ -701,8 +701,17 @@ final class Transcriber {
             try await live.processBufferedAudio()
         }
 
+        /// Keep the audio for learning the user's voice (D-1034) even on the Mac's own engine, which otherwise passes
+        /// it straight on. Up to 30 seconds, in memory only.
+        var keepForVoice = false
+
         func push(_ buffer: AVAudioPCMBuffer) {
-            guard whisper != nil || parakeet != nil || live != nil else { feed.yield(AnalyzerInput(buffer: buffer)); return }
+            guard whisper != nil || parakeet != nil || live != nil else {
+                if keepForVoice, buffer.format.sampleRate == 16000, let ch = buffer.floatChannelData?[0] {
+                    lock.withLock { if samples.count < 16_000 * 30 { samples.append(contentsOf: UnsafeBufferPointer(start: ch, count: Int(buffer.frameLength))) } }
+                }
+                feed.yield(AnalyzerInput(buffer: buffer)); return
+            }
             guard let ch = buffer.floatChannelData?[0] else { return }
             lock.withLock {
                 let start = samples.count
@@ -743,6 +752,9 @@ final class Transcriber {
                 } catch { Log.note("engine start error: \(error)") }
             }
         }
+
+        /// What the microphone heard in this dictation, for learning the user's voice (D-1034). Only read in memory.
+        func heard() -> [Float] { lock.withLock { samples } }
 
         /// Ends the audio and waits for the last words. Never longer than ten seconds: a stuck engine is cancelled
         /// and whatever it had is returned, so the app never hangs on "Writing".
@@ -853,7 +865,10 @@ final class Transcriber {
             s.onStuck = { [weak self] in self?.replaceStuckLive() }
             return (s, nil)
         }
-        return (Session(), module(config))
+        let s = Session()
+        // Learning the user's voice needs the audio, which the Mac's own engine doesn't otherwise keep.
+        s.keepForVoice = config.knowMyVoice == true && config.roomVoices == true && (Voiceprint.load()?.count ?? 0) < Voiceprint.enough
+        return (s, module(config))
     }
 
     private static func joined(_ results: [TranscriptionResult]) -> String {

@@ -1850,5 +1850,59 @@ do {
     check("command.claudeReplaces", overCmd.contains("Better.") && !overCmd.contains("Command.") && overCmd.contains("Free."))
 }
 
+// Voices in the room (D-1034).
+do {
+    check("room.meClear", Meeting.whichIsMe([0.724, -0.129, -0.053]) == 0)
+    check("room.meSecondMeeting", Meeting.whichIsMe([0.184, -0.050, 0.810, -0.085]) == 2)
+    check("room.meTooFar", Meeting.whichIsMe([0.42, 0.1]) == nil)
+    check("room.meTooClose", Meeting.whichIsMe([0.7, 0.55]) == nil)
+    check("room.meEmpty", Meeting.whichIsMe([]) == nil)
+    check("room.oneVoiceIsMe", Meeting.roomNames(count: 1, me: nil) == [.me])
+    check("room.namesWithMe", Meeting.roomNames(count: 3, me: 1).map(\.rawValue) == ["Person 2", "Me", "Person 3"])
+    check("room.namesWithoutMe", Meeting.roomNames(count: 2, me: nil).map(\.rawValue) == ["Person 1", "Person 2"])
+    let segs = [MeetingSegment(start: 0, end: 4, text: "a"), MeetingSegment(start: 4, end: 10, text: "b"),
+                MeetingSegment(start: 11, end: 12, text: "c"), MeetingSegment(start: 30, end: 31, text: "d")]
+    let turns = [RoomTurn(start: 0, end: 5, voice: 0), RoomTurn(start: 5, end: 10.5, voice: 1)]
+    let names = Meeting.roomNames(count: 2, me: 0)
+    check("room.lineMostHeard", Meeting.voices(for: segs, turns: turns, names: names).map(\.rawValue) == ["Me", "Person 2", "Person 2", "Me"])
+    let lines = Meeting.merge(me: segs, others: [MeetingSegment(start: 4, end: 5, text: "o")], voices: Meeting.voices(for: segs, turns: turns, names: names))
+    check("room.mergeLabels", lines.map(\.markdown) == ["[00:00] Me: a", "[00:04] Others: o", "[00:04] Person 2: b", "[00:11] Person 2: c", "[00:30] Me: d"])
+    let said = Meeting.said("[00:04] Person 2: I'll send the list.\n[00:09] Monica: Thanks: really.\n[00:10] Others: Fine.")
+    check("room.saidPerson", said.map(\.speaker) == ["Person 2", "Monica", "Others"] && said[1].text == "Thanks: really.")
+    let t = "[00:04] Person 2: I'll send the list.\n[00:06] Me: Good."
+    check("room.ownerPerson", Meeting.who("Person 2", transcript: t) == "Person 2")
+    check("room.ownerMadeUp", Meeting.who("Person 3", transcript: t) == "Not clear")
+    check("room.ownerBracket", Meeting.who("Rima (VMC)", transcript: "[00:01] Others: Rima VMC will do it") == "Rima (VMC)")
+    let file = "# Notes\n\n## Summary\n\n### To-dos\n\n- Person 2: send the list. [00:04]\n- Person 22: not this one.\n\n## Transcript\n\n[00:04] Person 2: I'll send the list.\n\n[00:08] Person 22: Hi.\n"
+    let renamed = Meeting.renaming(.person(2), to: "Monica", in: file) ?? ""
+    check("room.renameLines", renamed.contains("] Monica: I'll send") && renamed.contains("- Monica: send the list.") && renamed.contains("] Person 22: Hi.") && renamed.contains("- Person 22: not"))
+    check("room.renameRefused", Meeting.renaming(.person(2), to: "Others", in: file) == nil && Meeting.renaming(.person(2), to: " ", in: file) == nil
+          && Meeting.renaming(.person(2), to: "A: B", in: file) == nil)
+    let swapped = Meeting.renaming([(.person(1), "Person 2"), (.person(2), "Monica")], in: "[00:01] Person 1: a\n[00:02] Person 2: b\n") ?? ""
+    check("room.renameSwap", swapped == "[00:01] Person 2: a\n[00:02] Monica: b\n")
+    check("room.renameMe", Meeting.renaming([(.person(1), "Me")], in: "[00:01] Person 1: a\n") == "[00:01] Me: a\n")
+    let spoken = "Me is your own voice and Person 2 is another voice on your microphone, told apart on this Mac. To give them names, choose Name the voices in the menu.\n\n## Summary\n\n### Key points\n\n- Me said the plan is set. [00:10]\n\n### To-dos\n\n- Me: send it. [00:12]\n\n## Transcript\n\n[00:10] Person 2: Me too, and Sam agrees.\n\n[00:12] Me: I'll send it.\n"
+    let named = Meeting.renaming([(.me, "Cedric"), (.person(2), "Monica")], in: spoken) ?? ""
+    check("room.renameOnlyLabels", named.contains("] Monica: Me too, and Sam agrees.") && named.contains("] Cedric: I'll send it.")
+          && named.contains("- Cedric: send it.") && named.contains("- Me said the plan is set."))
+    check("room.renameNote", named.hasPrefix("Monica and Cedric are the voices on your microphone"))
+    check("room.nameRules", Meeting.canName("dr Patel") && Meeting.canName("王伟") && Meeting.canName("Jean Paul de la Croix")
+          && !Meeting.canName("A: B") && !Meeting.canName("**Bold**") && !Meeting.canName("Others"))
+    check("room.namedLineRead", Meeting.said("[00:01] dr Patel: Fine.\n[00:02] 王伟: Yes.").map(\.speaker) == ["dr Patel", "王伟"])
+    check("room.madeUpPerson", Meeting.who("Person 3", transcript: "[00:01] Person 2: I'll call 3 people.") == "Not clear")
+    check("room.voicesInFile", Meeting.voices(inFile: file).map(\.rawValue) == ["Person 2", "Person 22"])
+    check("room.note", Meeting.roomNote(names)?.hasPrefix("Me is your own voice and Person 2 is another voice") == true && Meeting.roomNote([.me]) == nil)
+    check("room.noteNoMe", Meeting.roomNote(Meeting.roomNames(count: 3, me: nil))?.hasPrefix("Person 1, Person 2 and Person 3 are the voices") == true)
+    // An item naming a voice ("Person 3 said...") is checked on what was said, not on the label's number.
+    let lab = "[07:25] Person 3: The list doesn't need to be final, a range of twenty names and a budget is enough."
+    let point = Meeting.Summary(overview: "", points: [Meeting.Cited("Person 3 said the list need not be final; a range of twenty names and a budget is enough.", at: 445)], decisions: [], todos: [])
+    check("room.labelNotANumber", Meeting.check(point, transcript: lab).summary.points.count == 1)
+    let meet = Meeting.Summary(overview: "", points: [Meeting.Cited("Meeting moved to June 12.", at: 1)], decisions: [], todos: [])
+    check("room.labelWholeWord", Meeting.check(meet, transcript: "[00:01] Me: The meeting moved to June 12.").summary.points.count == 1)
+    // A to-do owned by Person 2 survives the check.
+    let sum = Meeting.Summary(overview: "", points: [], decisions: [], todos: [Meeting.ToDo(who: "Person 2", task: "send the list", at: 4)])
+    check("room.todoKept", Meeting.check(sum, transcript: t).summary.todos.first?.who == "Person 2")
+}
+
 print("\(pass) passed, \(fail) failed")
 exit(fail == 0 ? 0 : 1)

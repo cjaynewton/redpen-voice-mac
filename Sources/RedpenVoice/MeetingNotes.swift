@@ -166,11 +166,21 @@ enum MeetingNotes {
             let (others, othersPeak) = try await transcribe(othersTrack, offset: manifest.othersOffset ?? 0, engine: engine, config: config, done: tick)
             let mine = try await transcribe(meTrack, offset: manifest.meOffset ?? 0, engine: engine, config: config, done: tick).lines
             let echo = Meeting.dropEcho(me: mine, others: others)
+            // Voices in the room (D-1034): the microphone's lines told apart by voice, on this Mac, when chosen, the
+            // models are here, and the Mac played nothing, so it was a meeting in one room. On a call through the
+            // speakers the microphone hears the others too, and its own lines must stay Me. Any failure leaves them
+            // all Me, as before.
+            var room: (voices: [Speaker], names: [Speaker])? = nil
+            if config.roomVoices == true, !echo.kept.isEmpty, others.isEmpty {
+                await progress(80, "Telling voices apart…")
+                room = await RoomSpeakers.label(track: meTrack, rate: MeetingManifest.rate, offset: manifest.meOffset ?? 0,
+                                                lines: echo.kept, knowMe: config.knowMyVoice == true)
+            }
             let fix = { (s: MeetingSegment) in MeetingSegment(start: s.start, end: s.end, text: names.apply(s.text)) }
             // Whisper's own repeats out, then one paragraph per turn, so it reads like people talking.
             // Pauses marked where they began; anything written inside one (silence) goes.
             let pauses = (manifest.pauses ?? MeetingPauses()).all(closingAt: length)
-            let lines = Meeting.withPauses(Meeting.paragraphs(Meeting.dropRepeats(Meeting.merge(me: echo.kept.map(fix), others: others.map(fix)))), pauses)
+            let lines = Meeting.withPauses(Meeting.paragraphs(Meeting.dropRepeats(Meeting.merge(me: echo.kept.map(fix), others: others.map(fix), voices: room?.voices))), pauses)
             Log.note("meeting: wrote \(Log.int(meSecs + othersSecs))s of audio in \(Log.int(Date().timeIntervalSince(t0)))s, me \(echo.kept.count) lines (\(echo.dropped) echo), others \(others.count) lines")
             result = (echo.kept.count, others.count, echo.dropped)
             let base = Meeting.uniqueBase(Meeting.baseName(manifest.started)) { b in
@@ -179,8 +189,10 @@ enum MeetingNotes {
             file = folder.appendingPathComponent(base + ".md")
             let audio = keepAudio ? [base + " Me.m4a", base + " Others.m4a"] : []
             transcript = Meeting.markdown(start: manifest.started, seconds: length, lines: lines, audio: audio, echoDropped: echo.dropped,
-                                          engine: engineName(config.engine), notes: othersPeak == 0 && length > 15 ? [Meeting.silentMacNote] : [],
-                                          paused: pauses.reduce(0) { $0 + $1.seconds })
+                                          // In one room the Mac playing nothing is expected, so the warning is softer then.
+                                          engine: engineName(config.engine),
+                                          notes: othersPeak == 0 && length > 15 ? [(room?.names.count ?? 0) >= 2 ? Meeting.roomSilentNote : Meeting.silentMacNote] : [],
+                                          paused: pauses.reduce(0) { $0 + $1.seconds }, room: room?.names ?? [])
             try transcript.write(to: file, atomically: true, encoding: .utf8)
             try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
             manifest.notesFile = file.path
@@ -232,7 +244,7 @@ enum MeetingSummary {
 
     @Generable
     struct ToDo {
-        @Guide(description: "Who will do it: Me, Others, or a name that is said in the transcript.")
+        @Guide(description: "Who will do it: Me, Others, a speaker as the transcript marks it (Person 2), or a name that is said in the transcript.")
         var who: String
         @Guide(description: "What they will do, one short sentence.")
         var task: String
@@ -254,7 +266,8 @@ enum MeetingSummary {
 
     static let instructions = """
     You write meeting notes from a transcript. Each line starts with its time in brackets and a speaker. "Me" is the \
-    person taking the notes. "Others" is everyone else on the call.
+    person taking the notes. "Others" is everyone else on the call. "Person 2", "Person 3" (or a name in that place) \
+    are other people in the room, told apart by voice.
     Rules:
     - Use only what was said. Infer nothing. If you are not sure, leave it out.
     - Keep numbers, dates, amounts and goals exactly as they were said.
@@ -262,8 +275,9 @@ enum MeetingSummary {
     - A decision is something the people on the call agreed on.
     - A to-do is only a commitment or an ask: someone says they will do something ("I'll", "we'll", "I'm going to") \
     or asks someone to ("can you", "could you", "let's have Sam do"). Greetings, thanks and goodbyes are never to-dos.
-    - Never invent names. Write Me or Others unless a person's name is said in the transcript. A to-do belongs to Me \
-    only when a line marked Me says they will do it.
+    - Never invent names. Write Me, Others or a speaker as the transcript marks it (Person 2) unless a person's name \
+    is said in the transcript. A to-do belongs to a speaker only when a line marked with that speaker says they will \
+    do it.
     - Leave out small talk: greetings, health, weather, thanks and goodbyes.
     - Empty lists are fine. Do not add advice or opinions.
     """
@@ -292,7 +306,8 @@ enum MeetingSummary {
         if let why = unavailable { return (Meeting.noSummary(why), "unavailable", nil, nil) }
         let lines = transcript.components(separatedBy: "\n").filter { $0.hasPrefix("[") }
         guard !lines.isEmpty else { return (Meeting.noSummary("Nothing was heard to summarise."), "empty", nil, nil) }
-        // With a silent microphone every line is Others; the model is told, so it never writes Me.
+        // With a silent microphone every line is Others, and with the room's voices told apart but none of them known
+        // to be the user's, no line is Me; the model is told, so it never writes Me.
         let noMe = !lines.contains { $0.contains("] Me: ") }
         // Room for the transcript in the model's window: about two and a half characters a token, after the
         // instructions, the shape of the answer and the answer itself.
@@ -353,7 +368,7 @@ enum MeetingSummary {
     }
 
     private static func summarise(_ piece: String, noMe: Bool) async throws -> Notes {
-        let note = noMe ? "Every line here is Others: the person taking the notes said nothing on their microphone. Never write Me.\n\n" : ""
+        let note = noMe ? "No line here is marked Me, so never write Me.\n\n" : ""
         return try await once {
             let session = LanguageModelSession(instructions: instructions)
             return try await session.respond(to: note + "Transcript:\n" + piece, generating: Notes.self, options: GenerationOptions(temperature: 0)).content

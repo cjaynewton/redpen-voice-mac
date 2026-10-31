@@ -1,8 +1,24 @@
 import Foundation
 
 /// Meeting notes (D-951): the parts with no microphone, tap or model in them. Two tracks, "Me" from the microphone
-/// and "Others" from what the Mac plays, so there are two speakers without any voiceprint.
-public enum Speaker: String, Codable, Sendable { case me = "Me", others = "Others", pause = "Paused" }
+/// and "Others" from what the Mac plays, so there are two speakers without any voiceprint. In the room (D-1034) the
+/// microphone's voices are told apart too: Me and "Person 2", "Person 3", or the names the user gives them.
+public struct Speaker: RawRepresentable, Hashable, Codable, Sendable {
+    public let rawValue: String
+    public init(rawValue: String) { self.rawValue = rawValue }
+    public static let me = Speaker(rawValue: "Me"), others = Speaker(rawValue: "Others"), pause = Speaker(rawValue: "Paused")
+    /// The n-th voice told apart on the microphone: "Person 2".
+    public static func person(_ n: Int) -> Speaker { Speaker(rawValue: "Person \(n)") }
+}
+
+/// One stretch of one voice on the microphone, in seconds from the start of the meeting; voices are numbered from 0
+/// in the order they first talk.
+public struct RoomTurn: Codable, Equatable, Sendable {
+    public var start: Double
+    public var end: Double
+    public var voice: Int
+    public init(start: Double, end: Double, voice: Int) { self.start = start; self.end = end; self.voice = voice }
+}
 
 /// A stretch of one track the engine wrote, in seconds from the start of the meeting.
 public struct MeetingSegment: Codable, Equatable, Sendable {
@@ -179,9 +195,12 @@ public enum Meeting {
         return (kept, dropped)
     }
 
-    /// Both tracks, by time. At the same moment Others comes first: the question before the answer.
-    public static func merge(me: [MeetingSegment], others: [MeetingSegment]) -> [MeetingLine] {
-        let a = me.map { MeetingLine(start: $0.start, speaker: .me, text: $0.text, end: $0.end) }
+    /// Both tracks, by time. At the same moment Others comes first: the question before the answer. `voices` names
+    /// the microphone's lines one by one when the voices in the room were told apart (D-1034); otherwise all are Me.
+    public static func merge(me: [MeetingSegment], others: [MeetingSegment], voices: [Speaker]? = nil) -> [MeetingLine] {
+        let a = me.enumerated().map { i, s in
+            MeetingLine(start: s.start, speaker: voices.flatMap { i < $0.count ? $0[i] : nil } ?? .me, text: s.text, end: s.end)
+        }
         let b = others.map { MeetingLine(start: $0.start, speaker: .others, text: $0.text, end: $0.end) }
         return (b + a).enumerated().sorted {
             $0.element.start != $1.element.start ? $0.element.start < $1.element.start : $0.offset < $1.offset
@@ -223,7 +242,7 @@ public enum Meeting {
     /// The notes: date, start and length, where the audio is, then the transcript, one line per paragraph so any
     /// Markdown reader keeps them apart.
     public static func markdown(start: Date, seconds: Double, lines: [MeetingLine], audio: [String], echoDropped: Int,
-                                engine: String, notes: [String] = [], paused: Double = 0, calendar: Calendar = .current, locale: Locale = Locale(identifier: "en_CA")) -> String {
+                                engine: String, notes: [String] = [], paused: Double = 0, room: [Speaker] = [], calendar: Calendar = .current, locale: Locale = Locale(identifier: "en_CA")) -> String {
         let day = DateFormatter(); day.locale = locale; day.calendar = calendar; day.timeZone = calendar.timeZone
         day.dateFormat = "EEEE d MMMM yyyy"
         let iso = DateFormatter(); iso.locale = Locale(identifier: "en_US_POSIX"); iso.calendar = calendar; iso.timeZone = calendar.timeZone
@@ -243,9 +262,130 @@ public enum Meeting {
         } else {
             out += "Me is your microphone and Others is what the Mac played.\n\n"
         }
+        if let r = roomNote(room) { out += r + "\n\n" }
         for n in notes { out += n + "\n\n" }
         out += "## Transcript\n\n"
         out += lines.isEmpty ? "Nothing was heard.\n" : lines.map(\.markdown).joined(separator: "\n\n") + "\n"
+        return out
+    }
+
+    // MARK: Voices in the room (D-1034)
+
+    /// Which voice is the user's, from how close each voice is to their voiceprint (cosine): the closest, when it is
+    /// close (0.5 or more) and clearly closer than any other (by 0.25). On two bench meetings the user's own voice
+    /// scored 0.72 and 0.81 and no one else above 0.18. Nil when it isn't clear: then no voice is called Me.
+    public static func whichIsMe(_ closeness: [Float], least: Float = 0.5, margin: Float = 0.25) -> Int? {
+        guard let best = closeness.indices.max(by: { closeness[$0] < closeness[$1] }), closeness[best] >= least else { return nil }
+        let next = closeness.indices.filter { $0 != best }.map { closeness[$0] }.max() ?? -1
+        return closeness[best] - next >= margin ? best : nil
+    }
+
+    /// The labels for `count` voices: one voice is simply Me; with the user's own voice known it is Me and the rest
+    /// are Person 2, Person 3 in the order they first talk; with no voice known they are Person 1, Person 2 and so on.
+    public static func roomNames(count: Int, me: Int?) -> [Speaker] {
+        guard count > 1 else { return [Speaker](repeating: .me, count: max(count, 0)) }
+        guard let me, me < count else { return (0..<count).map { .person($0 + 1) } }
+        var n = 1
+        return (0..<count).map { i in
+            if i == me { return .me }
+            n += 1
+            return .person(n)
+        }
+    }
+
+    /// Each microphone line gets the voice heard most while it was said, or the nearest voice within 2 seconds when
+    /// none was heard during it; with nothing near, Me.
+    public static func voices(for lines: [MeetingSegment], turns: [RoomTurn], names: [Speaker]) -> [Speaker] {
+        lines.map { l in
+            var heard: [Int: Double] = [:]
+            for t in turns where t.end > l.start && t.start < l.end {
+                heard[t.voice, default: 0] += min(t.end, l.end) - max(t.start, l.start)
+            }
+            let voice = heard.max { $0.value < $1.value || ($0.value == $1.value && $0.key > $1.key) }?.key
+                ?? turns.map { t in (t.voice, max(t.start - l.end, l.start - t.end, 0)) }.filter { $0.1 <= 2 }.min { $0.1 < $1.1 }?.0
+            return voice.flatMap { $0 < names.count ? names[$0] : nil } ?? .me
+        }
+    }
+
+    /// How the line about the voices ends, so a rename can find it and say it again.
+    static let roomNoteEnd = " To give them names, choose Name the voices in the menu."
+
+    /// The line under the header when the microphone's voices were told apart.
+    public static func roomNote(_ names: [Speaker]) -> String? {
+        let people = names.filter { $0 != .me }.map(\.rawValue)
+        guard !people.isEmpty else { return nil }
+        let list = people.count == 1 ? people[0] : people.dropLast().joined(separator: ", ") + " and " + people.last!
+        let me = names.contains(.me) ? "Me is your own voice and \(list) " + (people.count == 1 ? "is another voice" : "are other voices")
+                                     : "\(list) are the voices"
+        return "\(me) on your microphone, told apart on this Mac." + roomNoteEnd
+    }
+
+    /// A voice's label changed everywhere in a notes file: its transcript lines and the summary's owners. Nil when
+    /// the new name can't be a speaker (empty, too long, or holding the characters lines are built from).
+    public static func renaming(_ from: Speaker, to name: String, in file: String) -> String? {
+        renaming([(from, name)], in: file)
+    }
+
+    /// Several voices renamed at once, so swapping two names, or giving Person 1 the name Person 2 had, comes out
+    /// right: each goes to a placeholder first, then to its new name. Only labels change: the speaker at the start
+    /// of a transcript line and the owner at the start of a to-do, never what anyone said. The line under the
+    /// header naming the voices is written again. Nil when any new name can't be a speaker.
+    public static func renaming(_ changes: [(Speaker, String)], in file: String) -> String? {
+        let names = changes.map { $0.1.trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard names.allSatisfy(canName) else { return nil }
+        var out = file
+        let held = changes.indices.map { "\u{E000}\($0)\u{E000}" }
+        for (i, c) in changes.enumerated() where c.0.rawValue != names[i] { out = relabel(c.0.rawValue, to: held[i], in: out) }
+        for (i, c) in changes.enumerated() where c.0.rawValue != names[i] { out = relabel(held[i], to: names[i], in: out) }
+        // The header's line about the voices, said again with the new names.
+        if let note = out.components(separatedBy: "\n").first(where: { $0.hasSuffix(roomNoteEnd) }) {
+            out = out.replacingOccurrences(of: note, with: roomNote(voices(inFile: out)) ?? "")
+        }
+        return out
+    }
+
+    /// A name a voice can take: a speaker label (as `said` reads one), without the characters headings and bold are
+    /// made of, and not Others or Paused, which mean something else.
+    public static func canName(_ name: String) -> Bool {
+        isSpeaker(name) && name.rangeOfCharacter(from: CharacterSet(charactersIn: "#*")) == nil
+            && ![Speaker.others.rawValue, Speaker.pause.rawValue].contains(name)
+    }
+
+    /// A label changed where labels are: `[12:34] Name: ` at the start of a transcript line, and `- Name: ` at the
+    /// start of a to-do in the summary.
+    private static func relabel(_ from: String, to: String, in file: String) -> String {
+        let f = NSRegularExpression.escapedPattern(for: from), t = NSRegularExpression.escapedTemplate(for: to)
+        var out = file
+        for (pattern, template) in [("(?m)^(\\[[0-9:]+\\] )" + f + ": ", "$1" + t + ": "), ("(?m)^- " + f + ": ", "- " + t + ": ")] {
+            guard let r = try? NSRegularExpression(pattern: pattern) else { continue }
+            if pattern.hasPrefix("(?m)^- ") {
+                // To-dos only: everything before the transcript, under a To-dos heading.
+                out = byTodoSections(out) { r.stringByReplacingMatches(in: $0, range: NSRange($0.startIndex..., in: $0), withTemplate: template) }
+            } else {
+                out = r.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out), withTemplate: template)
+            }
+        }
+        return out
+    }
+
+    /// `change` applied to each To-dos list before the transcript, and nothing else.
+    private static func byTodoSections(_ file: String, _ change: (String) -> String) -> String {
+        var lines = file.components(separatedBy: "\n"), inTodos = false
+        for i in lines.indices {
+            let l = lines[i]
+            if l.hasPrefix("## Transcript") { break }
+            if l.hasPrefix("#") { inTodos = l.hasPrefix("### To-dos"); continue }
+            if inTodos { lines[i] = change(l) }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// The voices a notes file's transcript has, other than Others, in the order they first talk.
+    public static func voices(inFile file: String) -> [Speaker] {
+        var out: [Speaker] = []
+        for s in said(transcript(inFile: file)) where s.speaker != Speaker.others.rawValue && !out.contains(Speaker(rawValue: s.speaker)) {
+            out.append(Speaker(rawValue: s.speaker))
+        }
         return out
     }
 
@@ -254,6 +394,10 @@ public enum Meeting {
 
     /// Under the header when the Mac's sound was silent the whole meeting: most likely the permission is off.
     public static let silentMacNote = "The Mac's sound was silent for the whole meeting, so only your microphone is here. If others were talking, allow Redpen Voice under System Audio Recording in Privacy & Security, then try again."
+
+    /// The same, when the microphone's voices were told apart (D-1034): most likely a meeting in one room, but a
+    /// call with the permission off looks the same, so it is still said.
+    public static let roomSilentNote = "The Mac played nothing, so this was taken as a meeting in one room. If it was a call, allow Redpen Voice under System Audio Recording in Privacy & Security."
 
     // MARK: The summary
 
@@ -277,10 +421,13 @@ public enum Meeting {
         return out
     }
 
-    /// Who said they would do it, only as the transcript has it: Me, Others, or a name said in the meeting. Anything
-    /// else (a name the model made up) becomes "Not clear".
+    /// Who said they would do it, only as the transcript has it: Me, Others, a voice the transcript names (Person 2,
+    /// or the name it was given; D-1034), or a name said in the meeting. Anything else (a name the model made up)
+    /// becomes "Not clear".
     public static func who(_ name: String, transcript: String) -> String {
-        let n = name.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+        // Only stray marks at the ends go: "Rima (VMC)" keeps its bracket.
+        let n = name.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ".,;:!?\"'*-")))
+        if !n.isEmpty, n != Speaker.me.rawValue, n != Speaker.others.rawValue, transcript.contains("] \(n): ") { return n }
         // Me or Others only when that track says anything at all: with a silent microphone, nothing is Me's.
         if n.caseInsensitiveCompare("me") == .orderedSame || n.caseInsensitiveCompare("I") == .orderedSame {
             return transcript.contains("] Me: ") ? "Me" : "Not clear"
@@ -288,7 +435,11 @@ public enum Meeting {
         if n.caseInsensitiveCompare("others") == .orderedSame || n.caseInsensitiveCompare("other") == .orderedSame {
             return transcript.contains("] Others: ") ? "Others" : "Not clear"
         }
-        let said = Set(keys(transcript))
+        // A voice's label counts only where it marks lines (above); as a name said aloud, only what people said
+        // counts, never the labels themselves, so a made-up "Person 3" isn't backed by "Person 2" lines.
+        if n.range(of: "^Person [0-9]+$", options: .regularExpression) != nil { return "Not clear" }
+        let spoken = said(transcript).map(\.text)
+        let said = Set(keys(spoken.isEmpty ? transcript : spoken.joined(separator: " ")))
         let parts = keys(n)
         if !parts.isEmpty, parts.allSatisfy(said.contains) { return n }
         return "Not clear"

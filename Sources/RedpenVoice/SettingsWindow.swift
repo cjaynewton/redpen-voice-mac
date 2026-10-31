@@ -39,6 +39,23 @@ final class SettingsModel: ObservableObject {
         openAtLogin = SMAppService.mainApp.status == .enabled
     }
 
+    /// Voices in the room (D-1034): how many dictations the user's voice has been learned from, and the speaker
+    /// models' download: nil when idle, "downloading", or "failed".
+    @Published var voiceLearned = Voiceprint.load()?.count ?? 0
+    @Published var roomDownload: String?
+
+    /// Fetches the speaker models (about 21 MB) from Hugging Face, once, when Voices in the room is turned on.
+    func downloadRoomModels() {
+        guard !RoomSpeakers.modelsReady, roomDownload != "downloading" else { return }
+        roomDownload = "downloading"
+        Task.detached { [weak self] in
+            let ok: Bool
+            do { try await RoomSpeakers.download(); ok = RoomSpeakers.modelsReady } catch { ok = false }
+            Log.note("meeting: voice models \(ok ? "downloaded" : "download failed")")
+            await MainActor.run { self?.roomDownload = ok ? nil : "failed" }
+        }
+    }
+
     /// Looks for the helpers' files only: nothing is started or sent while Better summary is off.
     func findSummaryHelpers() {
         if summaryInstalled == nil { summaryInstalled = BetterSummary.installed() }
@@ -497,6 +514,7 @@ struct SettingsView: View {
                 Toggle("", isOn: Binding(get: { model.config.keepMeetingAudio ?? true }, set: { model.config.keepMeetingAudio = $0 }))
                     .labelsHidden().toggleStyle(.switch).tint(Ink.red)
             }
+            roomRows
             Divider().overlay(Ink.line)
             betterSummaryRow
             Text("Start meeting notes from the menu. Your microphone is Me and what the Mac plays is Others. Everything stays on this Mac unless you ask Claude, ChatGPT, Gemini, Cursor or your own command for a better summary, and the notes are plain Markdown files.")
@@ -577,6 +595,41 @@ struct SettingsView: View {
         } else {
             row("\(w.name), a \(w.sizeText) download", "From Hugging Face, once, picked for this Mac's memory. After that it runs on this Mac and nothing leaves it." + (writers.error.map { "\n\($0)" } ?? "")) {
                 Button("Download") { writers.start(w) }
+            }
+        }
+    }
+
+    /// Voices in the room and Know my voice (D-1034). Turning the first on downloads the speaker models once;
+    /// turning Know my voice off forgets the voice.
+    @ViewBuilder private var roomRows: some View {
+        let on = model.config.roomVoices == true
+        let ready = RoomSpeakers.modelsReady
+        let note: String = switch (on, ready, model.roomDownload) {
+        case (_, _, "downloading"?): "Downloading the voice models, 21 MB, from Hugging Face…"
+        case (true, false, "failed"?): "The voice models didn't download. Turn this off and on to try again."
+        case (true, true, _): "In a meeting where the Mac plays nothing, lines from your microphone say Me, Person 2, Person 3, told apart on this Mac afterwards. Give them names from the menu."
+        case (true, false, _): "Waiting for the voice models."
+        default: "For meetings in one room, where the Mac plays nothing: tells apart the people sharing your microphone, on this Mac. Needs a 21 MB download from Hugging Face, once."
+        }
+        row("Voices in the room", note) {
+            Toggle("", isOn: Binding(get: { on }, set: { v in
+                model.config.roomVoices = v
+                if v { model.downloadRoomModels() }
+                // Off forgets the voice too, so a voiceprint never stays behind a hidden switch.
+                else if model.config.knowMyVoice == true { model.config.knowMyVoice = false; Voiceprint.forget(); model.voiceLearned = 0 }
+            })).labelsHidden().toggleStyle(.switch).tint(Ink.red)
+        }
+        if on {
+            let knows = model.config.knowMyVoice == true, n = model.voiceLearned
+            let sub = !knows ? "Learns your voice from your next dictations, so your lines say Me. Kept as numbers on this Mac, never audio."
+                : n >= Voiceprint.enough ? "Learned from \(n) dictations. Kept as numbers on this Mac, never audio. Turning it off forgets it."
+                : n >= Voiceprint.least ? "Learned from \(n) dictations, and still learning. Kept as numbers on this Mac, never audio. Turning it off forgets it."
+                : "Talk to Voice a few more times (three seconds or more): \(n) of \(Voiceprint.least) dictations so far. Kept as numbers on this Mac, never audio."
+            row("Know my voice", sub) {
+                Toggle("", isOn: Binding(get: { knows }, set: { v in
+                    model.config.knowMyVoice = v
+                    if !v { Voiceprint.forget(); model.voiceLearned = 0 }
+                })).labelsHidden().toggleStyle(.switch).tint(Ink.red)
             }
         }
     }
