@@ -1788,5 +1788,188 @@ do {
     check("command.claudeReplaces", overCmd.contains("Better.") && !overCmd.contains("Command.") && overCmd.contains("Free."))
 }
 
+// Words landed (D-1034): made-up log lines in the real formats, never real log content.
+do {
+    var utc = Calendar(identifier: .gregorian); utc.timeZone = TimeZone(identifier: "UTC")!
+    func at(_ day: Int, _ t: String) -> String { "2026-10-\(day)T\(t)Z" }
+    func L(_ day: Int, _ t: String, _ m: String) -> String { at(day, t) + " " + m }
+    func dictation(_ day: Int, _ t: String, words: Int, into app: String = "Secret Plans App", inserted: Bool) -> String {
+        L(day, t, "dictation 4s, \(words) words, write 200ms, engine 1500ms, key up to done 2100ms, into \(app), inserted \(inserted)")
+    }
+    let iso = ISO8601DateFormatter()
+    check("landed.time", WordsLanded.time(Substring(L(31, "08:57:20", "launched"))) == iso.date(from: "2026-10-31T08:57:20Z"))
+    check("landed.timeLeap", WordsLanded.time("2028-02-29T23:59:59Z x") == iso.date(from: "2028-02-29T23:59:59Z"))
+    check("landed.timeBad", WordsLanded.time("right Option, double tap true)") == nil && WordsLanded.time("2026-13-01T00:00:00Z x") == nil)
+    check("landed.lineParse", WordsLanded.dictationLine("dictation 2s, 7 words, write 215ms, engine 1993ms, key up to done 2322ms, into T3 Code (Beta), inserted true")! == (7, true))
+    check("landed.lineCommaApp", WordsLanded.dictationLine("dictation 2s, 7 words, write 1ms, into A, inserted true, B, inserted false")! == (7, false))
+
+    // One of each ending, in order. Two on Oct 29, the rest on Oct 31.
+    func log(app: String = "Secret Plans App", file: String = "secret-recording.wav", mic: String = "Scarlett 2i2 4th Gen", why: String = "/Users/someone/Private/thing") -> String { [
+        L(29, "10:00:00", "launched"),
+        L(29, "10:00:05", "recording from \(mic)"),
+        L(29, "10:00:09", "audio: 63344 frames (4.0s), peak 0.344"),
+        L(29, "10:00:10", "insert: focus AXTextArea, text"),
+        dictation(29, "10:00:10", words: 9, into: app, inserted: true),                                  // landed
+        L(29, "10:01:00", "audio: 63344 frames (4.0s), peak 0.344"),
+        L(29, "10:01:01", "insert: you typed or clicked, stopped"),
+        dictation(29, "10:01:01", words: 5, into: app, inserted: false),                                 // kept, typing stopped
+        L(31, "06:00:00", "media: apps [\(app)], loudness 0.0504, paused true"),
+        // A draft line from while you talked, before this ending's audio line, doesn't count against it.
+        L(31, "06:00:01", "insert: draft typing not confirmed, kept for Paste last"),
+        L(31, "06:00:02", "audio: 63344 frames (4.0s), peak 0.344"),
+        L(31, "06:00:03", "draft: first words 900ms after you started talking, 3 runs, checks 3, changed 1 (2 words), checked text confirmed, ending finished 800ms after release"),
+        dictation(31, "06:00:03", words: 12, into: app, inserted: true),                                 // landed
+        L(31, "06:01:00", "audio: 63344 frames (4.0s), peak 0.344"),
+        L(31, "06:01:01", "insert: typing not seen in the box after a second"),
+        dictation(31, "06:01:01", words: 6, into: app, inserted: true),                                  // kept, typing not seen
+        L(31, "06:02:00", "audio: 63344 frames (4.0s), peak 0.344"),
+        L(31, "06:02:01", "insert: the box you started in was sent after Voice typed into it, nothing typed again, kept for paste"),
+        L(31, "06:02:01", "draft: first words 900ms after you started talking, 3 runs, checks 3, changed 1 (2 words), checked text kept for Paste last, ending finished 800ms after release"),
+        dictation(31, "06:02:01", words: 30, into: app, inserted: false),                                // kept, box was sent
+        L(31, "06:03:00", "audio: 63344 frames (4.0s), peak 0.344"),
+        L(31, "06:03:01", "insert: cursor not in a text box (AXWebArea), waiting for a click"),
+        dictation(31, "06:03:01", words: 8, into: app, inserted: false),
+        L(31, "06:03:20", "insert: pasted after a click into AXTextArea, true"),                       // landed after a click
+        L(31, "06:04:00", "audio: 63344 frames (4.0s), peak 0.344"),
+        L(31, "06:04:01", "insert: cursor not in a text box (AXGroup), waiting for a click"),
+        dictation(31, "06:04:01", words: 8, into: app, inserted: false),
+        L(31, "06:14:02", "insert: nobody clicked a text box in 10 minutes, kept for paste"),            // kept
+        L(31, "06:15:00", "audio: 63344 frames (4.0s), peak 0.344"),
+        L(31, "06:15:01", "engine: the ending failed, 3 pieces kept"),
+        L(31, "06:15:02", "engine finish: waited 0ms for the stream, ending 1202ms, 3 pieces"),
+        dictation(31, "06:15:02", words: 80, into: app, inserted: true),                                 // lost, ending failed
+        L(31, "06:16:00", "audio: 63344 frames (4.0s), peak 0.344"),
+        L(31, "06:16:09", "engine: instant stopped answering after 5s, loading a fresh one"),
+        dictation(31, "06:16:09", words: 0, into: app, inserted: false),                                 // lost, whole
+        L(31, "06:17:00", "audio: 63344 frames (4.0s), peak 0.344"),
+        L(31, "06:17:01", "finish failed: \(why)"),
+        dictation(31, "06:17:01", words: 0, into: app, inserted: false),                                 // lost, engine failed
+        L(31, "06:18:00", "audio: 63344 frames (4.0s), peak 0.001"),
+        dictation(31, "06:18:00", words: 0, into: app, inserted: false),                                 // empty press, not counted
+        L(31, "06:18:30", "cancelled: quick tap"),
+        L(31, "06:18:40", "cancelled: Escape, nothing left in the box"),
+        L(31, "06:18:50", "cancelled: another key while holding"),
+        L(31, "06:19:00", "audio: 63344 frames (4.0s), peak 0.344"),
+        dictation(31, "06:19:00", words: 4, into: app, inserted: false),                                 // kept, not typed
+        L(31, "06:20:00", "watchdog: the app ended without quitting, reopening"),
+        L(31, "07:30:00", "launched 0.12.2 (14), built 2026-10-31T07:00:00Z"),
+        L(31, "07:40:00", "audio: 63344 frames (4.0s), peak 0.344"),
+        L(31, "07:40:01", "insert: cursor not in a text box (AXWebArea) and a new press began, kept for paste"),
+        dictation(31, "07:40:01", words: 3, into: app, inserted: false),                                 // kept, a new press
+        L(31, "08:00:00", "launched 0.12.2 (14), built 2026-10-31T07:00:00Z"),
+        L(31, "08:10:00", "audio: 63344 frames (4.0s), peak 0.344"),
+        L(31, "08:10:01", "insert: cursor not in a text box (AXWebArea), waiting for a click"),
+        dictation(31, "08:10:01", words: 5, into: app, inserted: false),
+        L(31, "08:10:05", "insert: typing not seen in the box after a second"),
+        L(31, "08:10:05", "insert: pasted after a click into AXTextArea, true"),                       // kept, unseen after click
+        L(31, "08:11:00", "audio: 63344 frames (4.0s), peak 0.344"),
+        L(31, "08:11:01", "insert: cursor not in a text box (AXWebArea), waiting for a click"),
+        dictation(31, "08:11:01", words: 5, into: app, inserted: false),                                 // kept, quit while waiting
+        L(31, "08:12:00", "paste: shortcut keys released, posting Command-V; value readable true, cursor readable true"),
+        L(31, "08:12:01", "paste: target changed; clipboard kept for Command-V"),
+        L(31, "08:12:02", "draft blocked: hardware click (draft)"),
+        L(31, "08:12:03", "draft blocked: \(app) (draft)"),
+        L(31, "08:12:04", "meeting: could not start, NSOSStatusErrorDomain -50"),
+        L(31, "08:12:05", "meeting: notes failed, \(why) 4"),
+        L(31, "08:12:06", "meeting: write failed on \(file), NSCocoaErrorDomain 640"),
+        L(31, "08:12:07", "meeting: summary failed (GenerationError, FoundationModels.LanguageModelSession.GenerationError 2)"),
+        L(31, "08:12:08", "meeting: better summary failed (\(app)) after 3s"),
+        L(31, "08:12:09", "test: saved \(file), 4s"),
+        L(31, "08:57:20", "launched 0.12.3 (15), built 2026-10-31T08:50:00Z"),
+        L(31, "09:00:00", "audio: 63344 frames (4.0s), peak 0.344"),
+        dictation(31, "09:00:00", words: 233, into: app, inserted: true),                               // landed
+    ].joined(separator: "\n") + "\n" }
+
+    let r = WordsLanded.read(log())
+    let outcomes = r.dictations.map { "\($0.outcome)" + ($0.why.map { ":" + $0 } ?? "") }
+    check("landed.outcomes", outcomes == [
+        "landed", "kept:typing stopped", "landed", "kept:typing not seen", "kept:box was sent", "landed",
+        "kept:no text box, nobody clicked one in 10 minutes", "lost:ending failed", "lost:engine stopped answering",
+        "lost:engine failed", "kept:not typed", "kept:a new press began", "kept:no text box, typing not seen after the click",
+        "kept:no text box, Voice quit or restarted", "landed",
+    ], "\(outcomes)")
+    check("landed.emptyPressNotCounted", r.dictations.count == 15)
+    check("landed.escapeOnItsOwn", r.thrownAway.count == 1)
+    let all = WordsLanded.tally(r)
+    check("landed.tally", all == WordsLanded.Tally(landed: 4, kept: 8, lost: 3, thrownAway: 1), "\(all)")
+
+    // Days on this Mac's calendar, today first; a day with nothing says so.
+    let now = iso.date(from: "2026-10-31T12:00:00Z")!
+    let table = WordsLanded.table(r, now: now, calendar: utc)
+    check("landed.table7", table.count == 7)
+    check("landed.today", table[0] == "Today: 3 of 13 landed in full, 7 kept for ⌃⌥V, 3 lost, 1 thrown away with Escape", table[0])
+    check("landed.yesterday", table[1] == "Yesterday: no dictations", table[1])
+    check("landed.older", table[2] == "Thu Oct 29: 1 of 2 landed in full, 1 kept for ⌃⌥V, 0 lost", table[2])
+    check("landed.specLine", WordsLanded.line("Today", .init(landed: 46, kept: 2)) == "Today: 46 of 48 landed in full, 2 kept for ⌃⌥V, 0 lost")
+    check("landed.onlyEscape", WordsLanded.line("Today", .init(thrownAway: 2)) == "Today: no dictations, 2 thrown away with Escape")
+
+    // Since this build: the newest launch, back through launches naming the same build; old logs name none.
+    check("landed.buildNew", WordsLanded.buildStarted(r) == iso.date(from: "2026-10-31T08:57:20Z"))
+    let sameBuild = WordsLanded.read(log().replacingOccurrences(of: "0.12.3 (15), built 2026-10-31T08:50:00Z", with: "0.12.2 (14), built 2026-10-31T07:00:00Z"))
+    check("landed.buildSameBack", WordsLanded.buildStarted(sameBuild) == iso.date(from: "2026-10-31T07:30:00Z"))
+    let oldLog = WordsLanded.read(log().replacingOccurrences(of: #"launched [^\n]*"#, with: "launched", options: .regularExpression))
+    check("landed.buildOldLog", WordsLanded.buildStarted(oldLog) == iso.date(from: "2026-10-31T08:57:20Z"))
+    check("landed.since", WordsLanded.sinceLine(r, calendar: utc, utc: true) == "Since this build started, 2026-10-31 08:57 UTC: 1 of 1 landed in full (100%), 0 kept, 0 lost",
+          WordsLanded.sinceLine(r, calendar: utc, utc: true) ?? "nil")
+    check("landed.sinceNone", WordsLanded.sinceLine(WordsLanded.read(L(31, "08:00:00", "launched")), calendar: utc, utc: true)?.hasSuffix("no dictations yet") == true)
+    check("landed.percentCap", WordsLanded.Tally(landed: 199, kept: 1).percent == 99 && WordsLanded.Tally(landed: 3).percent == 100
+          && WordsLanded.Tally().percent == nil)
+    check("landed.reasons", WordsLanded.reasonsLine(sameBuild, from: iso.date(from: "2026-10-31T07:00:00Z")!)
+          == "Kept: a new press began (1), no text box, Voice quit or restarted (1), no text box, typing not seen after the click (1).",
+          WordsLanded.reasonsLine(sameBuild, from: iso.date(from: "2026-10-31T07:00:00Z")!) ?? "nil")
+    check("landed.summaryEnds", WordsLanded.summary(r, now: now, calendar: utc).last == "The log goes back to Oct 29 10:00 AM.")
+    check("landed.emptyLog", WordsLanded.read("").dictations.isEmpty && WordsLanded.summary(WordsLanded.read(""), now: now, calendar: utc).last == "The log is empty.")
+
+    // Counted events: fixed names only; codes only in their own shape.
+    let names = Set(r.events.map(\.name))
+    check("landed.events", names.isSuperset(of: ["quick tap", "stopped by another key while holding", "restarted after a crash",
+                                                 "paste: target changed", "typing stopped while talking: hardware click",
+                                                 "meeting could not start (NSOSStatusErrorDomain -50)", "meeting notes failed (other)",
+                                                 "meeting: audio write failed", "better summary failed (other)",
+                                                 "meeting summary failed (FoundationModels.LanguageModelSession.GenerationError 2)"]), "\(names.sorted())")
+    check("landed.pasteNotFailure", !names.contains("paste: other"))
+    check("landed.unknownDraftReason", !names.contains { $0.contains("Secret") })
+    check("landed.retryNotLoad", WordsLanded.eventName("engine: whisper failed once, trying again") == "Whisper tried a piece again"
+          && WordsLanded.eventName("engine: whisper failed The model is missing") == "engine failed to load"
+          && WordsLanded.eventName("engine: instant failed while you talked, the ending writes it again") == "a piece failed, the ending covers it")
+
+    // The report: counts and settings only. Nothing from a log line but what it counts.
+    let settings: [(String, String)] = [("engine", "whisper"), ("language", "en-CA"), ("words", "raw"), ("talk key", "fnOrOption"),
+                                        ("microphone", "Scarlett 2i2 4th Gen"), ("meetings folder", "/Users/someone/Private"),
+                                        ("better summary", "my-secret-script.sh"), ("typing speed", "40"), ("secret setting", "x"),
+                                        ("language", "../../etc"), ("Enter stops and sends", "on")]
+    func report(_ text: String, note: String = "", version: String = "0.12.3", model: String = "MacBookPro18,2") -> String {
+        VoiceReport.text(.init(version: version, build: "15", macOS: "27.0.1", model: model, memoryGB: 64, settings: settings,
+                               log: text, now: now, calendar: utc, note: note))
+    }
+    let rep = report(log())
+    for secret in ["Secret", "secret", "Scarlett", "/Users", "Private", ".wav", ".sh", "AXWebArea", "AXTextArea", "What happened", "etc"] {
+        check("report.no \(secret)", !rep.contains(secret))
+    }
+    check("report.sameWhateverTheNames", rep == report(log(app: "Mail", file: "notes.caf", mic: "MacBook Pro Microphone", why: "C:/other")))
+    check("report.version", rep.contains("Redpen Voice: 0.12.3 (15)\nmacOS: 27.0.1\nMac: MacBookPro18,2, 64 GB memory\n"))
+    check("report.settingsKept", rep.contains("  engine: whisper\n") && rep.contains("  language: en-CA\n") && rep.contains("  typing speed: 40\n")
+          && rep.contains("  Enter stops and sends: on\n"))
+    check("report.settingsOther", rep.contains("  microphone: other\n") && rep.contains("  meetings folder: other\n")
+          && rep.contains("  better summary: other\n") && rep.contains("  language: other\n"))
+    check("report.unknownSettingGone", !rep.contains("secret setting"))
+    check("report.table", rep.contains("  Today: 3 of 13 landed in full, 7 kept for ⌃⌥V, 3 lost, 1 thrown away with Escape\n"))
+    check("report.since", rep.contains("  Since this build started, 2026-10-31 08:57 UTC: 1 of 1 landed in full (100%), 0 kept, 0 lost\n"))
+    check("report.reasons", rep.contains("  kept, box was sent: 1\n") && rep.contains("  lost, ending failed: 1\n"))
+    check("report.counts", rep.contains("  Voice started: 4\n") && rep.contains("  restarted after a crash: 1\n")
+          && rep.contains("  meeting could not start (NSOSStatusErrorDomain -50): 1\n"))
+    check("report.noCrashLine", report(L(31, "08:00:00", "launched")).contains("  restarted after a crash: 0\n"))
+    check("report.badShapes", report("", version: "Cedric 1", model: "Cedric's Mac").contains("Redpen Voice: unknown (15)")
+          && report("", model: "Cedric's Mac").contains("Mac: unknown,"))
+    // Every line but the typed note is a fixed word, a number, or an allowed setting: no slash, no quote marks.
+    check("report.plainLines", rep.split(separator: "\n").allSatisfy { !$0.contains("/") && !$0.contains("\"") && !$0.contains("[") })
+    check("report.noNoteUnlessTyped", !rep.contains("What happened") && !report(log(), note: "  \n ").contains("What happened"))
+    let noted = report(log(), note: "It stopped halfway\nin Mail")
+    check("report.noteTyped", noted.hasSuffix("What happened (typed by the person sending this)\n  It stopped halfway in Mail\n"))
+    check("report.noteCapped", VoiceReport.note(String(repeating: "a", count: 2000)).count == 1001)
+    check("report.noteAppended", noted == rep + VoiceReport.noteSection("It stopped halfway\nin Mail"))
+    check("report.noColonConnector", !rep.contains("only:"))
+}
+
 print("\(pass) passed, \(fail) failed")
 exit(fail == 0 ? 0 : 1)

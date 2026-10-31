@@ -46,6 +46,8 @@ final class MenuModel: ObservableObject {
     var pauseMeeting: () -> Void = {}
     var copyNotice: () -> Void = {}
     var unfinished: () -> Void = {}
+    /// Send a report (D-1034).
+    var report: () -> Void = {}
 }
 
 /// The panel under the menu bar icon, in the settings page's paper, ink and red pen. Only what you reach for
@@ -68,6 +70,7 @@ struct MenuPanel: View {
             action("Transcribe a file…", model.file)
             action("Settings…", keys: "⌘,", model.settings).keyboardShortcut(",", modifiers: .command)
             action(s.update.map { "Install version \($0)…" } ?? "Check for updates…", red: s.update != nil, model.updates)
+            action("Send a report…", model.report)
             rule
             action("Quit Redpen Voice", keys: "⌘Q") { NSApp.terminate(nil) }.keyboardShortcut("q", modifiers: .command)
         }

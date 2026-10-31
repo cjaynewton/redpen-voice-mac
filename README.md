@@ -115,7 +115,7 @@ The recording is saved to disk as it goes. If Voice or the Mac quits during a me
 
 ## The menu
 
-Click the Voice icon in the menu bar for today's words, your speed and the minutes they saved you, with an all-time line under them; the two switches; Paste last dictation, History, Stats, Transcribe a file, Settings and Check for updates.
+Click the Voice icon in the menu bar for today's words, your speed and the minutes they saved you, with an all-time line under them; the two switches; Paste last dictation, History, Stats, Transcribe a file, Settings, Check for updates and Send a report.
 
 <p align="center">
 <picture>
@@ -175,6 +175,12 @@ This week, the last 30 days and all time show your words, minutes saved, average
 **Fun facts** compares your all-time words with books, shows your longest day by word count, and adds up your total talking time. The book comparisons are rounded and always say "about". The [word counts and sources](docs/book-word-counts.md) come from specific Standard Ebooks editions. Your longest day combines all engines used that day.
 
 Minutes saved are compared with typing at 40 words a minute; set your own typing speed in Settings. Open Stats from the menu. Stats are numbers only and stay when the history is cleared; Reset stats sets them back to zero.
+
+**Words landed** shows one line a day for the last 7 days, such as "Today: 46 of 48 landed in full, 2 kept for ⌃⌥V, 0 lost", then the rate since this build started and why words were kept or lost. Landed in full means every word went in and Voice found nothing wrong. Kept means they wait on Paste last (⌃⌥V) and in History. Lost means some never came out of the engine. Presses with no words and quick taps aren't counted, and Escape twice is counted on its own. It's read from the log, so it reaches back only as far as the log does. Voice starts a new log when it passes 1 MB. `RedpenVoice --words-landed [log]` prints the same lines in Terminal.
+
+## Send a report
+
+**Send a report…** in the menu shows a report before anything leaves your Mac, with Copy and Save to Desktop. It holds counts and settings only: the version, macOS, the kind of Mac and its memory, your engine and main settings, the words-landed lines, and counts of each kind of failure and restart from the last 7 days. Never your words, app or window names, or file and folder names. "What happened?" is optional; only what you type there goes in as words. Nothing is sent for you. Email or message it however you like.
 
 <p align="center">
 <picture>

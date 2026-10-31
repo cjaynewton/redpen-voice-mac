@@ -31,6 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Daily counts, numbers only (D-837), in their own file: the history's keep choice never touches them.
     private let stats = StatsStore(url: Config.statsURL, load: false)
     private var statsWindow: StatsWindow?
+    /// Send a report (D-1034): counts and settings only, shown before anything leaves the Mac.
+    private var reportWindow: SendReportWindow?
     /// The last dictation, in memory, for Paste last when nothing is kept on disk (D-825).
     private var lastSaid: Entry?
     private var settings: SettingsWindow?
@@ -130,9 +132,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let now = Date()
             let sample = StatsModel.sample(now: now)
             let model = StatsModel(typing: 40) { sample }; model.now = { now }
+            model.landed = StatsModel.sampleLanded(now: now)
             let v = NSHostingView(rootView: StatsView(model: model).buttonBorderShape(.roundedRectangle(radius: 4)))
-            // Enough height to include Fun facts and the footer, drawn offscreen without showing a window.
-            v.frame = NSRect(x: 0, y: 0, width: StatsView.width, height: 920)
+            // Enough height to include Words landed, Fun facts and the footer, drawn offscreen without showing a window.
+            v.frame = NSRect(x: 0, y: 0, width: StatsView.width, height: 1200)
             Self.shoot(v, to: CommandLine.arguments[i + 1])
             return
         }
@@ -639,7 +642,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         restarted = CommandLine.arguments.contains("--restarted")
         Updates.shared.start()
         updateWatch = Updates.shared.$waiting.sink { [weak self] _ in DispatchQueue.main.async { self?.refreshMenu() } }
-        Log.note("launched")
+        // Which build (D-1034): the words-landed count starts "since this build" from its first launch.
+        Log.note("launched \(AppInfo.buildLine)")
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.offerUnfinishedMeetings(asked: false) }
         Log.note("keyboard: AppleFnUsageType \(FnKey.usage)\(FnKey.problem.map { ", \($0)" } ?? "")")
     }
@@ -2010,6 +2014,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.pauseMeeting = { [weak self] in self?.panel.close(); self?.togglePause() }
         menu.copyNotice = { [weak self] in self?.panel.close(); self?.copyNotice() }
         menu.unfinished = { [weak self] in self?.panel.close(); self?.offerUnfinishedMeetings(asked: true) }
+        menu.report = { [weak self] in self?.panel.close(); self?.openReport() }
         refreshMenu()
     }
 
@@ -2470,10 +2475,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.refreshMenu()
             }
             m.openSettings = { [weak self] in self?.openSettings() }
+            m.loadLanded = { WordsLanded.read(Self.readLog()) }
             statsWindow = StatsWindow(model: m)
         }
         statsWindow?.model.typing = config.typingSpeed
         statsWindow?.show()
+    }
+
+    /// The log as text, for the words-landed count and the report (D-1034). It never holds your words.
+    static func readLog() -> String {
+        String(decoding: (try? Data(contentsOf: Log.url)) ?? Data(), as: UTF8.self)
+    }
+
+    /// Send a report (D-1034): built fresh each time it opens, from the log and the saved settings.
+    private func openReport() {
+        if reportWindow == nil {
+            reportWindow = SendReportWindow(model: SendReportModel {
+                VoiceReport.text(.init(version: AppInfo.version, build: AppInfo.build, macOS: AppInfo.macOS, model: AppInfo.model,
+                                       memoryGB: AppInfo.memoryGB, settings: AppInfo.settings(Config.load()),
+                                       log: Self.readLog(), now: Date()))
+            })
+        }
+        reportWindow?.show()
     }
 
     /// Settings keeps its own copy and saves all of it on any change: give it the saved file as it is now, so a change
@@ -2506,6 +2529,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         settings?.show()
     }
+}
+
+// `--words-landed [log]` prints the last 7 days of words landed in full, kept and lost (D-1034), from the log or the
+// file given, then quits. Counts only. Runs before any window, menu or microphone exists.
+if let i = CommandLine.arguments.firstIndex(of: "--words-landed") {
+    let file = i + 1 < CommandLine.arguments.count && !CommandLine.arguments[i + 1].hasPrefix("--")
+        ? URL(fileURLWithPath: CommandLine.arguments[i + 1]) : Log.url
+    guard let data = try? Data(contentsOf: file) else { print("No log at \(file.path)"); exit(1) }
+    for line in WordsLanded.summary(WordsLanded.read(String(decoding: data, as: UTF8.self)), now: Date()) { print(line) }
+    exit(0)
 }
 
 // Watchdog mode: a small copy that reopens the app if it crashes. Runs before any window or menu exists.
