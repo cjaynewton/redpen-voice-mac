@@ -1454,7 +1454,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .takeBackThenDeliver: end = .deliver(takeBack: true)
             case .deliver: end = .deliver(takeBack: false)
             case .keep:
-                keptAfterChange(start, typed: d.runs.map(\.text).joined(), checked: text)
+                // Not you: Voice's own swap or check didn't confirm, and no key of yours went into the box.
+                let voiceUnsure = !(start?.userEdited ?? true) && (d.deliveryUncertain || d.reportedFailures.contains(.editUnconfirmed))
+                keptAfterChange(start, voiceUnsure: voiceUnsure, typed: d.runs.map(\.text).joined(), checked: text)
                 end = .kept
             }
         }
@@ -1472,16 +1474,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Some of this dictation went into a box you then sent, edited or left for another conversation (D-998, Oct 31
     /// 2026). Typing the whole dictation where you are now repeated it there: the second T3 chat got it again. The
     /// bar says only what helps: nothing when the sent message had every word, or that ⌃⌥V has the rest.
-    private func keptAfterChange(_ start: StartBox?, typed: String, checked: String) {
+    private func keptAfterChange(_ start: StartBox?, voiceUnsure: Bool = false, typed: String, checked: String) {
         // Sent means the same conversation now reads empty. A chat app's one box shown for another conversation
         // reads empty too, and that is not a send.
         let sent = start.map { b in
             let now = Self.boxPrint(b.element, withText: false)
             return now.url == b.print.url && now.title == b.print.title && DictationEnding.looksSent(Insert.value(b.element))
         } ?? false
-        if let note = DictationEnding.keptNote(sent: sent, typed: typed, checked: checked) { hud.flash(note, for: 3.5) }
+        if let note = DictationEnding.keptNote(sent: sent, voiceUnsure: voiceUnsure, typed: typed, checked: checked) { hud.flash(note, for: 3.5) }
         else { hud.hide() }
-        Log.note("insert: the box you started in was \(sent ? "sent" : "changed") after Voice typed into it, nothing typed again, kept for paste")
+        Log.note("insert: the box you started in was \(sent ? "sent" : voiceUnsure ? "left unconfirmed by Voice's own fix" : "changed") after Voice typed into it, nothing typed again, kept for paste")
     }
 
     /// Swaps the drafts for the checked text in the box you are still in. A key or click from earlier in the dictation

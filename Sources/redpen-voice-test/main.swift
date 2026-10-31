@@ -842,7 +842,12 @@ do {
     check("ending.droppedRepeatCantHideLastWord", DictationEnding.keptNote(sent: true, typed: "I I think we should", checked: "I think we should go.") == DictationEnding.sentShortNote)
     check("ending.numberFormatCantHideLastWord", DictationEnding.keptNote(sent: true, typed: "about twenty five", checked: "About 25 people.") == DictationEnding.sentShortNote)
     check("ending.sentNothingTypedSaysSo", DictationEnding.keptNote(sent: true, typed: "", checked: "All of it.") == DictationEnding.sentShortNote)
-    check("ending.keptNotesShort", DictationEnding.sentShortNote.count <= 48 && DictationEnding.changedNote.count <= 48)
+    check("ending.keptNotesShort", DictationEnding.sentShortNote.count <= 48 && DictationEnding.changedNote.count <= 48
+          && DictationEnding.unconfirmedNote.count <= 48)
+    // Oct 31 07:54: Voice's own swap came out one character off, nothing of yours touched the box, the bar said ⌃⌥V,
+    // and ⌃⌥V pasted the dictation a second time. Voice's own doubt never points at ⌃⌥V.
+    check("ending.voiceUnsureNoPastePrompt", DictationEnding.keptNote(sent: false, voiceUnsure: true, typed: "a b", checked: "a b c") == DictationEnding.unconfirmedNote)
+    check("ending.sentBeatsVoiceUnsure", DictationEnding.keptNote(sent: true, voiceUnsure: true, typed: "a b", checked: "a b c") == DictationEnding.sentShortNote)
     for asLeft in [true, false] {
         for here in [true, false] {
             check("ending.nothingTypedGoesWhereYouAre.\(asLeft).\(here)", DictationEnding.plan(typedInStartBox: false, startBoxAsLeft: asLeft, inStartBox: here) == P.deliver)

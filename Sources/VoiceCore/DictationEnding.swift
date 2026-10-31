@@ -42,7 +42,11 @@ public enum DictationEnding {
     /// another conversation, or a box Voice couldn't read: the checked text is one key away.
     public static let sentShortNote = "Sent before the last words. ⌃⌥V has them all"
     public static let changedNote = "Not typed again. ⌃⌥V has the checked words"
-    public static func keptNote(sent: Bool, typed: String, checked: String) -> String? {
+    /// Nothing of yours changed the box: Voice's own last fix couldn't be confirmed, so the checked words are very
+    /// likely already there. Pointing at ⌃⌥V then pasted them a second time (Oct 31 2026, a box one character off).
+    public static let unconfirmedNote = "Couldn't confirm the last fix. Check the box"
+    public static func keptNote(sent: Bool, voiceUnsure: Bool = false, typed: String, checked: String) -> String? {
+        if !sent, voiceUnsure { return unconfirmedNote }
         guard sent else { return changedNote }
         let words: (String) -> [String] = { t in
             t.split(whereSeparator: { $0.isWhitespace }).map { $0.lowercased().filter { $0.isLetter || $0.isNumber } }.filter { !$0.isEmpty }
