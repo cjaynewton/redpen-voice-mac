@@ -22,6 +22,9 @@ final class HoldKey {
     var onCancel: () -> Void = {}
     /// Hands-free just started (second tap), so the bar can say so.
     var onHandsFree: () -> Void = {}
+    /// An Escape key-down (event time, repeat), seen without taking it from the app in front (D-987). True when a
+    /// recording is listening for it: then it is not the other key that cancels a held press.
+    var onEscape: (Double, Bool) -> Bool = { _, _ in false }
     /// A tap is a press shorter than this; the second must come within `tapGap` of the first. Generous enough for an
     /// unhurried double tap (Cedric's first tap ran just over the old 0.3 s on Oct 25).
     static let tapLength = TalkKeyState.tapLength, tapGap = TalkKeyState.tapGap
@@ -123,6 +126,11 @@ final class HoldKey {
             }
         } else if e.type == .keyDown, !isOwn(e) {
             draftInputMonitor.record(talkKey: false, at: e.timestamp)
+            // Escape while you talk goes to your app and the recording goes on (D-987), held or hands-free.
+            if code == EscapeTwice.keyCode, onEscape(e.timestamp, e.isARepeat) {
+                state.noteKeyDown(talkKey: false, at: e.timestamp)
+                return
+            }
             apply(state.otherKey(at: e.timestamp))
         }
     }

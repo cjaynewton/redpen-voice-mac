@@ -36,6 +36,15 @@ public enum DictationEnding {
     /// Words waiting for a click wait this long. A new dictation ends the wait sooner; Paste last keeps them.
     public static let waitSeconds: TimeInterval = 600
 
+    /// The bar while words wait (D-987, Oct 31 2026). It stays up the whole wait and asks, with two buttons. Copy puts
+    /// the words on the clipboard; Throw away types them nowhere. Either way Paste last still has them. It was a
+    /// 3 second note, then nothing for 10 minutes.
+    public static let waitQuestion = "No box here. Click where your words go"
+    public static let copyButton = "Copy"
+    public static let throwAwayButton = "Throw away"
+    public static let copiedNote = "Copied"
+    public static let thrownAwayNote = "Not typed. ⌃⌥V still has them"
+
     /// Straight after a dictation: anything but a page, a control or Voice's own window takes the words now.
     public static func typesNow(kind: FocusKind, ownWindow: Bool) -> Bool { !ownWindow && kind != .notText }
 

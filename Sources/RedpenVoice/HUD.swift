@@ -34,6 +34,10 @@ final class HUD {
     private let addWord = NSButton(title: "Add", target: nil, action: nil)
     private let notNow = NSButton(title: "Not now", target: nil, action: nil)
     private var wordAction: ((Bool) -> Void)?
+    /// Words waiting for a click (D-987): the bar asks, with Copy and Throw away, for as long as they wait.
+    private let copyWords = NSButton(title: "Copy", target: nil, action: nil)
+    private let throwAway = NSButton(title: "Throw away", target: nil, action: nil)
+    private var waitAction: ((Bool) -> Void)?
 
     func captureScreen(textBox: CGRect?) {
         let screens = NSScreen.screens
@@ -87,7 +91,7 @@ final class HUD {
         doneMark.font = NSFont.systemFont(ofSize: 14, weight: .semibold)
         doneMark.textColor = NSColor(srgbRed: 0.3, green: 0.77, blue: 0.43, alpha: 1)
         for v in [dot, label, timer, meter, doneMark] as [NSView] { box.addSubview(v) }
-        for button in [addWord, notNow] {
+        for button in [addWord, notNow, copyWords, throwAway] {
             button.font = label.font
             button.contentTintColor = .white
             button.isBordered = false
@@ -102,6 +106,8 @@ final class HUD {
         }
         addWord.action = #selector(acceptWord)
         notNow.action = #selector(dismissWord)
+        copyWords.action = #selector(copyWaiting)
+        throwAway.action = #selector(throwAwayWaiting)
     }
 
     /// Bars only while talking; words only when something needs saying.
@@ -208,18 +214,7 @@ final class HUD {
         guard !panel.isVisible else { return false }
         show("Keep hearing “\(word)”. Add it to your words?", level: false)
         wordAction = action
-        meter.isHidden = true
-        label.frame.origin.x = 16
-        var x = label.frame.maxX + 14
-        for button in [addWord, notNow] {
-            button.sizeToFit()
-            button.frame = NSRect(x: x, y: 7, width: button.frame.width + 18, height: 26)
-            button.isHidden = false
-            x = button.frame.maxX + 8
-        }
-        panel.setContentSize(NSSize(width: x + 8, height: 40))
-        panel.ignoresMouseEvents = false
-        place()
+        showButtons([addWord, notNow])
         let work = DispatchWorkItem { [weak self] in self?.hide() }
         hideAt = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 12, execute: work)
@@ -228,14 +223,47 @@ final class HUD {
 
     func hideSuggestion() { if wordAction != nil { hide() } }
 
+    /// Words waiting for a click (D-987): the question and two buttons, `yes` (true) and `no` (false), with no time
+    /// limit; it goes when the words go in, a button is pressed or something else takes the bar. It replaces whatever
+    /// the bar shows. The panel never activates Voice, so pressing a button leaves the app you are in focused.
+    func ask(_ text: String, yes: String, no: String, action: @escaping (Bool) -> Void) {
+        show(text, level: false)
+        copyWords.title = yes; throwAway.title = no
+        waitAction = action
+        showButtons([copyWords, throwAway])
+    }
+
+    /// The words stopped waiting: the question goes, any other message stays.
+    func stopAsking() { if waitAction != nil { hide() } }
+
+    var isShowing: Bool { panel.isVisible }
+
+    /// Buttons after the message, in a bar that takes clicks but never focus.
+    private func showButtons(_ buttons: [NSButton]) {
+        meter.isHidden = true
+        label.frame.origin.x = 16
+        var x = label.frame.maxX + 14
+        for button in buttons {
+            button.sizeToFit()
+            button.frame = NSRect(x: x, y: 7, width: button.frame.width + 18, height: 26)
+            button.isHidden = false
+            x = button.frame.maxX + 8
+        }
+        panel.setContentSize(NSSize(width: x + 8, height: 40))
+        panel.ignoresMouseEvents = false
+        place()
+    }
+
     private func clearSuggestion() {
-        wordAction = nil
-        addWord.isHidden = true; notNow.isHidden = true
+        wordAction = nil; waitAction = nil
+        for button in [addWord, notNow, copyWords, throwAway] { button.isHidden = true }
         panel.ignoresMouseEvents = true
     }
 
     @objc private func acceptWord() { let action = wordAction; hide(); action?(true) }
     @objc private func dismissWord() { let action = wordAction; hide(); action?(false) }
+    @objc private func copyWaiting() { let action = waitAction; hide(); action?(true) }
+    @objc private func throwAwayWaiting() { let action = waitAction; hide(); action?(false) }
 
     private func startTicking() {
         let t = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.frame() } }

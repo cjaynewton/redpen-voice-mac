@@ -968,6 +968,60 @@ do {
 
 check("box.noURLChangedConversationTitle", BoxMatch.failure(start: BoxPrint(role: "AXTextArea", identifier: "composer", frame: f0, text: "Same text", title: "Chat A"), now: BoxPrint(role: "AXTextArea", identifier: "composer", frame: f0, text: nil, title: "Chat B"), nowText: "Same text", sameElement: true) == .title)
 
+// Escape needs two quick presses (D-987): one goes to the app, two within half a second throw the recording away.
+// No keys posted: the counting rule, the box rule, and the bar's words when no box takes them.
+do {
+    var e = EscapeTwice()
+    check("escape2.oneIsNot", !e.press(at: 10))
+    check("escape2.twoQuick", e.press(at: 10.3))
+    check("escape2.pairUsedUp", !e.press(at: 10.5))
+    check("escape2.edgeOfWindow", e.press(at: 10.5 + EscapeTwice.window))
+    var slow = EscapeTwice()
+    _ = slow.press(at: 20)
+    check("escape2.tooSlow", !slow.press(at: 20.51))
+    check("escape2.slowSecondStartsNewPair", slow.press(at: 20.8))
+    var held = EscapeTwice()
+    _ = held.press(at: 30)
+    check("escape2.repeatIsNotAPress", !held.press(at: 30.1, repeated: true) && !held.press(at: 30.15, repeated: true))
+    check("escape2.realSecondAfterRepeats", held.press(at: 30.2))
+    var backwards = EscapeTwice()
+    _ = backwards.press(at: 40)
+    check("escape2.olderEventNotASecond", !backwards.press(at: 39.9))
+    check("escape2.window", EscapeTwice.window == 0.5 && EscapeTwice.keyCode == 53)
+    // A fresh recording starts counting again: a press just before it can't pair with one inside it.
+    var fresh = EscapeTwice()
+    check("escape2.freshAfterArming", !fresh.press(at: 50.1))
+    // Escape types nothing: it never marks the box you started in as edited. Letters and Delete still do.
+    check("escape2.notAnEdit", !EscapeTwice.marksBoxEdited(keyCode: 53))
+    check("escape2.letterIsAnEdit", EscapeTwice.marksBoxEdited(keyCode: 0) && EscapeTwice.marksBoxEdited(keyCode: 51))
+    // A held talk key still treats any other key as a shortcut; Escape is kept out of that path in HoldKey and only
+    // noted as a key-down, which leaves the held press recording.
+    var k = TalkKeyState()
+    _ = k.event(key: 63, down: true, at: 1)
+    check("escape2.otherKeyStillCancelsHold", k.otherKey(at: 1.5) == .cancel)
+    var hk = TalkKeyState()
+    _ = hk.event(key: 63, down: true, at: 1)
+    hk.noteKeyDown(talkKey: false, at: 1.5)
+    check("escape2.escapeNoteKeepsHold", hk.active && hk.held && hk.lastTypingKeyDownAt == 1.5)
+
+    // No box: the bar asks while the words wait, plain and short, with no colon or em dash.
+    let lines = [DictationEnding.waitQuestion, DictationEnding.copyButton, DictationEnding.throwAwayButton,
+                 DictationEnding.copiedNote, DictationEnding.thrownAwayNote]
+    check("wait.question", DictationEnding.waitQuestion == "No box here. Click where your words go")
+    check("wait.buttons", DictationEnding.copyButton == "Copy" && DictationEnding.throwAwayButton == "Throw away")
+    check("wait.plain", lines.allSatisfy { !$0.contains("\u{2014}") && !$0.contains("\u{2013}") && !$0.contains(":") })
+    check("wait.short", DictationEnding.waitQuestion.count <= 40 && DictationEnding.thrownAwayNote.count <= 40)
+    check("wait.stillTenMinutes", DictationEnding.waitSeconds == 600)
+    // Copy leaves the words on the clipboard the way Paste last does when it can't confirm: marked, kept for Command-V.
+    let pb = NSPasteboard(name: NSPasteboard.Name("rv-wait-copy-\(UUID().uuidString)"))
+    pb.clearContents(); pb.setString("older copy", forType: .string)
+    let loan = PasteClipboardLoan("waiting words", pasteboard: pb)
+    check("wait.copyOnClipboard", loan != nil && pb.string(forType: .string) == "waiting words")
+    check("wait.copyMarkedTransient", pb.pasteboardItems?.first?.types.contains(NSPasteboard.PasteboardType("org.nspasteboard.TransientType")) == true)
+    check("wait.copyKept", loan?.finish(confirmed: false) == .kept && pb.string(forType: .string) == "waiting words")
+    pb.releaseGlobally()
+}
+
 // The video's words come off the start; yours stay (D-817).
 check("echo.strip", MediaEcho.strip("Please tell me what. Why is listening to horror music so comfortable?", video: "please tell me what") == "Why is listening to horror music so comfortable?", MediaEcho.strip("Please tell me what. Why is listening to horror music so comfortable?", video: "please tell me what"))
 check("echo.misheard", MediaEcho.strip("Please tel me what so we ship it", video: "please tell me what the") == "So we ship it", MediaEcho.strip("Please tel me what so we ship it", video: "please tell me what the"))

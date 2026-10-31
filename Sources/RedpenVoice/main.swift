@@ -46,8 +46,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var press = 0
     private var pasteKey: Shortcut?
     private var undoKey: Shortcut?
-    /// Escape, held only while you talk, so it reaches your apps the rest of the time.
-    private var escapeKey: Shortcut?
+    /// Escape presses while you talk (D-987). Not a hot key any more: one press reaches your app as normal, two close
+    /// together throw the recording away. Nil when nothing is recording.
+    private var escapePresses: EscapeTwice?
     /// ⌃⌥S, only while "Point out words to check" is on: swaps in the other engine's hearing of the marked word.
     private var swapKey: Shortcut?
     private var riskSwap: (swapped: String, gen: Int, element: AXUIElement, typed: String)?
@@ -541,6 +542,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         keys.onDown = { [weak self] in self?.begin(); return self?.session != nil }
         keys.onUp = { [weak self] in self?.end() }
         keys.onCancel = { [weak self] in self?.cancel() }
+        keys.onEscape = { [weak self] at, repeated in self?.escapePressed(at: at, repeated: repeated) ?? false }
         keys.start()
         pasteKey = Shortcut(id: 1, keyCode: kVK_ANSI_V, name: "Control-Option-V") { [weak self] in self?.pasteLastNow(triggerKey: CGKeyCode(kVK_ANSI_V)) }
         undoKey = Shortcut(id: 2, keyCode: kVK_ANSI_Z, name: "Control-Option-Z") { [weak self] in self?.takeBack() }
@@ -588,7 +590,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     Insert.typedSince = true
                     if self?.keys.keys.contains(where: { $0.code == Int(e.keyCode) }) != true {
                         self?.userActedAt = Date()
-                        self?.userTypedInStartBox()
+                        // Escape now reaches your app while you talk (D-987). It types nothing, so the box still
+                        // reads as Voice left it; its text is still checked at the ending.
+                        if EscapeTwice.marksBoxEdited(keyCode: Int(e.keyCode)) { self?.userTypedInStartBox() }
                     }
                 }
             }
@@ -897,16 +901,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pendingMedia.preRoll = Int(recorder.pushedFrames)
         micOwner = thisPress
         Log.note("recording from \(recorder.inputName)")
-        escapeKey = Shortcut(id: 3, keyCode: kVK_Escape, modifiers: 0, name: "Escape", quiet: true) { [weak self] in
-            self?.discard()
-        }
+        escapePresses = EscapeTwice()
         busy = false
     }
 
     /// Fn was a shortcut, not talking: drop the audio, put the music back, no words written.
     private func cancel() {
         guard let s = session else { return }
-        escapeKey = nil
+        escapePresses = nil
         // Drafts already typed: finish and keep this dictation (no more edits to the box) rather than drop it with
         // words already on screen and nothing in history.
         if let d = drafting, d.owner === s, d.typedAny { d.checksStopped = true; d.draftsStopped = true; end(); return }
@@ -926,11 +928,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         else { Log.note(ignoredTap ? "cancelled: quick tap" : "cancelled: another key while holding") }
     }
 
-    /// Escape while you talk: the dictation is thrown away, nothing goes into history or onto the clipboard, and the
-    /// words Voice already typed come back out if the box still ends with them. The next press starts fresh.
+    /// Escape twice while you talk: the dictation is thrown away, nothing goes into history or onto the clipboard, and
+    /// the words Voice already typed come back out if the box still ends with them. The next press starts fresh.
     private func discard() {
-        guard let s = session else { escapeKey = nil; return }
-        escapeKey = nil
+        guard let s = session else { escapePresses = nil; return }
+        escapePresses = nil
         keys.discard()
         wasHandsFree = false
         session = nil
@@ -949,6 +951,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                        : "Thrown away. Talk again when you're ready.", for: 2.5)
         resumeMedia()
         Log.note("cancelled: Escape, \(left ? "typed words left in the box" : "nothing left in the box")")
+    }
+
+    /// An Escape key-down while you talk (D-987). It was a hot key that took every press from the app in front, so
+    /// leaving a full-screen video or closing a pop-up threw the recording away. Now each press goes to your app as
+    /// normal and the recording goes on; a second press within half a second throws it away. Returns false when
+    /// nothing is recording, so the key is ordinary.
+    private func escapePressed(at time: Double, repeated: Bool) -> Bool {
+        guard session != nil, var presses = escapePresses else { return false }
+        let twice = presses.press(at: time, repeated: repeated)
+        escapePresses = presses
+        if twice { DispatchQueue.main.async { [weak self] in self?.discard() } }
+        else if !repeated { Log.note("escape: one press, passed to the app, still recording") }
+        return true
     }
 
     /// Deletes everything this dictation typed, only while the box still ends with it at the cursor and you press
@@ -1462,12 +1477,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var waitPid: pid_t = 0
 
     /// Words that finished away from a text box wait 10 minutes for the next click into one (D-965; it was a minute).
-    /// A new dictation ends the wait; Paste last keeps them either way.
+    /// A new dictation ends the wait; Paste last keeps them either way. The bar asks the whole time (D-987).
     private func holdForClick(_ text: String) {
         stopWaiting()
         waitingText = text
         let until = Date().addingTimeInterval(DictationEnding.waitSeconds)
-        hud.flash("Click a text box and your words go there", for: 3)
+        askWhereWordsGo()
         waitTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.checkWaiting(until: until) }
         }
@@ -1488,6 +1503,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let focus = Insert.focus()
         let front = NSWorkspace.shared.frontmostApplication
         let browser = FocusGate.browsers.contains(front?.bundleIdentifier ?? "")
+        // Another message took the bar for a moment: the question comes back when it goes.
+        if !hud.isShowing { askWhereWordsGo() }
         if DictationEnding.waitRefuses(kind: focus.kind, inBrowser: browser, ownWindow: own) { waitSeen = 0; return }
         let pid = front?.processIdentifier ?? 0
         waitSeen = pid == waitPid ? waitSeen + 1 : 1
@@ -1503,6 +1520,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func stopWaiting() {
         waitTimer?.invalidate(); waitTimer = nil
         waitingText = nil; waitSeen = 0
+        hud.stopAsking()
+    }
+
+    /// The bar while words wait (D-987): it stays up and asks, with Copy and Throw away. The panel never takes focus,
+    /// so the buttons work without moving you out of the app you are in. A click into a text box still takes the words.
+    private func askWhereWordsGo() {
+        hud.ask(DictationEnding.waitQuestion, yes: DictationEnding.copyButton, no: DictationEnding.throwAwayButton) { [weak self] copy in
+            self?.answerWaiting(copy: copy)
+        }
+    }
+
+    /// Copy: the words go on the clipboard the way Paste last leaves them for Command-V (marked so clipboard managers
+    /// can skip them). Throw away: typed nowhere. Either way the wait ends and Paste last and History keep them, as
+    /// when the 10 minutes run out; nothing is removed.
+    private func answerWaiting(copy: Bool) {
+        guard let text = waitingText else { return }
+        stopWaiting()
+        if copy {
+            let ok = PasteClipboardLoan(text) != nil
+            hud.flash(ok ? DictationEnding.copiedNote : "Couldn't copy. Press ⌃⌥V to paste", ok: ok, for: ok ? 1.0 : 2.5)
+            Log.note("insert: waiting words copied, \(ok)")
+        } else {
+            hud.flash(DictationEnding.thrownAwayNote, for: 2)
+            Log.note("insert: waiting words thrown away, kept for paste")
+        }
     }
 
     /// Puts back what this app paused, once. Not while a recording, or another dictation's writing, still holds the
@@ -1561,7 +1603,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func end() {
         guard let s = session else { return }
-        escapeKey = nil
+        escapePresses = nil
         deliveries.confirm()
         interruptedDrafting = nil
         session = nil
