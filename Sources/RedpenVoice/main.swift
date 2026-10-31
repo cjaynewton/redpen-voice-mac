@@ -542,8 +542,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         keys.onUp = { [weak self] in self?.end() }
         keys.onCancel = { [weak self] in self?.cancel() }
         keys.start()
-        pasteKey = Shortcut(id: 1, keyCode: kVK_ANSI_V, name: "Control-Option-V") { [weak self] in self?.pasteLastNow(triggerKey: CGKeyCode(kVK_ANSI_V)) }
-        undoKey = Shortcut(id: 2, keyCode: kVK_ANSI_Z, name: "Control-Option-Z") { [weak self] in self?.takeBack() }
+        pasteKey = Shortcut(id: .pasteLast, keyCode: kVK_ANSI_V, name: "Control-Option-V") { [weak self] in self?.pasteLastNow(triggerKey: CGKeyCode(kVK_ANSI_V)) }
+        undoKey = Shortcut(id: .takeBack, keyCode: kVK_ANSI_Z, name: "Control-Option-Z") { [weak self] in self?.takeBack() }
         updateSwapKey()
         installWatches()
         if !config.firstRunDone || !AXIsProcessTrusted() {
@@ -887,7 +887,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pendingMedia.preRoll = Int(recorder.pushedFrames)
         micOwner = thisPress
         Log.note("recording from \(recorder.inputName)")
-        escapeKey = Shortcut(id: 3, keyCode: kVK_Escape, modifiers: 0, name: "Escape", quiet: true) { [weak self] in
+        escapeKey = Shortcut(id: .escape, keyCode: kVK_Escape, modifiers: 0, name: "Escape", quiet: true) { [weak self] in
             self?.discard()
         }
         busy = false
@@ -1847,7 +1847,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateSwapKey() {
         if config.riskMarks == true, config.engine == "whisper" {
-            if swapKey == nil { swapKey = Shortcut(id: 3, keyCode: kVK_ANSI_S, name: "Control-Option-S") { [weak self] in self?.swapRisky() } }
+            if swapKey == nil { swapKey = Shortcut(id: .swapRisky, keyCode: kVK_ANSI_S, name: "Control-Option-S") { [weak self] in self?.swapRisky() } }
         } else { swapKey = nil }
     }
 

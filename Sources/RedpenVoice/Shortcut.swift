@@ -1,5 +1,6 @@
 import AppKit
 import Carbon.HIToolbox
+import VoiceCore
 
 /// System-wide shortcuts that work whichever app is in front: Control-Option-V pastes the last dictation,
 /// Control-Option-Z takes it back. Same family as Redpen's Control-Option keys. Carbon's hot keys need no extra
@@ -13,8 +14,10 @@ final class Shortcut {
     /// Lets go of the key, so a shortcut that's switched off stops taking it from other apps.
     deinit { if let ref { UnregisterEventHotKey(ref) } }
 
-    init(id: UInt32, keyCode: Int, modifiers: Int = controlKey | optionKey, name: String, quiet: Bool = false,
+    /// `id` comes from ShortcutID, so no two shortcuts can share one and take each other's action.
+    init(id shortcut: ShortcutID, keyCode: Int, modifiers: Int = controlKey | optionKey, name: String, quiet: Bool = false,
          action: @escaping () -> Void) {
+        let id = shortcut.rawValue
         Shortcut.actions[id] = action
         if !Shortcut.installed {
             Shortcut.installed = true
