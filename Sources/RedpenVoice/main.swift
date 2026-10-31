@@ -1572,7 +1572,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             var raw = ""
             let f0 = Date()
-            do { raw = try await s.finish() } catch { Log.note("finish failed: \(error.localizedDescription)") }
+            // Never stuck on "Writing": while this dictation counts in `writing`, the talk key starts nothing new.
+            // Whisper and Fast had no limit of their own, so one engine that stopped answering left Voice deaf.
+            let limit = Deadline.finishSeconds(recorded: seconds)
+            var stuck = false
+            switch await Deadline.run(seconds: limit, { try await s.finish() }) {
+            case .value(let finished): raw = finished
+            case .failure(let error): Log.note("finish failed: \(error.localizedDescription)")
+            case .timedOut:
+                stuck = true
+                s.cancel()
+                Log.note("finish: the engine didn't answer in \(Log.int(limit))s, gave up so the talk key works again")
+            }
             let engineMs = Log.ms(Date().timeIntervalSince(f0))
             let t0 = Date()
             raw = self.names.apply(raw)
@@ -1653,6 +1664,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             if typedLive > 0 { Log.note("live: \(typedLive) of \(s.written.count) pieces typed while talking") }
             if s.endingLost, !newer { self.hud.flash("The last few words didn't come through. Say them again.", for: 3.5) }
+            if stuck, !newer { self.hud.flash("Writing took too long and was stopped. If this keeps happening, quit and reopen Redpen Voice.", for: 4) }
             if !raw.isEmpty, ["whisper", "parakeet", "live"].contains(self.config.engine) {
                 self.talk.add(s.recorded, words: raw.split(separator: " ").count)
                 self.talk.save(AppDelegate.talkURL)
