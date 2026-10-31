@@ -88,7 +88,15 @@ A small bar stays at the bottom of the screen while it records. It shows the tim
 </tr>
 </table>
 
-The notes are one Markdown file in `~/Redpen Meetings`, named with the date and time. At the top is a summary with key points, decisions and to-dos, written on this Mac by Apple's model and labelled so you check it against the transcript. If Apple's model isn't available, the file says why there is no summary. Below it is the transcript, one paragraph per turn, each with its time and Me or Others. The audio is kept beside the notes, one file for each track, unless you turn that off in Settings.
+The notes are one Markdown file in `~/Redpen Meetings`, named with the date and time. At the top is a summary: a short overview, then key points, decisions and to-dos, each ending with the time it was said, like `[12:34]`, so you can find it in the transcript. Apple's model writes it on this Mac, and Voice checks every item before it goes in. The line at that time has to say it, with the same numbers. An item no line says is left out, and the summary counts how many were. A to-do needs someone saying they'll do it or asking for it, so thanks and goodbyes never become to-dos. If Apple's model isn't available, the file says why there is no summary.
+
+Below the summary is the transcript, one paragraph per turn, each with its time and Me or Others. The audio is kept beside the notes, one file for each track, unless you turn that off in Settings.
+
+**Better summary, if you want one.** In Settings, Better summary with can be Claude, ChatGPT or Gemini, using your own plan through that company's command-line tool (Claude Code, Codex or the Antigravity CLI), never an API key. Settings lists the ones installed on your Mac without starting them. Once you choose one, it checks that one is signed in and says how if it isn't. It's off until you choose. After the notes are saved, the bar offers it. Nothing is sent until you click. The first time, Voice tells you the transcript will go to that company under your account and waits for your yes. Its summary goes on top with the same check, labelled with who wrote it, and Apple's stays below it.
+
+<p align="center">
+  <img src="docs/screenshots/meeting-bar-offer.png" alt="The bar after the notes are saved: a tick, Notes saved, a Better summary with Claude button and Not now" width="412">
+</p>
 
 The recording is saved to disk as it goes. If Voice or the Mac quits during a meeting, the menu offers to write notes for the unfinished meeting the next time it opens.
 
@@ -99,7 +107,7 @@ The recording is saved to disk as it goes. If Voice or the Mac quits during a me
 </picture>
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/settings-meeting-dark.png">
-  <img src="docs/screenshots/settings-meeting-light.png" alt="The Meeting notes part of Settings: the folder the notes go in, with Change, and Keep the audio" width="540">
+  <img src="docs/screenshots/settings-meeting-light.png" alt="The Meeting notes part of Settings: the folder the notes go in, with Change, Keep the audio, and Better summary with, set to Off" width="540">
 </picture>
 </p>
 
@@ -214,7 +222,7 @@ On [TORGO](https://www.cs.toronto.edu/~complingweb/data/TORGO/torgo.html), recor
 - **Clipboard.** Ordinary dictation leaves your clipboard alone. Paste last marks its text so clipboard managers can skip it. Voice puts back every original clipboard item and format only after confirming the paste, unless you copied something new meanwhile. It waits up to 1.2 seconds for the shortcut keys to come up and up to 2 seconds after posting the paste. If delivery can't be confirmed, the words stay on the clipboard for Command-V. A second Paste last is refused while one is in progress and for 1.5 seconds after it finishes. An app can still accept a paste late, so check the box before pasting again.
 - **How long dictations are kept** is your choice in the History window: the last 2,000, the last week, or nothing (Paste last then works until Voice quits).
 - **Videos.** When it pauses a video, it listens to that app's sound for about a second, in memory only. Whisper uses those words to remove the video's speech from the start; the other engines leave out the opening sound instead. While the pause is held, Voice also checks short samples for unexpected playback. No system audio is saved.
-- **Meeting notes.** Only while you take meeting notes, Voice records your microphone and the Mac's sound to `~/Library/Application Support/Redpen Voice/Meetings in progress/`. When the notes are written, that folder is deleted and the notes go to your meetings folder (`~/Redpen Meetings` unless you choose another), with the audio beside them if Keep the audio is on. Settings warns you if the folder you pick is synced to a cloud service. The summary is written on this Mac by Apple's model. The log holds timings and counts, never the words.
+- **Meeting notes.** Only while you take meeting notes, Voice records your microphone and the Mac's sound to `~/Library/Application Support/Redpen Voice/Meetings in progress/`. When the notes are written, that folder is deleted and the notes go to your meetings folder (`~/Redpen Meetings` unless you choose another), with the audio beside them if Keep the audio is on. Settings warns you if the folder you pick is synced to a cloud service. The summary is written on this Mac by Apple's model. Better summary is the one exception, and it's off unless you choose it. When you click it, the transcript goes to Anthropic, OpenAI or Google through your own plan, and you're told so the first time. The log holds timings and counts, never the words.
 - **Network.** The Whisper or Instant model downloads once from Hugging Face if you choose one; Apple's speech files for your language download once from Apple if the Mac doesn't have them yet; and the app checks GitHub once a day for a newer version.
 
 ## Install

@@ -55,6 +55,10 @@ struct Config: Codable {
     var keepMeetingAudio: Bool?
     /// The first meeting's tip about telling people has been shown.
     var meetingTipShown: Bool?
+    /// Better summary (D-956): "claude", "chatgpt" or "gemini", through the user's own plan; off when missing.
+    var betterSummaryWith: String?
+    /// The helpers the user has agreed to send a transcript to, after being told where it goes the first time.
+    var betterSummaryAgreed: [String]?
     var meetingsDir: URL {
         meetingsFolder.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true) }
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Redpen Meetings", isDirectory: true)

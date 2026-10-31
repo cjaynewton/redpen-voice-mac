@@ -72,6 +72,45 @@ enum MeetingTest {
         }
     }
 
+    /// `--summary-test notes.md out.md [--better claude|chatgpt|gemini]` (D-956): the summary on an existing notes
+    /// file's transcript, without transcribing again. Writes the notes with the summary to `out.md`, and the
+    /// models' own answers before the check beside it (`out.apple-raw.md`, `out.<helper>-raw.md`), then prints
+    /// what the check did. The better summary is sent only when `--better` is given.
+    static func summary(_ args: [String]) async -> Int32 {
+        guard args.count >= 2, let text = try? String(contentsOfFile: args[0], encoding: .utf8) else { print("usage: --summary-test notes.md out.md [--better claude]"); return 2 }
+        let out = URL(fileURLWithPath: args[1])
+        let said = Meeting.transcript(inFile: text).components(separatedBy: "\n").filter { $0.hasPrefix("[") }.joined(separator: "\n")
+        func report(_ who: String, _ c: Meeting.Checked?, _ raw: Meeting.Summary?, seconds: Double) {
+            guard let c, let raw else { print("\(who): no summary"); return }
+            let s = c.summary
+            print("""
+              \(who): \(String(format: "%.1f", seconds)) s
+                written: \(raw.points.count) points, \(raw.decisions.count) decisions, \(raw.todos.count) to-dos
+                kept: \(s.points.count) points, \(s.decisions.count) decisions, \(s.todos.count) to-dos
+                check: uncited \(c.uncited), time moved \(c.moved), left out \(c.dropped), not tasks \(c.notTasks)
+            """)
+            let rawFile = out.deletingPathExtension().appendingPathExtension("\(who)-raw.md")
+            try? Meeting.summaryMarkdown(Meeting.Checked(summary: raw), transcript: said).write(to: rawFile, atomically: true, encoding: .utf8)
+        }
+        print("summary-test")
+        var t0 = Date()
+        let free = await MeetingSummary.section(for: said) { _ in }
+        report("apple", free.checked, free.raw, seconds: Date().timeIntervalSince(t0))
+        if free.checked == nil { print("    \(free.note)") }
+        do {
+            if !FileManager.default.fileExists(atPath: out.path) { FileManager.default.createFile(atPath: out.path, contents: nil, attributes: [.posixPermissions: 0o600]) }
+            try MeetingNotes.savePrivately(Meeting.placing(free.text, in: text), to: out)
+        } catch { print("can't write \(out.path)"); return 1 }
+        if let b = CommandLine.arguments.firstIndex(of: "--better"), b + 1 < CommandLine.arguments.count {
+            let helper = CommandLine.arguments[b + 1]
+            t0 = Date()
+            let r = BetterSummary.write(file: out, helper: helper)
+            if r.ok { report(helper, r.checked, r.raw, seconds: Date().timeIntervalSince(t0)) } else { print("\(helper): \(r.message)") }
+        }
+        print("  file: \(out.path)")
+        return 0
+    }
+
     /// The highest memory this process has used, in bytes.
     static func peakMemory() -> Int {
         var u = rusage()

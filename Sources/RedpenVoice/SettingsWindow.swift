@@ -15,6 +15,11 @@ final class SettingsModel: ObservableObject {
     /// Whisper's background download: nil when idle, 0 to 1 while downloading, 1 while it loads.
     @Published var fetch: Double?
     @Published var fetchError: String?
+    /// Claude, ChatGPT and Gemini as installed on this Mac, for Better summary (D-956); nil before looking.
+    @Published var summaryInstalled: [String]?
+    /// Whether the chosen helper is signed in, once checked. Checked only after it is chosen: the check may ask
+    /// that company's servers.
+    @Published var summarySignedIn: [String: Bool] = [:]
     let onChange: (Config) -> Void
     /// Starts or stops a test recording to the Desktop, for comparing engines on real talking.
     var recordTest: () -> Void = {}
@@ -32,6 +37,21 @@ final class SettingsModel: ObservableObject {
         self.config = config; self.engine = engine; self.onChange = onChange
         engineState = engine.state
         openAtLogin = SMAppService.mainApp.status == .enabled
+    }
+
+    /// Looks for the helpers' files only: nothing is started or sent while Better summary is off.
+    func findSummaryHelpers() {
+        if summaryInstalled == nil { summaryInstalled = BetterSummary.installed() }
+        if let h = config.betterSummaryWith { checkSignIn(h) }
+    }
+
+    /// Whether the chosen helper is signed in. Starts that tool, off the main thread.
+    func checkSignIn(_ h: String) {
+        guard summarySignedIn[h] == nil else { return }
+        Task.detached { [weak self] in
+            let ok = BetterSummary.ready(h)
+            await MainActor.run { self?.summarySignedIn[h] = ok }
+        }
     }
 
     // MARK: Other key
@@ -447,9 +467,37 @@ struct SettingsView: View {
                 Toggle("", isOn: Binding(get: { model.config.keepMeetingAudio ?? true }, set: { model.config.keepMeetingAudio = $0 }))
                     .labelsHidden().toggleStyle(.switch).tint(Ink.red)
             }
-            Text("Start meeting notes from the menu. Your microphone is Me and what the Mac plays is Others. Everything stays on this Mac, and the notes are plain Markdown files.")
+            Divider().overlay(Ink.line)
+            betterSummaryRow
+            Text("Start meeting notes from the menu. Your microphone is Me and what the Mac plays is Others. Everything stays on this Mac unless you ask for a better summary, and the notes are plain Markdown files.")
                 .font(.system(size: 12.5)).foregroundStyle(Ink.dim).fixedSize(horizontal: false, vertical: true).padding(.top, 4)
         }
+    }
+
+    /// Off, or Claude, ChatGPT or Gemini through the user's own plan, from the ones installed on this Mac (D-956).
+    /// Nothing is started until one is chosen; then Settings checks it is signed in and says how if it isn't.
+    private var betterSummaryRow: some View {
+        let installed = model.summaryInstalled ?? []
+        let chosen = model.config.betterSummaryWith
+        let choices = installed + (chosen.map { installed.contains($0) ? [] : [$0] } ?? [])
+        let note: String
+        if let h = chosen, !installed.contains(h) {
+            note = BetterSummary.missing(h) + " It isn't on this Mac."
+        } else if let h = chosen, model.summarySignedIn[h] == false {
+            note = "\(BetterSummary.tool(h).prefix(1).uppercased() + BetterSummary.tool(h).dropFirst()) isn't signed in. " + BetterSummary.signIn(h)
+        } else if model.summaryInstalled != nil, choices.isEmpty {
+            note = "Needs Claude Code, Codex or Google's Antigravity CLI, signed in with your own Claude, ChatGPT or Gemini plan. None is on this Mac."
+        } else {
+            note = "After the notes are saved, the bar offers a second summary from your own plan. Nothing is sent until you click it. Then the transcript goes to that company."
+        }
+        return row("Better summary with", note) {
+            Picker("", selection: Binding(get: { model.config.betterSummaryWith ?? "off" },
+                                          set: { model.config.betterSummaryWith = $0 == "off" ? nil : $0
+                                                 if $0 != "off" { model.checkSignIn($0) } })) {
+                Text("Off").tag("off")
+                ForEach(choices, id: \.self) { h in Text(BetterSummary.name(h)).tag(h) }
+            }.labelsHidden().frame(width: 220, alignment: .trailing)
+        }.onAppear { model.findSummaryHelpers() }
     }
 
     private func chooseMeetingsFolder() {
