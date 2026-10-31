@@ -821,6 +821,74 @@ let emptyChecked = DraftReplacement(expectedBox: "Prefix. draft", actual: "Prefi
 check("draft.checkedEmptyPreservesPrefix", emptyChecked?.expected == "Prefix.")
 check("draft.checkedDeletionNeedsEvidence", emptyChecked?.landed("Prefix. draft") == false && emptyChecked?.landed("Prefix.") == true)
 
+// Where a finished dictation goes (D-965): the box you are in at the end. The first box is swapped in place, emptied
+// of Voice's words, or left alone. No AX edits, keys or windows: the planner and the box checks only.
+do {
+    typealias P = DictationEnding.Plan
+    check("ending.stillThereAsLeft", DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: true, inStartBox: true) == P.inPlace)
+    check("ending.movedAwayAsLeft", DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: true, inStartBox: false) == P.takeBackThenDeliver)
+    check("ending.movedAwayEdited", DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: false, inStartBox: false) == P.deliver)
+    check("ending.stillThereEditedOrSent", DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: false, inStartBox: true) == P.deliver)
+    for asLeft in [true, false] {
+        for here in [true, false] {
+            check("ending.nothingTypedGoesWhereYouAre.\(asLeft).\(here)", DictationEnding.plan(typedInStartBox: false, startBoxAsLeft: asLeft, inStartBox: here) == P.deliver)
+        }
+    }
+
+    // Oct 31 03:47 log: drafts 90 UTF-16 units, the box sent (1 left) by your key before the ending was ready.
+    var sentBox = BoxPrint(role: "AXTextArea", identifier: "composer", frame: f0, text: "", title: "Thread", url: "t3://thread-1")
+    sentBox.recordEdit(before: "", range: NSRange(location: 0, length: 0), replacement: "Words the drafts typed so far")
+    let sentNow = BoxMatch.same(start: sentBox, now: t3Grew, nowText: "\n", sameElement: true, userEdited: true)
+    check("ending.sentBoxNotAsLeft", !sentNow)
+    check("ending.sentBoxWholeTextWhereYouAre", DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: sentNow, inStartBox: true) == P.deliver)
+    // A key or click earlier that didn't change the box: still as Voice left it, so the ending swaps in place.
+    let untouched = BoxMatch.same(start: sentBox, now: t3Grew, nowText: "Words the drafts typed so far", sameElement: true)
+    check("ending.keyThatChangedNothingStillSwaps", untouched && DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: untouched, inStartBox: true) == P.inPlace)
+    let swap = DraftReplacement(expectedBox: "Words the drafts typed so far", actual: "Words the drafts typed so far",
+                                cursor: NSRange(location: 29, length: 0), draft: "Words the drafts typed so far",
+                                replacement: "Words the drafts typed so far, and the last word.")
+    check("ending.swapKeepsTheLastWord", swap?.expected == "Words the drafts typed so far, and the last word.")
+    // You clicked into the box elsewhere: the cursor no longer follows the drafts, so nothing is swapped blindly.
+    check("ending.cursorMovedNoSwap", DraftReplacement(expectedBox: "Words the drafts typed so far", actual: "Words the drafts typed so far",
+                                                        cursor: NSRange(location: 5, length: 0), draft: "Words the drafts typed so far", replacement: "x") == nil)
+    // An edit in another conversation of the same app is not the first box.
+    check("ending.otherConversationNotAsLeft", !BoxMatch.same(start: sentBox, now: anotherThread, nowText: "Words the drafts typed so far", sameElement: true))
+
+    // Taking Voice's words back out of the first box: only its own words before the cursor, never yours before them.
+    let back = DraftReplacement(expectedBox: "Mine stays. one two three", actual: "Mine stays. one two three",
+                                cursor: NSRange(location: 25, length: 0), draft: " one two three", replacement: "")
+    check("ending.takeBackLeavesYourText", back?.expected == "Mine stays." && back?.range == NSRange(location: 11, length: 14))
+    check("ending.takeBackNeedsEvidence", back?.landed("Mine stays. one two three") == false && back?.landed("Mine stays.") == true)
+    let trimmedBack = DraftReplacement(expectedBox: "Mine stays. one two three ", actual: "Mine stays. one two three",
+                                       cursor: NSRange(location: 25, length: 0), draft: " one two three ", replacement: "")
+    check("ending.takeBackAfterTrim", trimmedBack?.expected == "Mine stays.")
+    check("ending.takeBackRefusesYourEdit", DraftReplacement(expectedBox: "Mine stays. one two three", actual: "Mine stays. one two three four",
+                                                              cursor: NSRange(location: 30, length: 0), draft: " one two three", replacement: "") == nil)
+    var taken = BoxPrint(role: "AXTextArea", identifier: nil, frame: f0, text: "Mine stays. one two three")
+    check("ending.takeBackRecorded", taken.recordEdit(before: "Mine stays. one two three", range: NSRange(location: 11, length: 14), replacement: "") && taken.text == "Mine stays.")
+
+    // Straight after: any place but a page, a control or Voice's own window takes the words; otherwise they wait.
+    check("ending.textTypesNow", DictationEnding.typesNow(kind: .text, ownWindow: false))
+    check("ending.unknownNativeTypesNow", DictationEnding.typesNow(kind: .unknown, ownWindow: false))
+    check("ending.pageWaits", !DictationEnding.typesNow(kind: .notText, ownWindow: false))
+    check("ending.ownWindowWaits", !DictationEnding.typesNow(kind: .text, ownWindow: true))
+    // Waiting: 10 minutes, the same safeties as before.
+    check("ending.waitTenMinutes", DictationEnding.waitSeconds == 600)
+    check("ending.waitRefusesOwnWindow", DictationEnding.waitRefuses(kind: .text, inBrowser: false, ownWindow: true))
+    check("ending.waitRefusesPage", DictationEnding.waitRefuses(kind: .notText, inBrowser: true, ownWindow: false))
+    check("ending.waitRefusesControl", DictationEnding.waitRefuses(kind: .notText, inBrowser: false, ownWindow: false))
+    check("ending.waitRefusesUnknownInBrowser", DictationEnding.waitRefuses(kind: .unknown, inBrowser: true, ownWindow: false))
+    check("ending.waitAllowsBrowserTextBox", !DictationEnding.waitRefuses(kind: .text, inBrowser: true, ownWindow: false))
+    check("ending.waitAllowsElectronBox", !DictationEnding.waitRefuses(kind: .unknown, inBrowser: false, ownWindow: false))
+    check("ending.textBoxTakesAtOnce", DictationEnding.waitTakes(kind: .text, seenInARow: 1))
+    check("ending.unknownBoxSeenOnceWaits", !DictationEnding.waitTakes(kind: .unknown, seenInARow: 1))
+    check("ending.unknownBoxSeenTwiceTakes", DictationEnding.waitTakes(kind: .unknown, seenInARow: 2))
+    // A video page in Chrome (the web area) never takes waiting words, so a click on the video does nothing.
+    check("ending.videoPageNeverTakes", DictationEnding.waitRefuses(kind: fk("AXWebArea", web: true), inBrowser: true, ownWindow: false))
+    check("ending.browserTextFieldTakes", !DictationEnding.waitRefuses(kind: fk("AXTextField", web: true), inBrowser: true, ownWindow: false)
+          && DictationEnding.waitTakes(kind: fk("AXTextField", web: true), seenInARow: 1))
+}
+
 check("box.noURLChangedConversationTitle", BoxMatch.failure(start: BoxPrint(role: "AXTextArea", identifier: "composer", frame: f0, text: "Same text", title: "Chat A"), now: BoxPrint(role: "AXTextArea", identifier: "composer", frame: f0, text: nil, title: "Chat B"), nowText: "Same text", sameElement: true) == .title)
 
 // The video's words come off the start; yours stay (D-817).

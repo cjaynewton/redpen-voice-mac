@@ -292,6 +292,30 @@ enum Insert {
         return true
     }
 
+    /// Takes Voice's own words back out of a box that is not in front (D-965), through Accessibility and without
+    /// bringing it forward, never by typing keys into a window behind. Only the known words right before that box's
+    /// cursor, only while it reads as Voice left it, and it counts only when the box then reads as expected. Tried
+    /// once: when nothing changed, the cursor goes back, so a key pressed there later can't replace a selection.
+    static func takeBack(_ typed: String, expectedBox: String, from el: AXUIElement) -> Bool {
+        lastEdit = nil
+        guard let before = value(el), let cursor = selectedRange(el),
+              let edit = DraftReplacement(expectedBox: expectedBox, actual: before, cursor: cursor, draft: typed, replacement: "") else { return false }
+        var words = CFRange(location: edit.range.location, length: edit.range.length)
+        guard let range = AXValueCreate(.cfRange, &words) else { return false }
+        let selected = AXUIElementSetAttributeValue(el, kAXSelectedTextRangeAttribute as CFString, range) == .success
+        if selected, AXUIElementSetAttributeValue(el, kAXSelectedTextAttribute as CFString, "" as CFString) == .success {
+            for _ in 0..<6 {
+                if edit.landed(value(el)) { lastEdit = (el, edit.before, edit.range, ""); return true }
+                usleep(50_000)
+            }
+        }
+        if selected, value(el) == before {
+            var back = CFRange(location: cursor.location, length: 0)
+            if let r = AXValueCreate(.cfRange, &back) { AXUIElementSetAttributeValue(el, kAXSelectedTextRangeAttribute as CFString, r) }
+        }
+        return false
+    }
+
     /// A box's whole text, or nil when the app won't say.
     static func value(_ el: AXUIElement) -> String? {
         var v: CFTypeRef?
