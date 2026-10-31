@@ -77,6 +77,8 @@ public struct Chunker: Sendable {
     /// Quiet means well below this speaker's speech level here: a tenth of the loud frames' level, and never below
     /// a floor so a silent room isn't all "speech".
     public static func quietLevel(_ levels: [Float]) -> Float {
+        // Less than one 30 ms frame of audio has no levels; indexing an empty list here crashed the app.
+        guard !levels.isEmpty else { return 0.003 }
         let sorted = levels.sorted()
         let loud = sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.9))]
         return max(0.003, loud * 0.1)
