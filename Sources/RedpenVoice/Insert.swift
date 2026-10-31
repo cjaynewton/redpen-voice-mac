@@ -138,23 +138,33 @@ enum Insert {
         let copied: Bool
     }
 
+    /// How a paste fits the text around it. `exact`: as given (Paste last). `whole`: a whole dictation, fitted to the
+    /// sentence and spaced as typing does. `append`: the rest of a long talk after its words already in the box
+    /// (D-1023), spaced only. Both of those confirm as typing does, allowing for the box's own spacing.
+    enum PasteShape { case exact, whole, append }
+
     /// Wait for shortcut keys to come up, post an isolated Command-V, then watch the original box.
     /// Restore the clipboard only after visible AX evidence. On failure the words stay for a manual paste.
     @MainActor
-    static func paste(_ text: String, triggerKey: CGKeyCode? = nil) async -> PasteResult {
+    static func paste(_ text: String, triggerKey: CGKeyCode? = nil, shape: PasteShape = .exact) async -> PasteResult {
         guard !text.isEmpty, !pasteBusy else { return PasteResult(landed: false, copied: false) }
         pasteInFlight = true
         defer { pasteInFlight = false; pasteQuietUntil = DispatchTime.now() + 1.5 }
+        unconfirmed = false
+        let target = ownWindowInFront || focus().kind == .notText ? nil : focusedElement()
+        var text = text
+        if let (element, _) = target, shape != .exact {
+            wakeElectron(element)
+            text = spaced(shape == .whole ? fit(text, in: element) : text, before: element)
+        }
         guard let clipboard = PasteClipboardLoan(text) else { return PasteResult(landed: false, copied: false) }
         func failed(_ reason: String) -> PasteResult {
             let copied = clipboard.finish(confirmed: false) == .kept
             Log.note("paste: \(reason); clipboard \(copied ? "kept for Command-V" : "changed, left alone")")
             return PasteResult(landed: false, copied: copied)
         }
-        guard !ownWindowInFront, focus().kind != .notText, let (element, pid) = focusedElement() else {
-            return failed("no text target")
-        }
-        let evidence = PasteEvidence(before: value(element), range: selectedRange(element), text: text)
+        guard let (element, pid) = target else { return failed("no text target") }
+        let evidence = PasteEvidence(before: value(element), range: selectedRange(element), text: text, loose: shape != .exact)
         let context = pasteContext(element)
         var attempt = PasteAttempt(at: ProcessInfo.processInfo.systemUptime)
         // Read hardware only to wait. Never post modifier releases or change the user's physical key state.

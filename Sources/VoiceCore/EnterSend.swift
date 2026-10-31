@@ -54,7 +54,7 @@ public struct EnterSend: Sendable {
     }
 
     private var armedUntil = 0.0
-    private var waiting: (id: Int, deadline: Double, code: Int)?
+    private var waiting: (id: Int, deadline: Double, code: Int, long: Bool)?
     private var held: Set<Int> = []
     private var nextID = 0
     /// The flags of the right-hand talk keys, set when the talk keys change.
@@ -80,7 +80,7 @@ public struct EnterSend: Sendable {
         }
         guard armed(now: now), !repeated else { return .pass }
         nextID += 1
-        waiting = (nextID, now + Self.cap, code)
+        waiting = (nextID, now + Self.cap, code, false)
         held.insert(code)
         return .hold(id: nextID)
     }
@@ -99,11 +99,34 @@ public struct EnterSend: Sendable {
         return w.code
     }
 
-    /// The cap: the key to send when this press is still waiting at its deadline.
+    /// The cap: the key to send when this press is still waiting at its deadline. A long talk's press is never sent
+    /// at its deadline; `dropAtDeadline` takes it.
     public mutating func capReached(id: Int, now: Double) -> Int? {
-        guard let w = waiting, w.id == id, now >= w.deadline - 0.001 else { return nil }
+        guard let w = waiting, w.id == id, !w.long, now >= w.deadline - 0.001 else { return nil }
         waiting = nil
         return w.code
+    }
+
+    /// A long talk (D-1023): this press waits `length` from now instead of the cap. A message missing words is worse
+    /// than pressing Enter again, so if they never all go in, the press is dropped. A second Enter still sends at once.
+    public mutating func waitLonger(id: Int, now: Double, for length: Double = LongTalk.enterWait) -> Bool {
+        guard let w = waiting, w.id == id else { return false }
+        waiting = (w.id, now + length, w.code, true)
+        return true
+    }
+
+    /// Takes the press without sending it: the words didn't all go in. True when it was still waiting.
+    public mutating func drop(id: Int) -> Bool {
+        guard let w = waiting, w.id == id else { return false }
+        waiting = nil
+        return true
+    }
+
+    /// A long talk's deadline: the press goes, unsent. True when it was still waiting.
+    public mutating func dropAtDeadline(id: Int, now: Double) -> Bool {
+        guard let w = waiting, w.id == id, w.long, now >= w.deadline - 0.001 else { return false }
+        waiting = nil
+        return true
     }
 
     /// The bar while a held Enter waits.

@@ -37,9 +37,11 @@ public struct PasteEvidence {
     public let before: String?
     public let range: NSRange?
     private let text: String
+    /// Allow the box's own spacing (BoxText.same), as typed dictations are confirmed. Paste last stays exact.
+    private let loose: Bool
 
-    public init(before: String?, range: NSRange?, text: String) {
-        self.before = before; self.range = range; self.text = text
+    public init(before: String?, range: NSRange?, text: String, loose: Bool = false) {
+        self.before = before; self.range = range; self.text = text; self.loose = loose
     }
 
     public func landed(value: String?, range now: NSRange?) -> Bool {
@@ -51,7 +53,7 @@ public struct PasteEvidence {
             if let range, range.location >= 0, range.length >= 0, range.location <= before.utf16.count,
                range.length <= before.utf16.count - range.location {
                 let expected = (before as NSString).replacingCharacters(in: range, with: text)
-                return value == expected && (value != before || cursorMoved)
+                return (value == expected || (loose && BoxText.same(expected, value))) && (value != before || cursorMoved)
             }
             return value != before && value.contains(text)
         }

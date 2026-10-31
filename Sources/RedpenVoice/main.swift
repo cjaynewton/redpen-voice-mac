@@ -17,8 +17,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Enter stops and sends once every word is in (D-1008).
     private let enterTap = EnterSendTap.shared
     /// The held Enter and the dictation it waits for.
-    private var enterWait: (id: Int, gen: Int)?
+    private var enterWait: (id: Int, gen: Int, long: Bool)?
     private var lastEndingGen = 0
+    /// The newest ending is a long talk's (D-1023), and how long it ran, for an Enter pressed after you stopped.
+    private var lastEndingLong: (long: Bool, seconds: Double) = (false, 0)
     private var enterArmTimer: Timer?
     private let recorder = Recorder()
     private let engine = Transcriber()
@@ -606,6 +608,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // After the key watchers, so this tap sees Enter first and the others never see a held one.
         enterTap.onHold = { [weak self] id in MainActor.assumeIsolated { self?.enterHeld(id) } }
         enterTap.onSent = { [weak self] id, why in MainActor.assumeIsolated { self?.enterSent(id, why: why) } }
+        enterTap.onDropped = { [weak self] id, why in MainActor.assumeIsolated { self?.enterDropped(id, why: why) } }
         enterTap.start()
         let armTimer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.refreshEnterArm() } }
         RunLoop.main.add(armTimer, forMode: .common)
@@ -821,8 +824,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         remicIfDefaultMoved(reason: "input moved before this press")
         suggestionWork?.cancel(); hud.hideSuggestion()
         if waitingText != nil { stopWaiting(); hud.hide(); Log.note("insert: new press, the waiting words stay for paste") }
-        // A held Enter from the last dictation goes now, before this one types anything.
-        if let w = enterWait { enterWait = nil; enterTap.release(w.id, why: "a new press began") }
+        // A held Enter from the last dictation goes now, before this one types anything. A long talk's is dropped:
+        // its words may not all be in yet (D-1023).
+        if let w = enterWait {
+            enterWait = nil
+            if w.long { enterTap.drop(w.id, why: "a new press began") } else { enterTap.release(w.id, why: "a new press began") }
+        }
         // Where this dictation's words go back to, if you move away while they are written.
         if Insert.focus().kind == .text, let (el, pid) = Insert.focusedElement() {
             startBox = StartBox(pid: pid, element: el, app: NSRunningApplication(processIdentifier: pid)?.localizedName ?? "that app",
@@ -1024,15 +1031,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             enterTap.release(id, why: textBox ? "not dictating" : "not a text box"); return
         }
         if session != nil {
-            enterWait = (id, delivery)
-            Log.note("enter: stops the dictation, sends when the words are in")
+            let seconds = Date().timeIntervalSince(startedAt)
+            let long = LongTalk.isLong(seconds: seconds)
+            enterWait = (id, delivery, long)
+            if long { enterTap.waitLonger(id) }
+            Log.note("enter: stops the dictation, sends when the words are in\(long ? " (long talk, waits up to a minute)" : "")")
             keys.stopFromEnter()
             end()
-            hud.writing(EnterSend.waitingNote)
+            hud.writing(long ? LongTalk.sendingNote(seconds: seconds) : EnterSend.waitingNote)
         } else if writing > 0 {
-            enterWait = (id, lastEndingGen)
-            Log.note("enter: waits for the words on their way")
-            hud.writing(EnterSend.waitingNote)
+            let long = lastEndingLong.long
+            enterWait = (id, lastEndingGen, long)
+            if long { enterTap.waitLonger(id) }
+            Log.note("enter: waits for the words on their way\(long ? " (long talk, waits up to a minute)" : "")")
+            hud.writing(long ? LongTalk.sendingNote(seconds: lastEndingLong.seconds) : EnterSend.waitingNote)
         } else {
             // The ending may have just finished: the same moment for the app to take the words in.
             enterTap.release(id, after: EnterSend.settle, why: "nothing on its way")
@@ -1043,7 +1055,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func finishEnter(gen: Int, wordsIn: Bool) {
         guard let w = enterWait, w.gen == gen else { return }
         enterWait = nil
+        // A long talk whose words didn't all go in: the box may hold only part of them, so Enter isn't sent (D-1023).
+        // The ending's own message says what happened.
+        if w.long, !wordsIn { enterTap.drop(w.id, why: "not every word went in"); return }
+        // Words in close to the minute: the deadline moves, so the moment for the app can't lose the Enter.
+        if w.long { enterTap.waitLonger(w.id) }
         enterTap.release(w.id, after: wordsIn ? EnterSend.settle : 0, why: wordsIn ? "words in" : "words not typed here")
+    }
+
+    /// A long talk's held Enter was dropped, not sent: the bar says so, and ⌃⌥V has the words.
+    private func enterDropped(_ id: Int, why: String) {
+        Log.note("enter: not sent (\(why))")
+        // Dropped for a new press: that press has the bar now.
+        guard let w = enterWait, w.id == id else { return }
+        enterWait = nil
+        if session == nil { hud.flash(LongTalk.notSent, for: 4) }
     }
 
     /// A held Enter went out. Take back must not guess after it. Sent early (the cap, a second Enter): the words still
@@ -1165,6 +1191,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let b = startBox, !liveStopped, !isAt(b) {
             liveStopped = true; liveStop = .leftBox; Log.note("live: you moved away from the box, live typing stopped")
         }
+        // A long talk (D-1023): nothing more is typed as you talk; the rest goes in with one paste at the end.
+        if !liveStopped, LongTalk.isLong(seconds: Date().timeIntervalSince(startedAt)) {
+            liveStopped = true; liveStop = .longTalk
+            Log.note("long talk: \(Log.int(LongTalk.after))s in, live typing stopped, the rest goes in when you stop")
+        }
         let canType = keys.handsFree ? focus.kind != .notText : focus.kind == .text
         if canType, !liveStopped, liveTyped == livePieces - 1, waitingText == nil {
             let out = config.mode == "noUms" ? Fillers.strip(names.apply(text)) : names.apply(text)
@@ -1251,6 +1282,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var heard = 0
         var stopWhy: TalkingWords.Stop?
         var deliveryUncertain = false
+        /// Drafts stopped for a long talk (D-1023), and how many of Whisper's pieces the box holds checked, from the
+        /// start: the long ending pastes the pieces after them.
+        var longStopped = false
+        var piecesIn = 0
         var firstLag: Double?
         var checks = 0, changed = 0, words = 0
         let startBox: StartBox?
@@ -1359,6 +1394,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         d.nextDraft = i + 1
         let out = clean(text)
         d.heard += TalkingWords.words(out)
+        // A long talk (D-1023): nothing more is typed into the box, so the ending never has thousands of letters to
+        // swap. The bar counts the words instead.
+        if !d.draftsStopped, LongTalk.isLong(seconds: Date().timeIntervalSince(d.startedAt)) {
+            d.longStopped = true
+            if d.stopWhy == nil { d.stopWhy = .longTalk }
+            Log.note("long talk: \(Log.int(LongTalk.after))s in, drafts stop typing, the rest goes in when you stop")
+            stopDrafts(d)
+        }
         // Stopped: only the count on the bar moves, so you can see it is still listening (D-972).
         if d.draftsStopped {
             if session === d.owner { hud.stoppedTyping(TalkingWords.stoppedLine(d.stopWhy, words: d.heard)) }
@@ -1396,12 +1439,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Whisper's text. Taking effect also after you let go, for the dictation still finishing.
     private func check(_ range: Range<Int>, _ whisper: String, from s: Transcriber.Session) {
         guard let d = (drafting?.owner === s ? drafting : finishingDrafting?.owner === s ? finishingDrafting : nil), !d.checksStopped else { return }
-        guard let first = d.runs.firstIndex(where: { $0.drafts.lowerBound == range.lowerBound }),
-              let last = d.runs.lastIndex(where: { $0.drafts.upperBound == range.upperBound }), last >= first else {
+        // A long talk (D-1023): checks past the typed drafts are for words still to go in at the end.
+        if d.longStopped, let end = d.runs.last?.drafts.upperBound, range.lowerBound >= end { return }
+        guard let first = d.runs.firstIndex(where: { $0.drafts.lowerBound == range.lowerBound }) else {
             if d.typedAny { d.checksStopped = true; stopDrafts(d) }
             return
         }
-        replace(d, runs: first...last, drafts: range, with: clean(whisper))
+        // A long talk's last check can reach past the drafts typed before the stop: it takes their place with all of
+        // its words, so the box ends on checked words and the ending only adds.
+        let reach = d.longStopped && range.upperBound > (d.runs.last?.drafts.upperBound ?? 0) ? d.runs.count - 1 : nil
+        guard let last = reach ?? d.runs.lastIndex(where: { $0.drafts.upperBound == range.upperBound }), last >= first else {
+            if d.typedAny { d.checksStopped = true; stopDrafts(d) }
+            return
+        }
+        // Every piece of Whisper's text that isn't empty is one of the session's written pieces.
+        if replace(d, runs: first...last, drafts: range, with: clean(whisper)), !whisper.isEmpty { d.piecesIn += 1 }
     }
 
     /// Replaces runs `idx` (and retypes any later runs) with Whisper's text, guarded at every step.
@@ -1484,6 +1536,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 end = .kept
             }
         }
+        logDraftEnd(d, end, released: released)
+        return end
+    }
+
+    private func logDraftEnd(_ d: Drafting, _ end: DraftEnd, released: Date) {
         let lag = d.firstLag.map { "\(Log.ms($0))ms" } ?? "none"
         let result: String
         switch end {
@@ -1492,6 +1549,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .deliver: result = "checked text goes where you are"
         }
         Log.note("draft: first words \(lag) after you started talking, \(d.runs.count) runs, checks \(d.checks), changed \(d.changed) (\(d.words) words), \(result), ending finished \(Log.ms(Date().timeIntervalSince(released)))ms after release")
+    }
+
+    /// A long talk's ending (D-1023), in the box you started in while it still reads as Voice left it: the words
+    /// Whisper checked there stay, only the rough words after them come out (a few seconds' worth at most), and the
+    /// rest of the checked dictation goes in with one paste. Nothing long is erased or typed key by key, which is
+    /// where long endings broke. Anywhere else the ordinary ending decides.
+    private func finishLongDrafts(_ d: Drafting, _ s: Transcriber.Session, text: String, released: Date, gen: Int) async -> DraftEnd {
+        guard !s.echoFailed, !text.isEmpty, let start = d.startBox else { return finishDrafts(d, s, text: text, released: released) }
+        let asLeft = unchanged(start)
+        let typedThere = d.typedAny || (d.deliveryUncertain && !asLeft)
+        guard case .inPlace = DictationEnding.plan(typedInStartBox: typedThere, startBoxAsLeft: asLeft, inStartBox: isAt(start)) else {
+            return finishDrafts(d, s, text: text, released: released)
+        }
+        let (keep, erase) = LongTalk.split(d.runs.map { ($0.text, $0.checked) })
+        let raw = names.apply(s.written.dropFirst(d.piecesIn).joined(separator: " "))
+        let rest = config.mode == "noUms" ? Fillers.strip(raw) : raw
+        var end = DraftEnd.kept
+        var pasted = Insert.PasteResult(landed: false, copied: false)
+        let needsPaste = !rest.trimmingCharacters(in: .whitespaces).isEmpty
+        // Nothing comes out of the box until the paste can run: an earlier paste still settling would refuse it.
+        let wait = Date().addingTimeInterval(2)
+        while needsPaste, Insert.pasteBusy, Date() < wait { try? await Task.sleep(for: .milliseconds(50)) }
+        let after = Date().addingTimeInterval(0.05)
+        let quiet: () -> Bool = { Date() < after || AppDelegate.userQuietSince(after, keys: true) }
+        // The bar is this dictation's only while no newer press has begun.
+        let mine = { self.delivery == gen }
+        // ⌃⌥V pastes every word, which would put the part already in the box in twice: the bar points at History.
+        if mine(), !(needsPaste && Insert.pasteBusy), isAt(start), let expected = start.print.text, let (element, _) = Insert.focusedElement(),
+           erase.isEmpty || Insert.replaceDraft(erase, with: "", expectedBox: expected, in: element, while: quiet) {
+            if !erase.isEmpty { rememberOwnTyping(in: start) }
+            pasted = needsPaste ? await Insert.paste(rest, shape: .append) : .init(landed: true, copied: false)
+            // Take back can't remove the whole long talk, so it removes nothing, as after any draft ending.
+            Insert.forgetLast()
+            if pasted.landed { end = .landed; if mine() { hud.hide() } }
+            else if mine() {
+                hud.flash(pasted.copied ? "Check the box. If the end is missing, ⌘V pastes it" : "Check the box. If the end is missing, History has it", for: 5)
+            }
+        } else {
+            draftBlocked(d, .editUnconfirmed, during: "long ending")
+            if mine() { hud.flash("Couldn't confirm the box. Check it. History has every word", for: 5) }
+        }
+        Log.note("long talk: kept \(keep) checked runs, took out \(erase.utf16.count) letters, pasted \(rest.utf16.count) letters of \(s.written.count - d.piecesIn) pieces, \(pasted.landed ? "confirmed" : "not confirmed")")
+        logDraftEnd(d, end, released: released)
         return end
     }
 
@@ -1638,15 +1738,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Words that finished while your cursor wasn't in a text box. They go in when you click into one.
     private var waitingText: String?
+    /// The waiting words are a long talk's: they go in with one paste (D-1023).
+    private var waitingLong = false
     private var waitTimer: Timer?
     private var waitSeen = 0
     private var waitPid: pid_t = 0
 
     /// Words that finished away from a text box wait 10 minutes for the next click into one (D-965; it was a minute).
     /// A new dictation ends the wait; Paste last keeps them either way. The bar asks the whole time (D-987).
-    private func holdForClick(_ text: String) {
+    private func holdForClick(_ text: String, long: Bool = false) {
         stopWaiting()
         waitingText = text
+        waitingLong = long
         let until = Date().addingTimeInterval(DictationEnding.waitSeconds)
         askWhereWordsGo()
         waitTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
@@ -1676,7 +1779,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         waitSeen = pid == waitPid ? waitSeen + 1 : 1
         waitPid = pid
         guard DictationEnding.waitTakes(kind: focus.kind, seenInARow: waitSeen) else { return }
+        let long = waitingLong
         stopWaiting()
+        if long {
+            Task { [weak self] in
+                let r = await Insert.paste(text, shape: .whole)
+                guard let self, self.session == nil else { return }
+                self.hud.flash(r.landed ? "Pasted" : r.copied ? "Didn't see it land. ⌘V pastes it" : "Couldn't paste it here. Press ⌃⌥V",
+                               ok: r.landed, for: r.landed ? 1.0 : 3)
+                Log.note("insert: long talk pasted after a click into \(focus.role), \(r.landed)")
+            }
+            return
+        }
         let ok = Insert.text(text)
         if ok, Insert.unconfirmed { hud.flash("Didn't see it land. Press ⌃⌥V to paste it", for: 3) }
         else { hud.flash(ok ? "Pasted" : "Couldn't type it here. Press ⌃⌥V to paste", ok: ok, for: ok ? 1.0 : 2.5) }
@@ -1685,7 +1799,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func stopWaiting() {
         waitTimer?.invalidate(); waitTimer = nil
-        waitingText = nil; waitSeen = 0
+        waitingText = nil; waitingLong = false; waitSeen = 0
         hud.stopAsking()
     }
 
@@ -1774,10 +1888,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         interruptedDrafting = nil
         session = nil
         let seconds = Date().timeIntervalSince(startedAt)
+        // A long talk (D-1023): its words go in with one paste and a held Enter waits for them.
+        let long = LongTalk.isLong(seconds: seconds)
         settleWork?.cancel()
         // Writing, until the words are in (D-972): beside it, all your words go in now when typing had stopped, or
         // your newest words when they were on the bar.
-        hud.writing(hud.isTypingStopped ? TalkingWords.writingAfterStop : onBar ? TalkingWords.tail(barText) : "")
+        hud.writing(long ? LongTalk.writingNote(seconds: seconds)
+                    : hud.isTypingStopped ? TalkingWords.writingAfterStop : onBar ? TalkingWords.tail(barText) : "")
         if config.sounds { NSSound(named: "Tink")?.play() }
         let app = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
         let owner = press
@@ -1790,6 +1907,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let typedText = liveText
         writing += 1
         lastEndingGen = gen
+        lastEndingLong = (long, seconds)
         refreshEnterArm()
         let releasedAt = Date()
         let handsFree = wasHandsFree
@@ -1831,7 +1949,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let wait = self.deliveries.waitForTap(after: gen)
                 try? await Task.sleep(for: .seconds(wait))
             }
-            let newer = self.delivery != gen
+            var newer = self.delivery != gen
             var inserted = false
             // Where the words go is decided now, at the end (D-965): the box the cursor is in, whichever app.
             // `whole`: the whole checked dictation goes there; `takeBack` then takes this dictation's typed words
@@ -1844,7 +1962,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // the whole checked dictation goes where you are.
             let draftHandled = myDrafting.map { $0.typedAny || $0.deliveryUncertain } ?? false
             if let d = myDrafting, draftHandled, !newer {
-                switch self.finishDrafts(d, s, text: text, released: releasedAt) {
+                switch long ? await self.finishLongDrafts(d, s, text: text, released: releasedAt, gen: gen)
+                            : self.finishDrafts(d, s, text: text, released: releasedAt) {
                 case .landed: inserted = true
                 case .kept: break
                 case .deliver(let back):
@@ -1881,6 +2000,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 }
             }
+            newer = self.delivery != gen
             if (draftHandled && !whole) || kept {}
             else if text.isEmpty, newer { Log.note("no words, a new press began") }
             else if text.isEmpty { self.hud.flash(self.recorder.peak < 0.005 ? "No sound from \(self.recorder.inputName)" : "Didn't catch that", for: 2.5) }
@@ -1915,11 +2035,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 } else if !DictationEnding.typesNow(kind: focus.kind, ownWindow: Insert.ownWindowInFront) {
                     if newer { Log.note("insert: cursor not in a text box (\(focus.role)) and a new press began, kept for paste") }
                     else if !rest.isEmpty {
-                        Log.note("insert: cursor not in a text box (\(focus.role)), waiting for a click"); self.holdForClick(rest)
+                        Log.note("insert: cursor not in a text box (\(focus.role)), waiting for a click"); self.holdForClick(rest, long: long)
                         takeBack?()
                     }
                 } else {
-                    inserted = rest.isEmpty ? true : Insert.text(rest, joining: typedLive > 0 && !whole ? gen : nil, confirmed: myDrafting != nil)
+                    if rest.isEmpty { inserted = true }
+                    // A long talk's words go in with one paste (D-1023), after the pieces typed live or as the whole.
+                    else if long {
+                        let appended = typedLive > 0 && !whole
+                        let r = await Insert.paste(rest, shape: appended ? .append : .whole)
+                        inserted = r.landed
+                        // The start is already in the box: ⌃⌥V would paste it again.
+                        if appended, !inserted, self.delivery == gen {
+                            self.hud.flash(r.copied ? "Check the box. If the end is missing, ⌘V pastes it" : "Check the box. If the end is missing, History has it", for: 5)
+                        }
+                        // Take back can't remove the pieces typed live together with this paste: nothing rather than half.
+                        if appended { Insert.forgetLast() }
+                        newer = self.delivery != gen
+                    }
+                    else { inserted = Insert.text(rest, joining: typedLive > 0 && !whole ? gen : nil, confirmed: myDrafting != nil) }
                     // The words were seen where you are: only now do the typed words leave the first box.
                     if inserted, !Insert.unconfirmed { takeBack?() }
                     if inserted, !newer { self.fixWatch.watch(text) }
@@ -1927,7 +2061,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     if !newer {
                         if inserted, Insert.unconfirmed { self.hud.flash("Didn't see it land. Press ⌃⌥V to paste it", for: 3) }
                         else if inserted { if handsFree { self.hud.flash("Hands-free done", ok: true) } else { self.hud.hide() } }
-                        else { self.hud.flash("Words kept. Click a text box and press ⌃⌥V to paste", for: 3) }
+                        else if !(long && typedLive > 0 && !whole) { self.hud.flash("Words kept. Click a text box and press ⌃⌥V to paste", for: 3) }
                     }
                     Log.note("insert: focus \(focus.role), \(focus.kind.rawValue)")
                 }
@@ -1948,7 +2082,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.wordSuggestions.observe(text, names: Names(text: Config.loadNames()), enabled: self.config.suggestWords ?? true,
                                              keep: self.config.historyKeep ?? "all")
             }
-            self.finishEnter(gen: gen, wordsIn: inserted)
+            // A long talk whose last words didn't come through hasn't every word in (D-1023).
+            self.finishEnter(gen: gen, wordsIn: inserted && !(long && s.endingLost))
             self.writing -= 1
             self.refreshEnterArm()
             self.resumeMedia()
