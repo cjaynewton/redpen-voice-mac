@@ -1344,8 +1344,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     enum DraftEnd { case landed, kept, deliver(takeBack: Bool) }
 
     /// The ending in draft mode (D-965). Still in the box the drafts went into, and it reads as Voice left it: the
-    /// drafts swap for the complete checked dictation there. Moved away, or that box was edited or sent: the whole
-    /// checked dictation goes where you are, and the drafts come back out of an untouched first box.
+    /// drafts swap for the complete checked dictation there. Moved away from an untouched first box: the drafts come
+    /// back out of it and the whole checked dictation goes where you are. That box sent, edited or switched to another
+    /// conversation (D-998): the drafts are out of reach, so nothing more is typed anywhere and Paste last has it.
     private func finishDrafts(_ d: Drafting, _ s: Transcriber.Session, text: String, released: Date) -> DraftEnd {
         let end: DraftEnd
         if s.echoFailed { draftBlocked(d, .echoFailed, during: "ending"); end = .kept }
@@ -1355,15 +1356,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // record still holds just the drafts in d.runs.
             let start = d.startBox
             let asLeft = start.map { unchanged($0) } ?? false
-            switch DictationEnding.plan(typedInStartBox: d.typedAny, startBoxAsLeft: asLeft, inStartBox: start.map { isAt($0) } ?? false) {
+            // A draft Voice couldn't confirm can still land late (D-998): if the box changed, count it as typed there,
+            // so the whole dictation isn't typed again elsewhere on top of it.
+            let typedThere = d.typedAny || (d.deliveryUncertain && !asLeft)
+            switch DictationEnding.plan(typedInStartBox: typedThere, startBoxAsLeft: asLeft, inStartBox: start.map { isAt($0) } ?? false) {
             case .inPlace:
                 end = start.map { swapEnding(d, $0, text: text) } == true ? .landed : .kept
                 if case .landed = end { hud.hide() }
                 else { hud.flash("Didn't confirm all the words. Press ⌃⌥V to paste the checked text", for: 3.5) }
             case .takeBackThenDeliver: end = .deliver(takeBack: true)
-            case .deliver:
-                if d.typedAny { Log.note("draft: the box you started in changed or can't be checked, it's left as it is") }
-                end = .deliver(takeBack: false)
+            case .deliver: end = .deliver(takeBack: false)
+            case .keep:
+                keptAfterChange(start, typed: d.runs.map(\.text).joined(), checked: text)
+                end = .kept
             }
         }
         let lag = d.firstLag.map { "\(Log.ms($0))ms" } ?? "none"
@@ -1375,6 +1380,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         Log.note("draft: first words \(lag) after you started talking, \(d.runs.count) runs, checks \(d.checks), changed \(d.changed) (\(d.words) words), \(result), ending finished \(Log.ms(Date().timeIntervalSince(released)))ms after release")
         return end
+    }
+
+    /// Some of this dictation went into a box you then sent, edited or left for another conversation (D-998, Oct 31
+    /// 2026). Typing the whole dictation where you are now repeated it there: the second T3 chat got it again. The
+    /// bar says only what helps: nothing when the sent message had every word, or that ⌃⌥V has the rest.
+    private func keptAfterChange(_ start: StartBox?, typed: String, checked: String) {
+        // Sent means the same conversation now reads empty. A chat app's one box shown for another conversation
+        // reads empty too, and that is not a send.
+        let sent = start.map { b in
+            let now = Self.boxPrint(b.element, withText: false)
+            return now.url == b.print.url && now.title == b.print.title && DictationEnding.looksSent(Insert.value(b.element))
+        } ?? false
+        if let note = DictationEnding.keptNote(sent: sent, typed: typed, checked: checked) { hud.flash(note, for: 3.5) }
+        else { hud.hide() }
+        Log.note("insert: the box you started in was \(sent ? "sent" : "changed") after Voice typed into it, nothing typed again, kept for paste")
     }
 
     /// Swaps the drafts for the checked text in the box you are still in. A key or click from earlier in the dictation
@@ -1723,19 +1743,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             if self.finishingDrafting === myDrafting { self.finishingDrafting = nil }
             // Live typing put pieces into the box you started in. Still there as Voice left it: the rest follows them.
-            // Moved away or that box changed: the whole dictation goes where you are, the pieces taken back out of
-            // an untouched first box. A newer dictation has begun: nowhere, Paste last has them.
+            // Moved away from it untouched: the whole dictation goes where you are, the pieces taken back out. That box
+            // sent or changed (D-998): nothing more is typed anywhere. A newer dictation has begun: nowhere either.
+            // Paste last has the checked text in every case.
             var movedAwayNewer = false
+            var kept = false
             if !draftHandled, !text.isEmpty, !rest.isEmpty, typedLive > 0, let b = box, !self.isAt(b) {
                 if newer { movedAwayNewer = true }
                 else {
-                    let plan = DictationEnding.plan(typedInStartBox: !typedText.isEmpty, startBoxAsLeft: self.unchanged(b), inStartBox: false)
-                    whole = true; rest = text; typedBox = b
-                    if plan == .takeBackThenDeliver { takeBack = { self.takeBackTyped(typedText, from: b.element, start: b) } }
-                    Log.note("insert: away from the box you started in or it changed, the whole dictation goes where you are")
+                    switch DictationEnding.plan(typedInStartBox: !typedText.isEmpty, startBoxAsLeft: self.unchanged(b), inStartBox: false) {
+                    case .keep:
+                        kept = true
+                        self.keptAfterChange(b, typed: typedText, checked: text)
+                    case .takeBackThenDeliver:
+                        whole = true; rest = text; typedBox = b
+                        takeBack = { self.takeBackTyped(typedText, from: b.element, start: b) }
+                        Log.note("insert: away from the box you started in, the whole dictation goes where you are")
+                    case .deliver, .inPlace:
+                        // Nothing readable was typed there: the whole dictation goes where you are.
+                        whole = true; rest = text
+                        Log.note("insert: away from the box you started in, the whole dictation goes where you are")
+                    }
                 }
             }
-            if draftHandled && !whole {}
+            if (draftHandled && !whole) || kept {}
             else if text.isEmpty, newer { Log.note("no words, a new press began") }
             else if text.isEmpty { self.hud.flash(self.recorder.peak < 0.005 ? "No sound from \(self.recorder.inputName)" : "Didn't catch that", for: 2.5) }
             else if self.firstRun?.isOpen == true, Insert.ownWindowInFront {
@@ -1761,11 +1792,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 } else if movedAwayNewer {
                     Log.note("insert: away from the box you started in and a new press began, kept for paste")
                 } else if let b = typedBox, NSWorkspace.shared.frontmostApplication?.processIdentifier == b.pid,
-                          let (now, _) = Insert.focusedElement(), CFEqual(now, b.element), !DictationEnding.sentBoxTakesWhole(Insert.value(now)) {
-                    // Still in the box you started in, and you edited it: Voice's words are still there, so the whole
-                    // dictation would repeat them. Only a sent (emptied) box takes it. Paste last has the checked text.
-                    if !newer { self.hud.flash("That box changed. Press ⌃⌥V to paste the checked text", for: 3) }
-                    Log.note("insert: the box you started in was edited and still has the typed words, kept for paste")
+                          let (now, _) = Insert.focusedElement(), CFEqual(now, b.element) {
+                    // Back in the box you started in before its words came out: the whole dictation there would repeat
+                    // them, and a send in between already took them (D-998). Paste last has the checked text.
+                    if !newer { self.keptAfterChange(b, typed: typedText.isEmpty ? (myDrafting?.runs.map(\.text).joined() ?? "") : typedText, checked: text) }
+                    else { Log.note("insert: back in the box you started in and a new press began, kept for paste") }
                 } else if !DictationEnding.typesNow(kind: focus.kind, ownWindow: Insert.ownWindowInFront) {
                     if newer { Log.note("insert: cursor not in a text box (\(focus.role)) and a new press began, kept for paste") }
                     else if !rest.isEmpty {

@@ -827,13 +827,22 @@ do {
     typealias P = DictationEnding.Plan
     check("ending.stillThereAsLeft", DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: true, inStartBox: true) == P.inPlace)
     check("ending.movedAwayAsLeft", DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: true, inStartBox: false) == P.takeBackThenDeliver)
-    check("ending.movedAwayEdited", DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: false, inStartBox: false) == P.deliver)
-    check("ending.stillThereEditedOrSent", DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: false, inStartBox: true) == P.deliver)
-    check("ending.sentBoxEmpty", DictationEnding.sentBoxTakesWhole(""))
-    check("ending.sentBoxStrayCharacter", DictationEnding.sentBoxTakesWhole("\n"))
-    check("ending.sentBoxOneLetter", DictationEnding.sentBoxTakesWhole(" x "))
-    check("ending.editedBoxRefuses", !DictationEnding.sentBoxTakesWhole("so the plan is to"))
-    check("ending.unreadableBoxRefuses", !DictationEnding.sentBoxTakesWhole(nil))
+    // D-998: words already in a box you sent, edited or left for another conversation are never typed again anywhere.
+    check("ending.movedAwayEditedKeeps", DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: false, inStartBox: false) == P.keep)
+    check("ending.stillThereEditedOrSentKeeps", DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: false, inStartBox: true) == P.keep)
+    check("ending.sentBoxEmpty", DictationEnding.looksSent(""))
+    check("ending.sentBoxStrayCharacter", DictationEnding.looksSent("\n"))
+    check("ending.sentBoxOneLetter", DictationEnding.looksSent(" x "))
+    check("ending.editedBoxNotSent", !DictationEnding.looksSent("so the plan is to"))
+    check("ending.unreadableBoxNotSent", !DictationEnding.looksSent(nil))
+    // The bar after a kept ending: quiet when the sent message had every word, a pointer to ⌃⌥V when it didn't.
+    check("ending.sentWholeQuiet", DictationEnding.keptNote(sent: true, typed: "Words the drafts typed so far", checked: "Words the drafts typed, so far.") == nil)
+    check("ending.sentShortSaysSo", DictationEnding.keptNote(sent: true, typed: "Words the drafts typed so far", checked: "Words the drafts typed so far, and the last word.") == DictationEnding.sentShortNote)
+    check("ending.changedPointsToPaste", DictationEnding.keptNote(sent: false, typed: "a b", checked: "a b") == DictationEnding.changedNote)
+    check("ending.droppedRepeatCantHideLastWord", DictationEnding.keptNote(sent: true, typed: "I I think we should", checked: "I think we should go.") == DictationEnding.sentShortNote)
+    check("ending.numberFormatCantHideLastWord", DictationEnding.keptNote(sent: true, typed: "about twenty five", checked: "About 25 people.") == DictationEnding.sentShortNote)
+    check("ending.sentNothingTypedSaysSo", DictationEnding.keptNote(sent: true, typed: "", checked: "All of it.") == DictationEnding.sentShortNote)
+    check("ending.keptNotesShort", DictationEnding.sentShortNote.count <= 48 && DictationEnding.changedNote.count <= 48)
     for asLeft in [true, false] {
         for here in [true, false] {
             check("ending.nothingTypedGoesWhereYouAre.\(asLeft).\(here)", DictationEnding.plan(typedInStartBox: false, startBoxAsLeft: asLeft, inStartBox: here) == P.deliver)
@@ -845,7 +854,12 @@ do {
     sentBox.recordEdit(before: "", range: NSRange(location: 0, length: 0), replacement: "Words the drafts typed so far")
     let sentNow = BoxMatch.same(start: sentBox, now: t3Grew, nowText: "\n", sameElement: true, userEdited: true)
     check("ending.sentBoxNotAsLeft", !sentNow)
-    check("ending.sentBoxWholeTextWhereYouAre", DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: sentNow, inStartBox: true) == P.deliver)
+    check("ending.sentBoxNotTypedAgainHere", DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: sentNow, inStartBox: true) == P.keep)
+    // Oct 31 2026, reported: you sent in one T3 chat and clicked into another before the checked text came. It went into the
+    // second chat as well. Sent, then somewhere else: kept, never typed there.
+    check("ending.sentThenOtherChatKeeps", DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: sentNow, inStartBox: false) == P.keep)
+    check("ending.otherChatNeverTypedAgain", DictationEnding.plan(typedInStartBox: true,
+          startBoxAsLeft: BoxMatch.same(start: sentBox, now: anotherThread, nowText: "", sameElement: true), inStartBox: false) == P.keep)
     // A key or click earlier that didn't change the box: still as Voice left it, so the ending swaps in place.
     let untouched = BoxMatch.same(start: sentBox, now: t3Grew, nowText: "Words the drafts typed so far", sameElement: true)
     check("ending.keyThatChangedNothingStillSwaps", untouched && DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: untouched, inStartBox: true) == P.inPlace)
