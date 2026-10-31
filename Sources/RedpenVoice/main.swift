@@ -1932,6 +1932,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// engines against each other on real talking. Stops itself at ten minutes or from the menu.
     @objc private func toggleTestRecording() {
         if testFile != nil { endTestRecording(); return }
+        // The recorder hands audio to one taker. Started during a dictation (hands-free leaves the menu free), the
+        // test took the dictation's audio from then on, and the dictation's end then cut the test off.
+        guard session == nil, writing == 0 else { hud.flash("Finish the dictation first"); return }
         guard let format = engine.audioFormat, !recorder.inputName.isEmpty else { hud.flash("Mic not ready"); return }
         let stamp = { let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd-HHmm"; return f.string(from: Date()) }()
         let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop/redpen-voice-test-\(stamp).wav")
