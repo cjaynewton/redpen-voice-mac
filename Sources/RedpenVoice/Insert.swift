@@ -467,7 +467,8 @@ enum Insert {
     static func type(_ text: String, while still: () -> Bool = { true }) -> Bool {
         let app = NSWorkspace.shared.frontmostApplication?.processIdentifier
         var ok = false
-        for chunk in Array(text.utf16).chunks(of: 20) {
+        // Cut between whole characters: a piece ending inside an emoji's surrogate pair types a broken character.
+        for chunk in TypingChunks.split(text, units: 20) {
             if NSWorkspace.shared.frontmostApplication?.processIdentifier != app { Log.note("insert: app changed while typing, stopped"); return false }
             guard still() else { Log.note("insert: you typed or clicked, stopped"); return false }
             // A tab change keeps the same app: check the place itself too, so the rest never become page shortcuts.
@@ -485,8 +486,4 @@ enum Insert {
         }
         return ok
     }
-}
-
-private extension Array {
-    func chunks(of n: Int) -> [[Element]] { stride(from: 0, to: count, by: n).map { Array(self[$0..<Swift.min($0 + n, count)]) } }
 }
