@@ -450,7 +450,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let i = CommandLine.arguments.firstIndex(of: "--settings-shot"), i + 1 < CommandLine.arguments.count {
             Ink.registerFonts()
             NSApp.appearance = NSAppearance(named: CommandLine.arguments.contains("dark") ? .darkAqua : .aqua)
-            let model = SettingsModel(config: config, engine: engine) { _ in }
+            // `command`: drawn with Better summary set to your own command. Given at init, so nothing is saved.
+            var shown = config
+            if CommandLine.arguments.contains("command") { shown.betterSummaryWith = "command"; shown.betterSummaryCommand = "ollama run llama3.2" }
+            let model = SettingsModel(config: shown, engine: engine) { _ in }
             let sample = StatsModel.sample(now: Date())
             model.statsTotal = { let s = Stats.score(sample); return (s.words, s.seconds) }
             // `ready`: drawn as a Mac where the chosen engine has finished loading (for the README pictures).
@@ -1977,23 +1980,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func betterSummary(with h: String) {
         guard let file = lastNotes else { meetingBar.hide(); return }
         let who = BetterSummary.name(h), company = BetterSummary.company(h)
-        if !(config.betterSummaryAgreed ?? []).contains(h) {
+        let command = h == "command" ? config.betterSummaryCommand : nil
+        let key = BetterSummary.agreement(h, command: command)
+        if h == "command", (command ?? "").trimmingCharacters(in: .whitespaces).isEmpty { meetingBar.finish(BetterSummary.missing(h), ok: false); return }
+        if !(config.betterSummaryAgreed ?? []).contains(key) {
             let a = NSAlert()
-            a.messageText = "Send this meeting's transcript to \(company)?"
-            a.informativeText = "Better summary sends the whole transcript to \(company) through \(BetterSummary.tool(h)), under your own \(who) account, and \(company)'s terms for that account apply. Everything else stays on this Mac.\n\nIf you told the others that nothing leaves your Mac, this changes that. You're asked once for \(who)."
-            a.addButton(withTitle: "Send it")
+            if h == "command" {
+                a.messageText = "Give this meeting's transcript to your command?"
+                a.informativeText = "Better summary gives the whole transcript to the command set in Settings:\n\n\(command ?? "")\n\nWherever that command sends it, that service's terms apply. Everything else stays on this Mac.\n\nIf you told the others that nothing leaves your Mac, this may change that. You're asked again if the command changes."
+            } else {
+                a.messageText = "Send this meeting's transcript to \(company)?"
+                // Cursor passes it on to whichever model the account uses.
+                let onward = h == "cursor" ? " Cursor passes it on to the model your account uses." : ""
+                a.informativeText = "Better summary sends the whole transcript to \(company) through \(BetterSummary.tool(h)), under your own \(who) account, and \(company)'s terms for that account apply.\(onward) Everything else stays on this Mac.\n\nIf you told the others that nothing leaves your Mac, this changes that. You're asked once for \(who)."
+            }
+            a.addButton(withTitle: h == "command" ? "Run it" : "Send it")
             a.addButton(withTitle: "Cancel")
             NSApp.activate(ignoringOtherApps: true)
             guard a.runModal() == .alertFirstButtonReturn else { return }
-            var c = Config.load(); c.betterSummaryAgreed = (c.betterSummaryAgreed ?? []) + [h]; c.save()
+            var c = Config.load(); c.betterSummaryAgreed = (c.betterSummaryAgreed ?? []) + [key]; c.save()
             config.betterSummaryAgreed = c.betterSummaryAgreed; syncSettings()
         }
-        meetingBar.showBusy("Asking \(who) for a better summary…")
+        meetingBar.showBusy(h == "command" ? "Running your command for a better summary…" : "Asking \(who) for a better summary…")
         Task.detached { [weak self] in
-            let r = BetterSummary.write(file: file, helper: h)
+            let r = BetterSummary.write(file: file, helper: h, command: command)
             await MainActor.run {
                 guard let self else { return }
-                let text = r.ok ? "\(who)'s summary is on top of the notes" : r.message
+                let text = r.ok ? "\(BetterSummary.cap(who))'s summary is on top of the notes" : r.message
                 // Only over its own "Asking…": a newer meeting's offer or progress keeps the bar.
                 if self.meeting == nil, case .busy = self.meetingBar.mode { self.meetingBar.finish(text, ok: r.ok) } else { self.hud.flash(text, for: 3.5) }
             }
@@ -2099,7 +2112,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if self.meeting == nil {
                     self.lastNotes = r.file
                     // A better summary is offered only when chosen in Settings and something was heard.
-                    if let h = self.config.betterSummaryWith, r.meLines + r.othersLines > 0, r.summary != "skipped" { self.meetingBar.offer(h) }
+                    if let h = self.config.betterSummaryWith, h != "command" || !(self.config.betterSummaryCommand ?? "").trimmingCharacters(in: .whitespaces).isEmpty,
+                       r.meLines + r.othersLines > 0, r.summary != "skipped" { self.meetingBar.offer(h) }
                     else { self.meetingBar.finish("Notes saved", ok: true) }
                 }
                 // Never over a meeting being recorded: the file waits in the folder.

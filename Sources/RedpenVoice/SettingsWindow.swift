@@ -474,29 +474,46 @@ struct SettingsView: View {
         }
     }
 
-    /// Off, or Claude, ChatGPT or Gemini through the user's own plan, from the ones installed on this Mac (D-956).
-    /// Nothing is started until one is chosen; then Settings checks it is signed in and says how if it isn't.
+    /// Off, Claude, ChatGPT, Gemini or Cursor through the user's own plan, from the ones installed on this Mac, or
+    /// the user's own command for anything else (D-956, D-1012). Nothing is started until one is chosen; then
+    /// Settings checks it is signed in and says how if it isn't. The user's own command is never run to check.
     private var betterSummaryRow: some View {
         let installed = model.summaryInstalled ?? []
         let chosen = model.config.betterSummaryWith
-        let choices = installed + (chosen.map { installed.contains($0) ? [] : [$0] } ?? [])
+        let choices = installed + (chosen.map { installed.contains($0) || $0 == "command" ? [] : [$0] } ?? []) + ["command"]
         let note: String
-        if let h = chosen, !installed.contains(h) {
+        if chosen == "command" {
+            note = "For OpenRouter, a model on this Mac or any other tool. Nothing runs until you click the bar's button."
+        } else if let h = chosen, !installed.contains(h) {
             note = BetterSummary.missing(h) + " It isn't on this Mac."
         } else if let h = chosen, model.summarySignedIn[h] == false {
-            note = "\(BetterSummary.tool(h).prefix(1).uppercased() + BetterSummary.tool(h).dropFirst()) isn't signed in. " + BetterSummary.signIn(h)
-        } else if model.summaryInstalled != nil, choices.isEmpty {
-            note = "Needs Claude Code, Codex or Google's Antigravity CLI, signed in with your own Claude, ChatGPT or Gemini plan. None is on this Mac."
+            note = "\(BetterSummary.cap(BetterSummary.tool(h))) isn't signed in. " + BetterSummary.signIn(h)
+        } else if model.summaryInstalled != nil, installed.isEmpty {
+            note = "Claude Code, Codex, Google's Antigravity CLI or Cursor's command-line tool, signed in with your own plan, would show here. None is on this Mac. Your own command works with anything."
         } else {
             note = "After the notes are saved, the bar offers a second summary from your own plan. Nothing is sent until you click it. Then the transcript goes to that company."
         }
-        return row("Better summary with", note) {
-            Picker("", selection: Binding(get: { model.config.betterSummaryWith ?? "off" },
-                                          set: { model.config.betterSummaryWith = $0 == "off" ? nil : $0
-                                                 if $0 != "off" { model.checkSignIn($0) } })) {
-                Text("Off").tag("off")
-                ForEach(choices, id: \.self) { h in Text(BetterSummary.name(h)).tag(h) }
-            }.labelsHidden().frame(width: 220, alignment: .trailing)
+        return VStack(spacing: 0) {
+            row("Better summary with", note) {
+                Picker("", selection: Binding(get: { model.config.betterSummaryWith ?? "off" },
+                                              set: { model.config.betterSummaryWith = $0 == "off" ? nil : $0
+                                                     if $0 != "off", $0 != "command" { model.checkSignIn($0) } })) {
+                    Text("Off").tag("off")
+                    ForEach(choices, id: \.self) { h in Text(h == "command" ? "Your own command" : BetterSummary.name(h)).tag(h) }
+                }.labelsHidden().frame(width: 220, alignment: .trailing)
+            }
+            if chosen == "command" {
+                // The field is as wide as the page: a command line doesn't fit beside a label.
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Command").font(.system(size: 14)).foregroundStyle(Ink.text)
+                    CommandField(text: model.config.betterSummaryCommand ?? "") { t in
+                        let v = t.trimmingCharacters(in: .whitespaces)
+                        if (model.config.betterSummaryCommand ?? "") != v { model.config.betterSummaryCommand = v.isEmpty ? nil : v }
+                    }
+                    Text("It gets the instructions and the transcript on its input and prints the summary. It runs in a fresh shell that reads ~/.zprofile but not ~/.zshrc, so put any key it needs there or in the tool's own settings. For example: ollama run llama3.2")
+                        .font(.system(size: 12.5)).foregroundStyle(Ink.dim).fixedSize(horizontal: false, vertical: true)
+                }.padding(.vertical, 11)
+            }
         }.onAppear { model.findSummaryHelpers() }
     }
 
@@ -559,5 +576,28 @@ struct SettingsView: View {
             Spacer(minLength: 8)
             control()
         }.padding(.vertical, 11)
+    }
+}
+
+/// The command for Better summary, saved a moment after typing stops, and at once on Return or when the field is
+/// left, rather than on every key.
+private struct CommandField: View {
+    @State var text: String
+    let save: (String) -> Void
+    @FocusState private var focused: Bool
+    @State private var pending: Task<Void, Never>?
+
+    var body: some View {
+        TextField("", text: $text, prompt: Text("your command"))
+            .textFieldStyle(.roundedBorder).font(.system(size: 12.5, design: .monospaced))
+            .autocorrectionDisabled()
+            .focused($focused)
+            .onSubmit { save(text) }
+            .onChange(of: text) { _, t in
+                pending?.cancel()
+                pending = Task { try? await Task.sleep(for: .seconds(0.8)); if !Task.isCancelled { save(t) } }
+            }
+            .onChange(of: focused) { _, now in if !now { save(text) } }
+            .onDisappear { save(text) }
     }
 }

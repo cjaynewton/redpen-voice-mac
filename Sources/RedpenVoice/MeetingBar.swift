@@ -10,8 +10,8 @@ final class MeetingBar: NSObject {
     /// What the bar shows while recording, read ten times a second.
     struct Now { var recorded: Double; var paused: Bool; var me: Float; var others: Float; var noSound: Bool }
 
-    /// `offer`: notes saved, with a button for a better summary from this helper ("claude", "chatgpt", "gemini";
-    /// D-956). `busy`: waiting on it.
+    /// `offer`: notes saved, with a button for a better summary from this helper ("claude", "chatgpt", "gemini",
+    /// "cursor" or "command"; D-956, D-1012). `busy`: waiting on it.
     enum Mode: Equatable { case recording, writing(Int, String), done(String, Bool), offer(String), busy(String) }
 
     var source: () -> Now? = { nil }
@@ -260,7 +260,8 @@ final class MeetingBar: NSObject {
             label(message, gap: 14)
             better.attributedTitle = NSAttributedString(string: "Better summary with \(who)",
                                                         attributes: [.foregroundColor: Self.text, .font: NSFont.systemFont(ofSize: 12.5, weight: .medium)])
-            better.toolTip = "Sends this meeting's transcript to \(who) through your own plan, then puts its summary on top of the notes"
+            better.toolTip = helper == "command" ? "Gives this meeting's transcript to your own command, then puts its summary on top of the notes"
+                : "Sends this meeting's transcript to \(who) through your own plan, then puts its summary on top of the notes"
             button(better)
             button(notNow, padding: 8, gap: 8)
         case .busy(let text):

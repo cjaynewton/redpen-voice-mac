@@ -72,7 +72,8 @@ enum MeetingTest {
         }
     }
 
-    /// `--summary-test notes.md out.md [--better claude|chatgpt|gemini]` (D-956): the summary on an existing notes
+    /// `--summary-test notes.md out.md [--better claude|chatgpt|gemini|cursor | --better command --command "..."] [--no-apple]`
+    /// (D-956, D-1012): the summary on an existing notes
     /// file's transcript, without transcribing again. Writes the notes with the summary to `out.md`, and the
     /// models' own answers before the check beside it (`out.apple-raw.md`, `out.<helper>-raw.md`), then prints
     /// what the check did. The better summary is sent only when `--better` is given.
@@ -94,17 +95,23 @@ enum MeetingTest {
         }
         print("summary-test")
         var t0 = Date()
-        let free = await MeetingSummary.section(for: said) { _ in }
-        report("apple", free.checked, free.raw, seconds: Date().timeIntervalSince(t0))
-        if free.checked == nil { print("    \(free.note)") }
+        // `--no-apple`: the better summary alone, for testing a helper without waiting on Apple's model.
+        var notes = text
+        if !CommandLine.arguments.contains("--no-apple") {
+            let free = await MeetingSummary.section(for: said) { _ in }
+            report("apple", free.checked, free.raw, seconds: Date().timeIntervalSince(t0))
+            if free.checked == nil { print("    \(free.note)") }
+            notes = Meeting.placing(free.text, in: text)
+        }
         do {
             if !FileManager.default.fileExists(atPath: out.path) { FileManager.default.createFile(atPath: out.path, contents: nil, attributes: [.posixPermissions: 0o600]) }
-            try MeetingNotes.savePrivately(Meeting.placing(free.text, in: text), to: out)
+            try MeetingNotes.savePrivately(notes, to: out)
         } catch { print("can't write \(out.path)"); return 1 }
         if let b = CommandLine.arguments.firstIndex(of: "--better"), b + 1 < CommandLine.arguments.count {
             let helper = CommandLine.arguments[b + 1]
+            let command = CommandLine.arguments.firstIndex(of: "--command").flatMap { $0 + 1 < CommandLine.arguments.count ? CommandLine.arguments[$0 + 1] : nil }
             t0 = Date()
-            let r = BetterSummary.write(file: out, helper: helper)
+            let r = BetterSummary.write(file: out, helper: helper, command: command)
             if r.ok { report(helper, r.checked, r.raw, seconds: Date().timeIntervalSince(t0)) } else { print("\(helper): \(r.message)") }
         }
         print("  file: \(out.path)")

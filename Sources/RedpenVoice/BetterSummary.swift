@@ -1,41 +1,75 @@
 import Foundation
 import VoiceCore
 
-/// Better summary (D-956): off unless chosen in Settings, and nothing is sent until the bar's button is clicked. It
-/// goes through the user's own Claude, ChatGPT or Gemini plan, by each company's command-line tool (Claude Code,
-/// Codex, Antigravity CLI), never an API key: the same programs, flags, time limits and messages as Redpen Grammar's
-/// Deep check. Arguments go straight to the program, never through a shell, and the transcript goes in on stdin.
-/// The answer gets the same check as Apple's summary before it goes into the notes.
+/// Better summary (D-956): off unless chosen in Settings, and nothing is sent until the bar's button is clicked. The
+/// user picks the model (D-1012). The named helpers go through the user's own Claude, ChatGPT, Gemini or Cursor plan,
+/// by each company's command-line tool (Claude Code, Codex, Antigravity CLI, Cursor's agent), never an API key; the
+/// first three with the same programs, flags, time limits and messages as Redpen Grammar's Deep check. Arguments go
+/// straight to the program, never through a shell. "command" is the user's own command line, for anything else
+/// (OpenRouter, a model on this Mac): it runs in their shell and gets the instructions and the transcript on stdin,
+/// never in the command line itself. Every answer gets the same check as Apple's summary before it goes into the notes.
 enum BetterSummary {
-    static let helpers = ["claude", "chatgpt", "gemini"]
+    /// The helpers Settings looks for on this Mac. "command" is offered always, as it needs nothing installed by name.
+    static let helpers = ["claude", "chatgpt", "gemini", "cursor"]
 
-    static func name(_ h: String) -> String { h == "chatgpt" ? "ChatGPT" : h == "gemini" ? "Gemini" : "Claude" }
-    static func company(_ h: String) -> String { h == "chatgpt" ? "OpenAI" : h == "gemini" ? "Google" : "Anthropic" }
-    static func tool(_ h: String) -> String { h == "chatgpt" ? "Codex" : h == "gemini" ? "the Antigravity CLI" : "Claude Code" }
+    static func name(_ h: String) -> String {
+        switch h { case "chatgpt": "ChatGPT"; case "gemini": "Gemini"; case "cursor": "Cursor"; case "command": "your command"; default: "Claude" }
+    }
+    static func company(_ h: String) -> String {
+        switch h { case "chatgpt": "OpenAI"; case "gemini": "Google"; case "cursor": "Cursor"; case "command": "the service your command uses"; default: "Anthropic" }
+    }
+    static func tool(_ h: String) -> String {
+        switch h { case "chatgpt": "Codex"; case "gemini": "the Antigravity CLI"; case "cursor": "Cursor's command-line tool"; case "command": "your command"; default: "Claude Code" }
+    }
 
-    /// Where each tool's official installer, Homebrew or npm put it.
+    /// The first letter made a capital, for a name that starts a sentence ("Your command didn't answer").
+    static func cap(_ s: String) -> String { s.prefix(1).uppercased() + s.dropFirst() }
+
+    /// Where each tool's official installer, Homebrew or npm put it. Cursor's installer names it `cursor-agent`, and
+    /// newer ones `agent` too; a bare `agent` counts only when it leads into Cursor's own `cursor-agent` folder, as
+    /// other programs share that name.
     static func path(_ h: String) -> String? {
+        if h == "command" { return "/bin/zsh" }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let name = h == "chatgpt" ? "codex" : h == "gemini" ? "agy" : "claude"
+        let name = switch h { case "chatgpt": "codex"; case "gemini": "agy"; case "cursor": "cursor-agent"; default: "claude" }
         var places = ["/opt/homebrew/bin/", "/usr/local/bin/", home + "/.local/bin/", home + "/.antigravity/bin/"].map { $0 + name }
         if h == "claude" { places.append(home + "/.claude/local/claude") }
-        return places.first { FileManager.default.isExecutableFile(atPath: $0) }
+        if let p = places.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) { return p }
+        if h == "cursor" {
+            let agent = home + "/.local/bin/agent"
+            let real = URL(fileURLWithPath: agent).resolvingSymlinksInPath().path
+            if FileManager.default.isExecutableFile(atPath: agent), real.contains("/cursor-agent/") { return agent }
+        }
+        return nil
     }
 
     /// Installed and signed in. Starts the tool, which may ask its company's servers (Google's always does), so only
-    /// once the user has chosen that helper, and never on the main thread.
+    /// once the user has chosen that helper, and never on the main thread. The user's own command isn't run to check.
     static func ready(_ h: String) -> Bool {
+        if h == "command" { return true }
         guard let p = path(h) else { return false }
         switch h {
         case "chatgpt": return run(p, ["login", "status"]).localizedCaseInsensitiveContains("logged in using chatgpt")
         // Google's tool has no sign-in status command, but listing its models asks you to sign in first.
         case "gemini": let out = run(p, ["models"]); return !out.isEmpty && !out.localizedCaseInsensitiveContains("sign in")
+        case "cursor": let out = run(p, ["status"]).lowercased(); return out.contains("logged in") && !out.contains("not logged in")
         default: let out = run(p, ["auth", "status", "--json"]); return out.contains("\"loggedIn\": true") || out.contains("\"loggedIn\":true")
         }
     }
 
     /// The helpers installed on this Mac, in Settings order. Only looks for the files: starts nothing, sends nothing.
     static func installed() -> [String] { helpers.filter { path($0) != nil } }
+
+    /// The line above the summary, saying who wrote it. Never the command itself, which may hold a key.
+    static func label(_ h: String) -> String {
+        h == "command" ? "*Written by your own command. Check it against the transcript.*" : Meeting.betterLabel(name(h))
+    }
+
+    /// What the bar's first-time question is agreed under: the helper, or for the user's own command, the command
+    /// itself, so changing it in Settings asks again.
+    static func agreement(_ h: String, command: String?) -> String {
+        h == "command" ? "command:" + (command ?? "").trimmingCharacters(in: .whitespaces) : h
+    }
 
     static let prompt = """
     Write meeting notes from the transcript on stdin. Each line starts with its time in brackets and a speaker. "Me" \
@@ -90,11 +124,14 @@ enum BetterSummary {
     /// Claude Code with its tools, MCP servers, slash commands, hooks and the user's own settings and CLAUDE.md
     /// instructions off, so it can only read and answer, in the form asked. Codex
     /// read-only, without the user's config, rules, project instructions or web search, with its acting tools off,
-    /// saving nothing. The Antigravity CLI in its sandbox with slash commands off; it reads the prompt from the
-    /// command line, so the transcript goes there.
-    static func job(_ h: String, prompt: String, input: String) -> Job {
+    /// saving nothing. The Antigravity CLI in its sandbox with slash commands off. Cursor in ask mode, which answers
+    /// without changing anything, sandboxed in the empty folder. Those two read the prompt from the command line, so
+    /// the transcript goes there. The user's own command in a login shell (it reads ~/.zprofile, not ~/.zshrc, whose
+    /// prompts and banners could eat the input or spoil the answer), with everything on stdin.
+    static func job(_ h: String, prompt: String, input: String, command: String? = nil) -> Job {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("redpen-summary-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let inline = prompt + "\n\n<stdin>\n" + input + "\n</stdin>"
         switch h {
         case "chatgpt":
             let answer = folder.appendingPathComponent("answer.txt")
@@ -106,9 +143,16 @@ enum BetterSummary {
                        input: input, answerFile: answer, folder: folder)
         case "gemini":
             return Job(helper: h, path: path(h),
-                       args: ["-p", prompt + "\n\n<stdin>\n" + input + "\n</stdin>", "--output-format", "text",
-                              "--sandbox", "--disable-slash-commands", "--effort", "high"],
+                       args: ["-p", inline, "--output-format", "text", "--sandbox", "--disable-slash-commands", "--effort", "high"],
                        input: nil, answerFile: nil, folder: folder)
+        case "cursor":
+            return Job(helper: h, path: path(h),
+                       args: ["-p", inline, "--output-format", "text", "--mode", "ask", "--trust", "--sandbox", "enabled",
+                              "--workspace", folder.path],
+                       input: nil, answerFile: nil, folder: folder)
+        case "command":
+            // A login shell, so the PATH and settings the user's own tools need are there.
+            return Job(helper: h, path: path(h), args: ["-lc", command ?? ""], input: inline + "\n", answerFile: nil, folder: folder)
         default:
             return Job(helper: h, path: path(h),
                        args: ["-p", prompt, "--model", "sonnet", "--output-format", "text",
@@ -141,11 +185,13 @@ enum BetterSummary {
         do { try p.run() } catch { return (false, "Couldn't start \(tool(job.helper)).") }
         if let input = job.input {
             let writer = inPipe.fileHandleForWriting
+            // A program that quits without reading (a mistyped command) would otherwise kill Voice with SIGPIPE.
+            _ = fcntl(writer.fileDescriptor, F_SETNOSIGPIPE, 1)
             DispatchQueue.global().async { try? writer.write(contentsOf: Data(input.utf8)); try? writer.close() }
         }
         if done.wait(timeout: .now() + limit) == .timedOut {
-            p.terminate()
-            return (false, "\(name(job.helper)) didn't answer within \(Int(limit / 60)) minutes. Try again later.")
+            stop(p.processIdentifier)
+            return (false, "\(cap(name(job.helper))) didn't answer within \(Int(limit / 60)) minutes. Try again later.")
         }
         out.waitForEnd(seconds: 5)
         err.waitForEnd(seconds: 1)
@@ -153,9 +199,28 @@ enum BetterSummary {
         let o = String(decoding: raw, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         if p.terminationStatus != 0 || o.isEmpty {
             let e = String(decoding: err.data, as: UTF8.self) + "\n" + o
-            return (false, limitMessage(e, who: name(job.helper)) ?? "\(tool(job.helper)) returned an error (exit \(p.terminationStatus)).")
+            if job.helper == "command" {
+                // Its own last line of complaint ("command not found: ollama") is the useful part. Only from stderr:
+                // what it printed may be words from the meeting, and the bar can be on a shared screen.
+                let last = String(decoding: err.data, as: UTF8.self).split(separator: "\n").last.map { String($0.trimmingCharacters(in: .whitespaces).prefix(120)) } ?? ""
+                return (false, "Your command returned an error (exit \(p.terminationStatus))" + (last.isEmpty ? "." : ": \(last)"))
+            }
+            return (false, limitMessage(e, who: name(job.helper)) ?? "\(cap(tool(job.helper))) returned an error (exit \(p.terminationStatus)).")
         }
         return (true, o)
+    }
+
+    /// Stops a process and everything it started (a shell's pipeline, a wrapper's node), so nothing carries on
+    /// sending after the bar says it gave up: politely, then for good two seconds later.
+    static func stop(_ pid: pid_t) {
+        func tree(_ p: pid_t) -> [pid_t] {
+            var kids = [pid_t](repeating: 0, count: 256)
+            let n = Int(proc_listchildpids(p, &kids, Int32(kids.count * MemoryLayout<pid_t>.size)))
+            return [p] + kids.prefix(max(0, n)).filter { $0 > 0 }.flatMap(tree)
+        }
+        let all = tree(pid)
+        for p in all { kill(p, SIGTERM) }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) { for p in all { kill(p, SIGKILL) } }
     }
 
     /// A plain line when the plan has hit its usage limit, with the reset time if given.
@@ -174,12 +239,14 @@ enum BetterSummary {
         switch h {
         case "chatgpt": "Open Terminal, type codex and press Return, then choose Sign in with ChatGPT."
         case "gemini": "Open Terminal, type agy and press Return, then sign in with your Google account."
+        case "cursor": "Open Terminal, type cursor-agent login and press Return, then sign in with your Cursor account."
         default: "Open Terminal, type claude and press Return, then sign in with your Claude account."
         }
     }
 
     static func missing(_ h: String) -> String {
-        "Better summary with \(name(h)) needs \(tool(h)), signed in with your \(name(h)) plan."
+        h == "command" ? "Better summary with your own command needs the command, typed in Settings."
+            : "Better summary with \(name(h)) needs \(tool(h)), signed in with your \(name(h)) plan."
     }
 
     /// Runs a tool with fixed arguments and returns what it printed; nothing after `limit` seconds.
@@ -210,22 +277,24 @@ enum BetterSummary {
 
     /// Asks the helper for a summary of the notes file's transcript, checks it, and puts it on top of the notes with
     /// Apple's kept below. The file is left as it was on any failure. Runs a tool for minutes: never on the main thread.
-    static func write(file: URL, helper: String) -> Outcome {
+    static func write(file: URL, helper: String, command: String? = nil) -> Outcome {
         guard let text = try? String(contentsOf: file, encoding: .utf8) else { return Outcome(ok: false, message: "The notes file can't be read.") }
         let transcript = Meeting.transcript(inFile: text).components(separatedBy: "\n").filter { $0.hasPrefix("[") }.joined(separator: "\n")
         guard !Meeting.said(transcript).isEmpty else { return Outcome(ok: false, message: "Nothing was heard to summarise.") }
+        if helper == "command", (command ?? "").trimmingCharacters(in: .whitespaces).isEmpty { return Outcome(ok: false, message: missing(helper)) }
         let t0 = Date()
-        let answer = call(job(helper, prompt: prompt, input: transcript))
+        // A model on this Mac may be slow on a long meeting: the user's own command gets twice as long.
+        let answer = call(job(helper, prompt: prompt, input: transcript, command: command), limit: helper == "command" ? 600 : 300)
         guard answer.ok else {
             Log.note("meeting: better summary failed (\(helper)) after \(Log.int(Date().timeIntervalSince(t0)))s")
             return Outcome(ok: false, message: answer.text)
         }
         guard let raw = Meeting.parse(written: answer.text) else {
             Log.note("meeting: better summary from \(helper) not in the expected form")
-            return Outcome(ok: false, message: "\(name(helper))'s answer wasn't in the expected form. Your notes are unchanged.")
+            return Outcome(ok: false, message: "\(cap(name(helper)))'s answer wasn't in the expected form. Your notes are unchanged.")
         }
         let checked = Meeting.check(raw, transcript: transcript)
-        let section = Meeting.summaryMarkdown(checked, transcript: transcript, label: Meeting.betterLabel(name(helper)))
+        let section = Meeting.summaryMarkdown(checked, transcript: transcript, label: label(helper))
         // Read again: the file may have been edited while the helper worked.
         guard let now = try? String(contentsOf: file, encoding: .utf8) else { return Outcome(ok: false, message: "The notes file can't be read.") }
         do {
@@ -235,7 +304,7 @@ enum BetterSummary {
         }
         let s = checked.summary
         Log.note("meeting: better summary from \(helper) in \(Log.int(Date().timeIntervalSince(t0)))s, \(s.points.count) points, \(s.decisions.count) decisions, \(s.todos.count) to-dos; check moved \(checked.moved), left out \(checked.dropped), not tasks \(checked.notTasks), uncited \(checked.uncited)")
-        return Outcome(ok: true, message: "\(name(helper))'s summary is in the notes", checked: checked, raw: raw)
+        return Outcome(ok: true, message: "\(cap(name(helper)))'s summary is in the notes", checked: checked, raw: raw)
     }
 }
 

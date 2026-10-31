@@ -55,9 +55,14 @@ struct Config: Codable {
     var keepMeetingAudio: Bool?
     /// The first meeting's tip about telling people has been shown.
     var meetingTipShown: Bool?
-    /// Better summary (D-956): "claude", "chatgpt" or "gemini", through the user's own plan; off when missing.
+    /// Better summary (D-956, D-1012): "claude", "chatgpt", "gemini" or "cursor" through the user's own plan, or
+    /// "command" for their own command line; off when missing.
     var betterSummaryWith: String?
-    /// The helpers the user has agreed to send a transcript to, after being told where it goes the first time.
+    /// The user's own command for Better summary: it gets the instructions and the transcript on stdin and prints the
+    /// summary. Used only when Better summary is "command".
+    var betterSummaryCommand: String?
+    /// The helpers the user has agreed to send a transcript to, after being told where it goes the first time; for
+    /// their own command, "command:" and the command, so a new command asks again.
     var betterSummaryAgreed: [String]?
     var meetingsDir: URL {
         meetingsFolder.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true) }
