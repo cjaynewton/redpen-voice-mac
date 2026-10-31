@@ -47,7 +47,8 @@ final class SettingsModel: ObservableObject {
 
     /// Whether the chosen helper is signed in. Starts that tool, off the main thread.
     func checkSignIn(_ h: String) {
-        guard summarySignedIn[h] == nil else { return }
+        // On this Mac (D-1010) has no sign-in.
+        guard summarySignedIn[h] == nil, h != BetterSummary.onMac else { return }
         Task.detached { [weak self] in
             let ok = BetterSummary.ready(h)
             await MainActor.run { self?.summarySignedIn[h] = ok }
@@ -188,6 +189,8 @@ enum Ink {
 
 struct SettingsView: View {
     @ObservedObject var model: SettingsModel
+    /// The on-this-Mac writer's download (D-1010), which carries on when the window closes.
+    @ObservedObject private var writers = WriterDownloads.shared
     @State private var showTest = false
 
     var body: some View {
@@ -469,19 +472,23 @@ struct SettingsView: View {
             }
             Divider().overlay(Ink.line)
             betterSummaryRow
-            Text("Start meeting notes from the menu. Your microphone is Me and what the Mac plays is Others. Everything stays on this Mac unless you ask for a better summary, and the notes are plain Markdown files.")
+            Text("Start meeting notes from the menu. Your microphone is Me and what the Mac plays is Others. Everything stays on this Mac unless you ask Claude, ChatGPT or Gemini for a better summary, and the notes are plain Markdown files.")
                 .font(.system(size: 12.5)).foregroundStyle(Ink.dim).fixedSize(horizontal: false, vertical: true).padding(.top, 4)
         }
     }
 
     /// Off, or Claude, ChatGPT or Gemini through the user's own plan, from the ones installed on this Mac (D-956).
     /// Nothing is started until one is chosen; then Settings checks it is signed in and says how if it isn't.
+    /// On this Mac (D-1010) is offered when this Mac has the memory for a writer of its own.
     private var betterSummaryRow: some View {
-        let installed = model.summaryInstalled ?? []
+        let installed = (model.summaryInstalled ?? []) + (LocalNotes.writer == nil ? [] : [BetterSummary.onMac])
         let chosen = model.config.betterSummaryWith
         let choices = installed + (chosen.map { installed.contains($0) ? [] : [$0] } ?? [])
         let note: String
-        if let h = chosen, !installed.contains(h) {
+        if chosen == BetterSummary.onMac {
+            note = LocalNotes.writer.map { "After the notes are saved, the bar offers a second summary written on this Mac by \($0.name). Nothing leaves the Mac." }
+                ?? "This Mac has less than 16 GB of memory, too little for a writer of its own. Apple's summary stays."
+        } else if let h = chosen, !installed.contains(h) {
             note = BetterSummary.missing(h) + " It isn't on this Mac."
         } else if let h = chosen, model.summarySignedIn[h] == false {
             note = "\(BetterSummary.tool(h).prefix(1).uppercased() + BetterSummary.tool(h).dropFirst()) isn't signed in. " + BetterSummary.signIn(h)
@@ -490,14 +497,46 @@ struct SettingsView: View {
         } else {
             note = "After the notes are saved, the bar offers a second summary from your own plan. Nothing is sent until you click it. Then the transcript goes to that company."
         }
-        return row("Better summary with", note) {
-            Picker("", selection: Binding(get: { model.config.betterSummaryWith ?? "off" },
-                                          set: { model.config.betterSummaryWith = $0 == "off" ? nil : $0
-                                                 if $0 != "off" { model.checkSignIn($0) } })) {
-                Text("Off").tag("off")
-                ForEach(choices, id: \.self) { h in Text(BetterSummary.name(h)).tag(h) }
-            }.labelsHidden().frame(width: 220, alignment: .trailing)
-        }.onAppear { model.findSummaryHelpers() }
+        return VStack(alignment: .leading, spacing: 0) {
+            row("Better summary with", note) {
+                Picker("", selection: Binding(get: { model.config.betterSummaryWith ?? "off" },
+                                              set: { model.config.betterSummaryWith = $0 == "off" ? nil : $0
+                                                     if $0 != "off" { model.checkSignIn($0) } })) {
+                    Text("Off").tag("off")
+                    ForEach(choices, id: \.self) { h in Text(h == BetterSummary.onMac ? "On this Mac" : BetterSummary.name(h)).tag(h) }
+                }.labelsHidden().frame(width: 220, alignment: .trailing)
+            }.onAppear { model.findSummaryHelpers() }
+            if chosen == BetterSummary.onMac, let w = LocalNotes.writer { writerRow(w) }
+        }
+    }
+
+    /// The writer for On this Mac (D-1010): its name and size before anything starts, then one click to download it
+    /// with a progress bar and Cancel, and Remove for Redpen's own copy.
+    @ViewBuilder private func writerRow(_ w: LocalWriter) -> some View {
+        let _ = writers.changed
+        if let done = writers.done {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Downloading \(w.name)").font(.system(size: 14)).foregroundStyle(Ink.text)
+                ProgressView(value: Double(done), total: Double(max(w.bytes, 1))).tint(Ink.red).padding(.top, 8)
+                HStack {
+                    Text(w.progressText(done: done)).font(.system(size: 12.5)).foregroundStyle(Ink.dim)
+                    Spacer()
+                    Button("Cancel") { writers.cancel() }.buttonStyle(.plain).foregroundStyle(Ink.red)
+                }.padding(.top, 4)
+            }.padding(.vertical, 11)
+        } else if LocalNotes.folder(w) != nil {
+            if LocalNotes.inHubCache(w) {
+                row(w.name, "Already on this Mac in Hugging Face's folder, so there is nothing to download. Redpen reads it there and never changes it.") { EmptyView() }
+            } else {
+                row("\(w.name), \(w.sizeText)", "Downloaded and checked. It runs only when you click the bar's button.") {
+                    Button("Remove") { writers.remove(w) }
+                }
+            }
+        } else {
+            row("\(w.name), a \(w.sizeText) download", "From Hugging Face, once, picked for this Mac's memory. After that it runs on this Mac and nothing leaves it." + (writers.error.map { "\n\($0)" } ?? "")) {
+                Button("Download") { writers.start(w) }
+            }
+        }
     }
 
     private func chooseMeetingsFolder() {

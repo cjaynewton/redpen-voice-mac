@@ -1435,5 +1435,76 @@ do {
     check("meeting.manifest", back == mf && MeetingManifest.samples(bytes: 32_000) == 16_000)
 }
 
+// Better summary on this Mac (D-1010): which writer each Mac gets, the pinned download, the hash check, and its
+// summary's place in the notes.
+do {
+    let gib: UInt64 = 1 << 30
+    check("writer.8GB", LocalWriter.forMac(memory: 8 * gib) == nil)
+    check("writer.justUnder16", LocalWriter.forMac(memory: 16 * gib - 1) == nil)
+    check("writer.16GB", LocalWriter.forMac(memory: 16 * gib) == .gemma)
+    check("writer.32GB", LocalWriter.forMac(memory: 32 * gib) == .gemma)
+    check("writer.36GB", LocalWriter.forMac(memory: 36 * gib) == .gemma)
+    check("writer.48GB", LocalWriter.forMac(memory: 48 * gib) == .qwen)
+    check("writer.128GB", LocalWriter.forMac(memory: 128 * gib) == .qwen)
+    check("writer.sizes", LocalWriter.qwen.sizeText == "20.4 GB" && LocalWriter.gemma.sizeText == "5.2 GB", "\(LocalWriter.qwen.sizeText) \(LocalWriter.gemma.sizeText)")
+    check("writer.gb", LocalWriter.gb(850_000_000) == "850 MB" && LocalWriter.gb(1_250_000_000) == "1.2 GB")
+    check("writer.progress", LocalWriter.gemma.progressText(done: 3_100_000_000) == "3.1 of 5.2 GB" && LocalWriter.gemma.progressText(done: 9_000_000_000) == "5.2 of 5.2 GB")
+    let hex40 = try! NSRegularExpression(pattern: "^[0-9a-f]{40}$")
+    for w in LocalWriter.all {
+        check("writer.\(w.id).pinned", hex40.firstMatch(in: w.revision, range: NSRange(location: 0, length: 40)) != nil)
+        check("writer.\(w.id).hashed", w.files.allSatisfy { ($0.sha256 == nil) != ($0.gitSHA1 == nil) && ($0.sha256?.count ?? 64) == 64 && ($0.gitSHA1?.count ?? 40) == 40 })
+        check("writer.\(w.id).needed", ["config.json", "tokenizer.json", "tokenizer_config.json", "chat_template.jinja"].allSatisfy { n in w.files.contains { $0.name == n } }
+              && !w.files.contains { $0.name == "README.md" || $0.name.hasPrefix(".") })
+        let u = w.url(w.files[0])
+        check("writer.\(w.id).url", u.scheme == "https" && u.host == "huggingface.co" && u.path == "/\(w.repo)/resolve/\(w.revision)/\(w.files[0].name)", u.absoluteString)
+        check("writer.\(w.id).named", LocalWriter.named(w.id) == w)
+    }
+    check("writer.hubFolder", LocalWriter.gemma.cacheSnapshot(hub: URL(fileURLWithPath: "/h")).path
+          == "/h/models--mlx-community--gemma-4-e4b-it-4bit/snapshots/475b9088d29754a3379866cf5aeb6b41acd313c2")
+    check("writer.ownFolder", LocalWriter.qwen.ownFolder(models: URL(fileURLWithPath: "/m")).path
+          == "/m/notes-writers/mlx-community/Qwen3.6-35B-A3B-4bit/38740b847e4cb78f352aba30aa41c76e08e6eb46")
+
+    // The hash check: "hello\n" as git stores it, and its SHA-256; one byte off or a wrong size fails.
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("rv-writer-\(UUID().uuidString)", isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let hello = dir.appendingPathComponent("hello.txt")
+    try? Data("hello\n".utf8).write(to: hello)
+    check("writer.matchGit", LocalWriter.matches(.init("hello.txt", 6, git: "ce013625030ba8dba906f756967f9e9ca394464a"), at: hello))
+    check("writer.matchSHA256", LocalWriter.matches(.init("hello.txt", 6, sha256: "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"), at: hello))
+    check("writer.wrongHash", !LocalWriter.matches(.init("hello.txt", 6, sha256: String(repeating: "0", count: 64)), at: hello))
+    check("writer.wrongSize", !LocalWriter.matches(.init("hello.txt", 7, git: "ce013625030ba8dba906f756967f9e9ca394464a"), at: hello))
+    check("writer.noHashNeverMatches", !LocalWriter.matches(.init("hello.txt", 6), at: hello))
+    check("writer.missing", !LocalWriter.matches(.init("gone.txt", 6, git: "ce013625030ba8dba906f756967f9e9ca394464a"), at: dir.appendingPathComponent("gone.txt")))
+    check("writer.cancelledCheck", !LocalWriter.matches(.init("hello.txt", 6, git: "ce013625030ba8dba906f756967f9e9ca394464a"), at: hello, cancelled: { true }))
+    // A whole writer by sizes alone, links followed as in Hugging Face's cache.
+    let one = LocalWriter(id: "t", name: "T", repo: "a/b", revision: String(repeating: "a", count: 40),
+                          files: [.init("hello.txt", 6, git: "ce013625030ba8dba906f756967f9e9ca394464a")], minimumGB: 1)
+    let linked = dir.appendingPathComponent("linked", isDirectory: true)
+    try? FileManager.default.createDirectory(at: linked, withIntermediateDirectories: true)
+    check("writer.incomplete", !one.complete(in: linked))
+    try? FileManager.default.createSymbolicLink(at: linked.appendingPathComponent("hello.txt"), withDestinationURL: hello)
+    check("writer.completeThroughLink", one.complete(in: linked) && LocalWriter.matches(one.files[0], at: linked.appendingPathComponent("hello.txt")))
+    try? FileManager.default.removeItem(at: dir)
+
+    // Thinking is never part of the notes.
+    check("writer.answerPlain", LocalWriter.answer("\n### Overview\nA call.\n") == "### Overview\nA call.")
+    check("writer.answerThink", LocalWriter.answer("<think>\nhmm\n</think>\n\n### Overview\nA call.") == "### Overview\nA call.")
+    check("writer.answerOpenThink", LocalWriter.answer("plan first\n</think>\n### Overview\nA call.") == "### Overview\nA call.")
+
+    // Its summary goes on top like Claude's, replaces itself or Claude's, and keeps Apple's below.
+    let notes = "# Meeting\n\n## Transcript\n\n[00:01] Me: Hello.\n"
+    let free = "## Summary\n\n" + Meeting.summaryLabel + "\n\n### Overview\n\nFree.\n"
+    let mine = "## Summary\n\n" + Meeting.localLabel("Gemma 4 small") + "\n\n### Overview\n\nLocal.\n"
+    let claude = "## Summary\n\n" + Meeting.betterLabel("Claude") + "\n\n### Overview\n\nBetter.\n"
+    let both = Meeting.placingBetter(mine, in: Meeting.placing(free, in: notes))
+    let iL = both.range(of: "Local.")!.lowerBound, iF = both.range(of: Meeting.freeHeading)!.lowerBound, iT = both.range(of: "## Transcript")!.lowerBound
+    check("writer.summaryOnTop", iL < iF && iF < iT && both.components(separatedBy: "\n## Summary\n").count == 2)
+    check("writer.summaryAgain", Meeting.placingBetter(mine, in: both) == both)
+    check("writer.freeAfterLocal", Meeting.placing(free, in: both) == both)
+    let swapped = Meeting.placingBetter(claude, in: both)
+    check("writer.claudeReplacesLocal", swapped.contains("Better.") && !swapped.contains("Local.") && swapped.contains("Free."))
+    check("writer.labelSaysMac", Meeting.localLabel("Qwen3.6 35B").contains("on this Mac") && !Meeting.localLabel("Qwen3.6 35B").contains("your account"))
+}
+
 print("\(pass) passed, \(fail) failed")
 exit(fail == 0 ? 0 : 1)

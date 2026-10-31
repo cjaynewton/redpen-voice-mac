@@ -8,8 +8,22 @@ import VoiceCore
 /// The answer gets the same check as Apple's summary before it goes into the notes.
 enum BetterSummary {
     static let helpers = ["claude", "chatgpt", "gemini"]
+    /// The fourth helper (D-1010): a writer downloaded to this Mac and run inside the app. Nothing leaves the Mac.
+    static let onMac = "mac"
 
-    static func name(_ h: String) -> String { h == "chatgpt" ? "ChatGPT" : h == "gemini" ? "Gemini" : "Claude" }
+    static func name(_ h: String) -> String {
+        h == onMac ? LocalNotes.writer?.name ?? "this Mac" : h == "chatgpt" ? "ChatGPT" : h == "gemini" ? "Gemini" : "Claude"
+    }
+
+    /// The bar offers a summary only from a helper that can write one: on this Mac, once the writer is downloaded.
+    static func canOffer(_ h: String) -> Bool { h != onMac || LocalNotes.ready }
+
+    /// The bar's button and its tip.
+    static func button(_ h: String) -> String { h == onMac ? "Better summary on this Mac" : "Better summary with \(name(h))" }
+    static func tip(_ h: String) -> String {
+        h == onMac ? "Writes a second summary with \(name(h)) on this Mac and puts it on top of the notes. Nothing leaves the Mac."
+                   : "Sends this meeting's transcript to \(name(h)) through your own plan, then puts its summary on top of the notes"
+    }
     static func company(_ h: String) -> String { h == "chatgpt" ? "OpenAI" : h == "gemini" ? "Google" : "Anthropic" }
     static func tool(_ h: String) -> String { h == "chatgpt" ? "Codex" : h == "gemini" ? "the Antigravity CLI" : "Claude Code" }
 
@@ -215,7 +229,7 @@ enum BetterSummary {
         let transcript = Meeting.transcript(inFile: text).components(separatedBy: "\n").filter { $0.hasPrefix("[") }.joined(separator: "\n")
         guard !Meeting.said(transcript).isEmpty else { return Outcome(ok: false, message: "Nothing was heard to summarise.") }
         let t0 = Date()
-        let answer = call(job(helper, prompt: prompt, input: transcript))
+        let answer = helper == onMac ? LocalNotes.answer(transcript) : call(job(helper, prompt: prompt, input: transcript))
         guard answer.ok else {
             Log.note("meeting: better summary failed (\(helper)) after \(Log.int(Date().timeIntervalSince(t0)))s")
             return Outcome(ok: false, message: answer.text)
@@ -225,7 +239,8 @@ enum BetterSummary {
             return Outcome(ok: false, message: "\(name(helper))'s answer wasn't in the expected form. Your notes are unchanged.")
         }
         let checked = Meeting.check(raw, transcript: transcript)
-        let section = Meeting.summaryMarkdown(checked, transcript: transcript, label: Meeting.betterLabel(name(helper)))
+        let label = helper == onMac ? Meeting.localLabel(name(helper)) : Meeting.betterLabel(name(helper))
+        let section = Meeting.summaryMarkdown(checked, transcript: transcript, label: label)
         // Read again: the file may have been edited while the helper worked.
         guard let now = try? String(contentsOf: file, encoding: .utf8) else { return Outcome(ok: false, message: "The notes file can't be read.") }
         do {

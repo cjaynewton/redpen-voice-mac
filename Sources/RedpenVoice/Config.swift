@@ -55,7 +55,8 @@ struct Config: Codable {
     var keepMeetingAudio: Bool?
     /// The first meeting's tip about telling people has been shown.
     var meetingTipShown: Bool?
-    /// Better summary (D-956): "claude", "chatgpt" or "gemini", through the user's own plan; off when missing.
+    /// Better summary (D-956): "claude", "chatgpt" or "gemini", through the user's own plan, or "mac", a writer
+    /// downloaded to this Mac (D-1010); off when missing.
     var betterSummaryWith: String?
     /// The helpers the user has agreed to send a transcript to, after being told where it goes the first time.
     var betterSummaryAgreed: [String]?

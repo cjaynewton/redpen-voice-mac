@@ -138,6 +138,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { [config, engine] in exit(await MeetingTest.run(args, engine: engine, config: config, names: Names(text: Config.loadNames()))) }
             return
         }
+        // `--writer-test model-folder notes.md out.md`: Better summary on this Mac from a downloaded writer (D-1010).
+        if let i = CommandLine.arguments.firstIndex(of: "--writer-test") {
+            let args = Array(CommandLine.arguments[(i + 1)...].prefix { !$0.hasPrefix("--") })
+            Task { exit(await MeetingTest.writer(args)) }
+            return
+        }
+        // `--writer-download-test` with REDPEN_VOICE_DIR set: the writer download's small files, cancel and Remove (D-1010).
+        if CommandLine.arguments.contains("--writer-download-test") {
+            Task { exit(await MeetingTest.download()) }
+            return
+        }
         // `--summary-test notes.md out.md [--better claude]`: the summary alone, on notes already written (D-956).
         if let i = CommandLine.arguments.firstIndex(of: "--summary-test") {
             let args = Array(CommandLine.arguments[(i + 1)...].prefix { !$0.hasPrefix("--") })
@@ -1977,7 +1988,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func betterSummary(with h: String) {
         guard let file = lastNotes else { meetingBar.hide(); return }
         let who = BetterSummary.name(h), company = BetterSummary.company(h)
-        if !(config.betterSummaryAgreed ?? []).contains(h) {
+        // On this Mac (D-1010) nothing is sent, so there is nothing to agree to.
+        if h != BetterSummary.onMac, !(config.betterSummaryAgreed ?? []).contains(h) {
             let a = NSAlert()
             a.messageText = "Send this meeting's transcript to \(company)?"
             a.informativeText = "Better summary sends the whole transcript to \(company) through \(BetterSummary.tool(h)), under your own \(who) account, and \(company)'s terms for that account apply. Everything else stays on this Mac.\n\nIf you told the others that nothing leaves your Mac, this changes that. You're asked once for \(who)."
@@ -1988,7 +2000,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var c = Config.load(); c.betterSummaryAgreed = (c.betterSummaryAgreed ?? []) + [h]; c.save()
             config.betterSummaryAgreed = c.betterSummaryAgreed; syncSettings()
         }
-        meetingBar.showBusy("Asking \(who) for a better summary…")
+        meetingBar.showBusy(h == BetterSummary.onMac ? "Writing a better summary on this Mac…" : "Asking \(who) for a better summary…")
         Task.detached { [weak self] in
             let r = BetterSummary.write(file: file, helper: h)
             await MainActor.run {
@@ -2099,7 +2111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if self.meeting == nil {
                     self.lastNotes = r.file
                     // A better summary is offered only when chosen in Settings and something was heard.
-                    if let h = self.config.betterSummaryWith, r.meLines + r.othersLines > 0, r.summary != "skipped" { self.meetingBar.offer(h) }
+                    if let h = self.config.betterSummaryWith, BetterSummary.canOffer(h), r.meLines + r.othersLines > 0, r.summary != "skipped" { self.meetingBar.offer(h) }
                     else { self.meetingBar.finish("Notes saved", ok: true) }
                 }
                 // Never over a meeting being recorded: the file waits in the folder.

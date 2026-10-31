@@ -59,6 +59,9 @@ extension Meeting {
     /// The label above a summary from the user's own Claude, ChatGPT or Gemini.
     public static func betterLabel(_ who: String) -> String { "*Written by \(who) (your account). Check it against the transcript.*" }
 
+    /// The label above a summary from the writer downloaded to this Mac (D-1010).
+    public static func localLabel(_ who: String) -> String { "*Written on this Mac by \(who) (your download). Check it against the transcript.*" }
+
     /// Apple's summary's heading once a better one sits above it.
     public static let freeHeading = "## Summary written on this Mac"
 
@@ -402,7 +405,10 @@ extension Meeting {
         return out
     }
 
-    private static func isBetter(_ block: String) -> Bool { block.hasPrefix("## Summary\n") && block.contains("(your account). Check it against the transcript.") }
+    private static func isBetter(_ block: String) -> Bool {
+        block.hasPrefix("## Summary\n") && (block.contains("(your account). Check it against the transcript.")
+                                            || block.contains("(your download). Check it against the transcript."))
+    }
     private static func isFree(_ block: String) -> Bool { (block.hasPrefix("## Summary\n") && !isBetter(block)) || block.hasPrefix(freeHeading + "\n") }
 
     private static func joined(_ blocks: [String]) -> String {

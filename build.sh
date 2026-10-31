@@ -19,6 +19,11 @@ if [[ ! -d /Applications/Xcode.app ]]; then
   echo "Redpen Voice needs Xcode (free from the Mac App Store). Install it, open it once, then run this again."; exit 1
 fi
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+# Better summary on this Mac (D-1010) runs on Apple's MLX, whose GPU code is compiled with Xcode's Metal Toolchain,
+# a separate download from Apple since Xcode 26.
+if ! xcrun metal --version >/dev/null 2>&1; then
+  echo "Redpen Voice needs Xcode's Metal Toolchain. Run: xcodebuild -downloadComponent MetalToolchain, then run this again."; exit 1
+fi
 swift build -c release --product RedpenVoice
 OUT=.build/out/Products/Release
 [[ -d "$OUT" ]] || OUT=.build/release
@@ -30,6 +35,12 @@ cp "$OUT/RedpenVoice" "$APP/Contents/MacOS/RedpenVoice"
 cp -R "$OUT/Sparkle.framework" "$APP/Contents/Frameworks/"
 rm -rf "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices" "$APP/Contents/Frameworks/Sparkle.framework/XPCServices"
 cp -R Resources/Fonts "$APP/Contents/Resources/Fonts"
+# MLX's compiled GPU code (default.metallib), found in Resources at run time, and the tokenizers' bundle, whose
+# accessor stops the app if the bundle is missing (D-1010).
+if [[ ! -f "$OUT/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib" ]]; then
+  echo "MLX's GPU code wasn't built ($OUT/mlx-swift_Cmlx.bundle). Build with Xcode's Swift Build and its Metal Toolchain."; exit 1
+fi
+cp -R "$OUT/mlx-swift_Cmlx.bundle" "$OUT/swift-transformers_Hub.bundle" "$APP/Contents/Resources/"
 # The approved Gloock "r" and three bars (Resources/Icon/icon-source.html is the drawing).
 cp Resources/Icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cat > "$APP/Contents/Info.plist" <<PLIST
