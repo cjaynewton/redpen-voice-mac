@@ -388,6 +388,11 @@ struct SettingsView: View {
                     .labelsHidden().toggleStyle(.switch).tint(Ink.red)
             }
             Divider().overlay(Ink.line)
+            row("Enter sends when your words are in", "Press Enter to stop and send. It waits until every word is in, 5 seconds at most. Your talk key stops without sending.") {
+                Toggle("", isOn: Binding(get: { model.config.enterSends ?? true }, set: { model.config.enterSends = $0 }))
+                    .labelsHidden().toggleStyle(.switch).tint(Ink.red)
+            }
+            Divider().overlay(Ink.line)
             row("Microphone", "Pick the one you talk into. An interface with nothing plugged in records silence.") {
                 Picker("", selection: $model.config.inputDevice) {
                     Text("Same as the Mac" + (Mics.defaultInput().map { " (\($0.name))" } ?? "")).tag("")

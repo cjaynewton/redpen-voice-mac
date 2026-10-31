@@ -25,6 +25,11 @@ final class HoldKey {
     /// An Escape key-down (event time, repeat), seen without taking it from the app in front (D-987). True when a
     /// recording is listening for it: then it is not the other key that cancels a held press.
     var onEscape: (Double, Bool) -> Bool = { _, _ in false }
+    /// An Enter key-down Voice held back (D-1008), by event time. It never reached the app, so it is not the other key
+    /// that cancels a held press, and not your typing.
+    var heldByEnter: (Double) -> Bool = { _ in false } {
+        didSet { draftInputMonitor.skip = heldByEnter }
+    }
     /// A tap is a press shorter than this; the second must come within `tapGap` of the first. Generous enough for an
     /// unhurried double tap (Cedric's first tap ran just over the old 0.3 s on Oct 25).
     static let tapLength = TalkKeyState.tapLength, tapGap = TalkKeyState.tapGap
@@ -36,6 +41,9 @@ final class HoldKey {
     func trackDraft(since: Double) -> DraftInput { draftInputMonitor.track(since: since) }
     /// Escape threw the dictation away.
     func discard() { state.discard(at: ProcessInfo.processInfo.systemUptime); updateReleaseTimer() }
+    /// Enter finished the dictation (D-1008): back to idle the same way, so a talk key still held does nothing when it
+    /// comes up and the next press starts a new dictation.
+    func stopFromEnter() { discard() }
     var handsFree: Bool { state.handsFree }
     var lastTalkKeyDownAt: Double? { state.lastTalkKeyDownAt }
     var lastTypingKeyDownAt: Double? { state.lastTypingKeyDownAt }
@@ -125,6 +133,7 @@ final class HoldKey {
                 draftInputMonitor.record(talkKey: true, at: e.timestamp)
             }
         } else if e.type == .keyDown, !isOwn(e) {
+            if heldByEnter(e.timestamp) { return }
             draftInputMonitor.record(talkKey: false, at: e.timestamp)
             // Escape while you talk goes to your app and the recording goes on (D-987), held or hands-free.
             if code == EscapeTwice.keyCode, onEscape(e.timestamp, e.isARepeat) {

@@ -886,6 +886,62 @@ do {
     var taken = BoxPrint(role: "AXTextArea", identifier: nil, frame: f0, text: "Mine stays. one two three")
     check("ending.takeBackRecorded", taken.recordEdit(before: "Mine stays. one two three", range: NSRange(location: 11, length: 14), replacement: "") && taken.text == "Mine stays.")
 
+    // Enter stops and sends (D-1008): which presses Voice holds, and exactly one Enter out for each.
+    do {
+        typealias E = EnterSend
+        check("enter.plainReturn", E.owns(keyCode: 36, flags: 0))
+        check("enter.keypadEnter", E.owns(keyCode: 76, flags: 0))
+        check("enter.fnReturnCounts", E.owns(keyCode: 36, flags: 0x800000))
+        check("enter.shiftLeftAlone", !E.owns(keyCode: 36, flags: E.shift))
+        check("enter.commandLeftAlone", !E.owns(keyCode: 36, flags: E.command))
+        check("enter.optionLeftAlone", !E.owns(keyCode: 36, flags: E.option))
+        check("enter.controlLeftAlone", !E.owns(keyCode: 36, flags: E.control))
+        check("enter.otherKeysNot", !E.owns(keyCode: 53, flags: 0) && !E.owns(keyCode: 0, flags: 0))
+        // Right Option held to talk: Option+Enter is still your Enter. Left Option, or Option not a talk key: a shortcut.
+        check("enter.rightOptionTalkKeyCounts", E.owns(keyCode: 36, flags: E.option | 0x40, talkKeys: E.option))
+        check("enter.leftOptionStillShortcut", !E.owns(keyCode: 36, flags: E.option | 0x20, talkKeys: E.option))
+        check("enter.rightOptionNotTalkKey", !E.owns(keyCode: 36, flags: E.option | 0x40))
+        check("enter.rightOptionTalkShiftStillShortcut", !E.owns(keyCode: 36, flags: E.option | 0x40 | E.shift, talkKeys: E.option))
+
+        var r = E()
+        check("enter.notArmedPasses", r.keyDown(code: 36, flags: 0, own: false, repeated: false, now: 10) == .pass)
+        check("enter.notArmedUpPasses", r.keyUp(code: 36, own: false) == .pass)
+        r.arm(now: 10)
+        check("enter.shiftArmedPasses", r.keyDown(code: 36, flags: E.shift, own: false, repeated: false, now: 10.1) == .pass)
+        check("enter.ownArmedPasses", r.keyDown(code: 36, flags: 0, own: true, repeated: false, now: 10.1) == .pass)
+        check("enter.armedHolds", r.keyDown(code: 36, flags: 0, own: false, repeated: false, now: 10.2) == .hold(id: 1))
+        check("enter.repeatSwallowed", r.keyDown(code: 36, flags: 0, own: false, repeated: true, now: 10.3) == .swallow)
+        check("enter.upSwallowed", r.keyUp(code: 36, own: false) == .swallow)
+        check("enter.secondUpPasses", r.keyUp(code: 36, own: false) == .pass)
+        check("enter.ownUpPasses", r.keyUp(code: 36, own: true) == .pass)
+        check("enter.secondEnterSendsNow", r.keyDown(code: 36, flags: 0, own: false, repeated: false, now: 11) == .sendNow(id: 1))
+        check("enter.secondEnterUpSwallowed", r.keyUp(code: 36, own: false) == .swallow)
+        check("enter.releaseOnce", r.release(id: 1) == 36 && r.release(id: 1) == nil)
+        check("enter.capAfterReleaseNothing", r.capReached(id: 1, now: 20) == nil)
+        // A fresh press waits for its words, then the 5 s cap sends it if they never come.
+        r.arm(now: 30)
+        check("enter.nextPressNewID", r.keyDown(code: 76, flags: 0, own: false, repeated: false, now: 30.1) == .hold(id: 2))
+        check("enter.capNotEarly", r.capReached(id: 2, now: 33) == nil)
+        check("enter.capAtFiveSendsSameKey", r.capReached(id: 2, now: 35.1) == 76)
+        check("enter.releaseAfterCapNothing", r.release(id: 2) == nil)
+        // An ending arms for its whole length; a renewal never shortens it.
+        r.arm(now: 60, for: E.endingArmLength); r.arm(now: 61)
+        check("enter.endingArmNotShortened", r.armed(now: 70))
+        r.disarm()
+        // The arming runs out by itself, so a stalled Voice can't keep holding Enter.
+        r.arm(now: 40)
+        check("enter.armRunsOut", r.keyDown(code: 36, flags: 0, own: false, repeated: false, now: 40 + E.armLength + 0.01) == .pass)
+        r.arm(now: 50); r.disarm()
+        check("enter.disarmPasses", r.keyDown(code: 36, flags: 0, own: false, repeated: false, now: 50.1) == .pass)
+        // The keyboard's own key counter still sees a held Enter. Counted like a talk key, it doesn't stop the ending.
+        check("enter.heldEnterNotYourTyping", DraftSafety.hardwareFailure(since: 100, at: 103, keyDownAgo: 1, leftClickAgo: 99,
+              rightClickAgo: 99, talkKeyDownTimes: [100.2, 102.01], typingKeyDownAt: nil) == nil)
+        check("enter.realKeyStillCounts", DraftSafety.hardwareFailure(since: 100, at: 103, keyDownAgo: 0.5, leftClickAgo: 99,
+              rightClickAgo: 99, talkKeyDownTimes: [100.2, 102.01], typingKeyDownAt: nil) == .hardwareKey)
+        check("enter.capFive", E.cap == 5)
+        check("enter.notesShort", E.waitingNote.count <= 40)
+    }
+
     // Straight after: any place but a page, a control or Voice's own window takes the words; otherwise they wait.
     check("ending.textTypesNow", DictationEnding.typesNow(kind: .text, ownWindow: false))
     check("ending.unknownNativeTypesNow", DictationEnding.typesNow(kind: .unknown, ownWindow: false))

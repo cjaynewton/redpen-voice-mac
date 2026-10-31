@@ -26,6 +26,9 @@ struct Config: Codable {
     var talkKey: String?
     /// Tap the talk key twice to talk with your hands free; one more tap finishes. On unless turned off.
     var doubleTap: Bool?
+    /// Enter stops and sends (D-1008): a plain Enter while you talk, or while the words are on their way, waits until
+    /// every word is in (5 s at most) and then goes. On when missing.
+    var enterSends: Bool?
     var talkKeyChoice: String { talkKey ?? (fnKey == rightOptionKey ? "fnOrOption" : fnKey ? "fn" : "rightOption") }
     /// Press the Mac's play/pause key when recording starts, only if something is playing, and again when it ends.
     var pauseMedia = true

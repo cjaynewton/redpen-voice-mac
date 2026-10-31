@@ -9,6 +9,8 @@ final class DraftInputMonitor: @unchecked Sendable {
     private var inputs: [WeakInput] = []
     private var talkCodes: Set<Int> = []
     private var tap: CFMachPort?
+    /// Enter key-downs Voice held back (D-1008), by event time: never your typing.
+    var skip: (Double) -> Bool = { _ in false }
 
     func configure(_ codes: [Int]) {
         lock.lock(); defer { lock.unlock() }
@@ -70,6 +72,8 @@ final class DraftInputMonitor: @unchecked Sendable {
         } else if type != .keyDown { return }
         // Special keys only (codes above 127: never letters, digits or F-keys), to learn what the Fn key posts.
         if !talk, code > 127 { DispatchQueue.main.async { Log.note("draft input: special key code \(code)") } }
-        record(talkKey: talk, at: Double(event.timestamp) / 1_000_000_000)
+        let at = Double(event.timestamp) / 1_000_000_000
+        if !talk, EnterSend.keyCodes.contains(code), skip(at) { return }
+        record(talkKey: talk, at: at)
     }
 }

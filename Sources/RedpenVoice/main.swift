@@ -14,6 +14,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var status: NSStatusItem!
     private var config = Config.load()
     private let keys = HoldKey()
+    /// Enter stops and sends once every word is in (D-1008).
+    private let enterTap = EnterSendTap.shared
+    /// The held Enter and the dictation it waits for.
+    private var enterWait: (id: Int, gen: Int)?
+    private var lastEndingGen = 0
+    private var enterArmTimer: Timer?
     private let recorder = Recorder()
     private let engine = Transcriber()
     private let hud = HUD()
@@ -570,7 +576,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         keys.onUp = { [weak self] in self?.end() }
         keys.onCancel = { [weak self] in self?.cancel() }
         keys.onEscape = { [weak self] at, repeated in self?.escapePressed(at: at, repeated: repeated) ?? false }
+        keys.heldByEnter = { [enterTap] at in enterTap.held(at: at) }
+        enterTap.setTalkKeys(keys.keys.map(\.code))
         keys.start()
+        // After the key watchers, so this tap sees Enter first and the others never see a held one.
+        enterTap.onHold = { [weak self] id in MainActor.assumeIsolated { self?.enterHeld(id) } }
+        enterTap.onSent = { [weak self] id, why in MainActor.assumeIsolated { self?.enterSent(id, why: why) } }
+        enterTap.start()
+        let armTimer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.refreshEnterArm() } }
+        RunLoop.main.add(armTimer, forMode: .common)
+        enterArmTimer = armTimer
         pasteKey = Shortcut(id: 1, keyCode: kVK_ANSI_V, name: "Control-Option-V") { [weak self] in self?.pasteLastNow(triggerKey: CGKeyCode(kVK_ANSI_V)) }
         undoKey = Shortcut(id: 2, keyCode: kVK_ANSI_Z, name: "Control-Option-Z") { [weak self] in self?.takeBack() }
         updateSwapKey()
@@ -613,7 +628,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Any key you type yourself after a dictation means take-back must not guess. Our own typing is skipped.
         let me = Int64(ProcessInfo.processInfo.processIdentifier)
         typingWatch = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] e in
-            if e.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) != me {
+            if e.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) != me, self?.enterTap.held(at: e.timestamp) != true {
                 MainActor.assumeIsolated {
                     Insert.typedSince = true
                     if self?.keys.keys.contains(where: { $0.code == Int(e.keyCode) }) != true {
@@ -653,11 +668,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             setTalkKey: { [weak self] choice in
                 guard let self else { return }
-                self.config.talkKey = choice; self.keys.keys = HoldKey.keys(for: choice); self.syncSettings(); self.refreshMenu()
+                self.config.talkKey = choice; self.keys.keys = HoldKey.keys(for: choice); self.enterTap.setTalkKeys(self.keys.keys.map(\.code)); self.syncSettings(); self.refreshMenu()
             },
             restartKeys: { [weak self] in
                 guard let self else { return }
-                self.keys.restart(); self.installWatches()
+                self.keys.restart(); self.installWatches(); self.enterTap.start()
                 Log.note("first run: Accessibility arrived, key watchers set up again")
             },
             relaunch: { [weak self] in self?.relaunch() },
@@ -782,6 +797,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         remicIfDefaultMoved(reason: "input moved before this press")
         suggestionWork?.cancel(); hud.hideSuggestion()
         if waitingText != nil { stopWaiting(); hud.hide(); Log.note("insert: new press, the waiting words stay for paste") }
+        // A held Enter from the last dictation goes now, before this one types anything.
+        if let w = enterWait { enterWait = nil; enterTap.release(w.id, why: "a new press began") }
         // Where this dictation's words go back to, if you move away while they are written.
         if Insert.focus().kind == .text, let (el, pid) = Insert.focusedElement() {
             startBox = StartBox(pid: pid, element: el, app: NSRunningApplication(processIdentifier: pid)?.localizedName ?? "that app",
@@ -878,6 +895,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: settle)
         let (s, module) = engine.session(config)
         session = s
+        refreshEnterArm()
         sessionEngine = config.engine
         pendingMedia.session = s
         if holdForMedia { s.holdForMedia(); holdForMedia = false }
@@ -963,6 +981,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Escape twice while you talk: the dictation is thrown away, nothing goes into history or onto the clipboard, and
     /// the words Voice already typed come back out if the box still ends with them. The next press starts fresh.
+    /// Armed while a dictation runs or its words are on their way, and renewed every half second. While the words are on
+    /// their way it covers the whole ending, which can keep this thread busy typing for seconds. Meeting notes, the
+    /// switch off, or nothing happening: Enter is ordinary.
+    private func refreshEnterArm() {
+        guard config.enterSends ?? true, meeting == nil, testFile == nil, session != nil || writing > 0 else {
+            enterTap.disarm(); return
+        }
+        enterTap.arm(for: writing > 0 ? EnterSend.endingArmLength : EnterSend.armLength)
+    }
+
+    /// A plain Enter was held (D-1008). In a text box while you talk: the dictation stops and Enter goes out once its
+    /// words are in. While the words are still on their way (you stopped with Fn): Enter waits for them. Anywhere
+    /// else (a page, a control, Voice's own window): it goes straight on.
+    private func enterHeld(_ id: Int) {
+        let textBox = !Insert.ownWindowInFront && Insert.focus().kind != .notText
+        guard config.enterSends ?? true, meeting == nil, textBox else {
+            enterTap.release(id, why: textBox ? "not dictating" : "not a text box"); return
+        }
+        if session != nil {
+            enterWait = (id, delivery)
+            Log.note("enter: stops the dictation, sends when the words are in")
+            keys.stopFromEnter()
+            end()
+            hud.writing(EnterSend.waitingNote)
+        } else if writing > 0 {
+            enterWait = (id, lastEndingGen)
+            Log.note("enter: waits for the words on their way")
+            hud.writing(EnterSend.waitingNote)
+        } else {
+            // The ending may have just finished: the same moment for the app to take the words in.
+            enterTap.release(id, after: EnterSend.settle, why: "nothing on its way")
+        }
+    }
+
+    /// The dictation's ending is done: the held Enter goes, after a moment for the app when the words went in.
+    private func finishEnter(gen: Int, wordsIn: Bool) {
+        guard let w = enterWait, w.gen == gen else { return }
+        enterWait = nil
+        enterTap.release(w.id, after: wordsIn ? EnterSend.settle : 0, why: wordsIn ? "words in" : "words not typed here")
+    }
+
+    /// A held Enter went out. Take back must not guess after it. Sent early (the cap, a second Enter): the words still
+    /// go where the ending puts them, and the bar drops its note.
+    private func enterSent(_ id: Int, why: String) {
+        Insert.typedSince = true
+        Log.note("enter: sent (\(why))")
+        guard let w = enterWait, w.id == id else { return }
+        enterWait = nil
+        if writing > 0 { hud.writing("") }
+    }
+
     private func discard() {
         guard let s = session else { escapePresses = nil; return }
         escapePresses = nil
@@ -1209,7 +1278,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let rightAgo = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .rightMouseDown)
             let input = d.input.snapshot()
             return DraftSafety.HardwareSample(now: now, keyDownAgo: keyAgo, leftClickAgo: leftAgo,
-                rightClickAgo: rightAgo, talkKeyDownTimes: input.talkTimes, typingKeyDownAt: input.typingAt)
+                rightClickAgo: rightAgo, talkKeyDownTimes: input.talkTimes + EnterSendTap.shared.heldTimes(since: d.startedUptime),
+                typingKeyDownAt: input.typingAt)
         }
         d.hardwareSample = sample
         if let failure = sample.failure(since: d.startedUptime) { return draftBlocked(d, failure, during: path) }
@@ -1237,8 +1307,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     nonisolated static func userQuietSince(_ t: Date, keys: Bool = true) -> Bool {
         let since = Date().timeIntervalSince(t)
         let kinds: [CGEventType] = keys ? [.keyDown, .leftMouseDown, .rightMouseDown] : [.leftMouseDown, .rightMouseDown]
-        for e in kinds where CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: e) < since {
-            return false
+        for e in kinds {
+            var ago = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: e)
+            guard ago < since else { continue }
+            guard e == .keyDown else { return false }
+            // An Enter Voice held back (D-1008) is still the keyboard's newest key, but it never reached the app. The
+            // counter moves a moment before the Enter tap notes the press, so a very new key gets the same short wait
+            // the draft checks give it (DraftSafety.eventWait) before it counts as yours.
+            let deadline = Date().addingTimeInterval(DraftSafety.eventWait)
+            while true {
+                let keyAt = ProcessInfo.processInfo.systemUptime - ago
+                if EnterSendTap.shared.held(at: keyAt, tolerance: DraftSafety.talkKeyTolerance) { break }
+                guard ago < DraftSafety.eventWait, Date() < deadline else { return false }
+                Thread.sleep(forTimeInterval: 0.005)
+                ago = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: e)
+            }
         }
         return true
     }
@@ -1680,6 +1763,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let leftover = liveLeftover
         let typedText = liveText
         writing += 1
+        lastEndingGen = gen
+        refreshEnterArm()
         let releasedAt = Date()
         let handsFree = wasHandsFree
         wasHandsFree = false
@@ -1837,7 +1922,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.wordSuggestions.observe(text, names: Names(text: Config.loadNames()), enabled: self.config.suggestWords ?? true,
                                              keep: self.config.historyKeep ?? "all")
             }
+            self.finishEnter(gen: gen, wordsIn: inserted)
             self.writing -= 1
+            self.refreshEnterArm()
             self.resumeMedia()
             Log.note("dictation \(Log.int(seconds))s, \(raw.split(separator: " ").count) words, write \(Log.ms(Date().timeIntervalSince(t0)))ms, engine \(engineMs)ms, key up to done \(Log.ms(Date().timeIntervalSince(releasedAt)))ms, into \(app), inserted \(inserted)")
             self.refreshMenu()
@@ -2332,7 +2419,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if c.suggestWords == false || c.historyKeep == "none" { self.suggestionWork?.cancel(); self.hud.hideSuggestion() }
                 Self.applyAppearance(c)
                 if micChanged { self.recorder.deviceUID = c.inputDevice; self.warmMic() }
-                self.keys.keys = HoldKey.keys(for: c.talkKeyChoice); self.keys.doubleTap = c.doubleTap ?? true
+                self.keys.keys = HoldKey.keys(for: c.talkKeyChoice); self.enterTap.setTalkKeys(self.keys.keys.map(\.code)); self.keys.doubleTap = c.doubleTap ?? true
                 if engineChanged { Task { await self.engine.prepare(c) } }
                 self.updateSwapKey()
                 self.refreshMenu()
