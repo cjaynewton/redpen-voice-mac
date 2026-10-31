@@ -533,6 +533,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+        // One copy at a time: a second one (opened by hand while the watchdog reopens it) goes quietly, before it
+        // puts a second icon in the menu bar, watches keys, loads an engine or opens the first window.
+        // The loser leaves no quit note: the note is per copy, and the running copy's watchdog must still guard it.
+        if !Watchdog.takeLock() { Log.note("another copy is running, this one quits"); exit(0) }
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         status.button?.image = VoiceMenuBarIcon.image()
         status.button?.target = self
@@ -562,9 +566,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             firstRun = w
             w.show()
         }
-        // One copy at a time: a second one (opened by hand while the watchdog reopens it) goes quietly.
-        // The loser leaves no quit note: the note is per copy, and the running copy's watchdog must still guard it.
-        if !Watchdog.takeLock() { Log.note("another copy is running, this one quits"); exit(0) }
         // Stats are read only now that this is the only copy (D-837), and counted from the history once, before the
         // history is trimmed to what you chose to keep.
         stats.reload()
