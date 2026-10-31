@@ -27,4 +27,20 @@ public enum BarScreen {
         guard !screens.isEmpty else { return nil }
         return Choice(index: screens.firstIndex { $0.contains(pointer) } ?? 0, reason: "pointer")
     }
+
+    /// Where the bar sits on `visible` (the screen's visible frame): centred, 120 points up from the bottom, above
+    /// where chat apps put their typing box. When the box you started in is there anyway (D-972, Oct 31 2026: the bar
+    /// can now show your words the whole time you talk), it moves just above the box, or just below when above won't
+    /// fit, so it never covers your text. A box too tall for either keeps the usual place.
+    public static func origin(visible: CGRect, size: CGSize, avoiding box: CGRect?) -> CGPoint {
+        let x = visible.midX - size.width / 2
+        let usual = CGPoint(x: x, y: visible.minY + 120)
+        guard let box, !box.isNull, !box.isEmpty, !box.isInfinite,
+              CGRect(origin: usual, size: size).intersects(box.insetBy(dx: -8, dy: -8)) else { return usual }
+        let above = box.maxY + 12
+        if above + size.height <= visible.maxY - 8 { return CGPoint(x: x, y: above) }
+        let below = box.minY - 12 - size.height
+        if below >= visible.minY + 8 { return CGPoint(x: x, y: below) }
+        return usual
+    }
 }

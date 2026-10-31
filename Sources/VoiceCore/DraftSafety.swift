@@ -63,6 +63,4 @@ public enum DraftSafety {
         }
         return current
     }
-
-    public static let stoppedMessage = "Stopped typing here. The rest goes on the clipboard."
 }

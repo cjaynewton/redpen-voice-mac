@@ -25,15 +25,21 @@ final class HUD {
     /// The newest words written while you talk, shown beside the line.
     private var captionText = ""
     private var typingStopped = false
+    /// The bar is saying that typing into the box stopped (D-972).
+    var isTypingStopped: Bool { typingStopped }
     /// Captured on key-down. Layout, captions, writing and completion messages keep this screen.
     private var dictationScreen: NSScreen?
+    /// The text box you started in, in AppKit coordinates, so the bar never sits on top of it (D-972).
+    private var startBox: CGRect?
     private let addWord = NSButton(title: "Add", target: nil, action: nil)
     private let notNow = NSButton(title: "Not now", target: nil, action: nil)
     private var wordAction: ((Bool) -> Void)?
 
     func captureScreen(textBox: CGRect?) {
         let screens = NSScreen.screens
+        startBox = nil
         guard let primary = screens.first else { dictationScreen = nil; return }
+        startBox = textBox.map { BarScreen.fromAccessibility($0, primaryTop: primary.frame.maxY) }
         var windowFrame: CGRect?
         if let app = NSWorkspace.shared.frontmostApplication {
             var window: CFTypeRef?
@@ -116,25 +122,28 @@ final class HUD {
         if level { startTicking() }
     }
 
-    /// After the key comes up: the bar stays, quietly moving, until the words land or a message replaces it.
-    func writing() {
-        guard !typingStopped else { return }
+    /// After the key comes up: the bar stays, quietly moving, until the words land or a message replaces it. `note`
+    /// shows beside "Writing": your newest words when they were on the bar, or that all of them go in now when typing
+    /// had stopped. Since D-972 it shows after a stop too; it used to leave the stop message standing still.
+    func writing(_ note: String = "") {
         guard style != "classic", panel.isVisible else { hide(); return }
+        meter.flat = false
         meter.writing = true
         meter.silent = false
-        label.isHidden = true
+        label.stringValue = note
+        label.isHidden = note.isEmpty
         timer.stringValue = "Writing"
-        layout(text: "", level: true)
+        layout(text: note, level: true)
         place()
         if tick == nil { startTicking() }
     }
 
     func level(_ v: Float) { meter.push(v) }
 
-    /// Shows the end of what has been written so far while you are still talking.
+    /// Shows the end of what has been written so far while you are still talking: the newest words that fit.
     func caption(_ text: String) {
         guard !typingStopped else { return }
-        captionText = text.count > 46 ? "…" + text.suffix(45) : text
+        captionText = TalkingWords.tail(text)
         guard panel.isVisible, !meter.writing, !meter.silent else { return }
         label.stringValue = captionText
         label.isHidden = captionText.isEmpty
@@ -142,18 +151,34 @@ final class HUD {
         place()
     }
 
-    /// Captions normally update an existing bar. Stopped live typing must also restore a hidden bar.
+    /// Captions normally update an existing bar. Words on the bar (D-972) also bring back a hidden one.
     func listeningCaption(_ text: String) {
         guard !typingStopped else { return }
-        if !panel.isVisible || meter.writing || meter.flat { show("", level: true) }
+        listen()
         caption(text)
     }
 
-    /// Keep a clear, fixed message until completion. Later engine callbacks must not look like live typing.
-    func stoppedTyping() {
-        guard !typingStopped else { return }
-        show(DraftSafety.stoppedMessage, level: false)
+    /// Typing into the box stopped while you still talk (D-972). The bar keeps listening, the line moving and the
+    /// time running, and says why, the words so far and that they all go in at the end. It was a flat, fixed message
+    /// that looked stuck for as long as you kept talking (12 of 37 draft dictations of 20 s or more, then 1 to 73 s
+    /// more talking, Oct 29 to 31 log).
+    /// Called again, only the line changes; captions can't replace it, so nothing looks like typing in the box.
+    func stoppedTyping(_ line: String) {
+        if !typingStopped { listen() }
         typingStopped = true
+        captionText = line
+        guard panel.isVisible, !meter.writing, !meter.silent else { return }
+        label.stringValue = line
+        label.isHidden = false
+        layout(text: line, level: true)
+        place()
+    }
+
+    /// The listening bar, as it is when already showing (its time keeps running), or brought back over a hidden bar,
+    /// a message or an older dictation's Writing.
+    private func listen() {
+        guard !panel.isVisible || meter.flat || meter.writing || tick == nil else { return }
+        show("", level: true)
     }
 
     /// Saves the bar as it looks now, at 2x, for checking its shape without a screen recording (--hud-snapshot).
@@ -263,18 +288,19 @@ final class HUD {
             x += msgWidth
         }
         var width = x + (classic ? 14 : 16)
-        if classic { width = text.isEmpty ? 160 : 240 }
+        // A longer line (D-972: words on the bar, a stop that says why) widens it rather than running off the end.
+        if classic { width = text.isEmpty ? 160 : max(240, width) }
         panel.setContentSize(NSSize(width: width, height: height))
         // Square-ish corners in every style and state, never a pill (D-813).
         box.layer?.cornerRadius = 3
     }
 
-    // Above where chat apps put their typing box, at the same offset on the screen captured on key-down.
+    // Above where chat apps put their typing box, at the same offset on the screen captured on key-down, and off the
+    // box you started in when it is there (D-972).
     private func place() {
         let mouse = NSEvent.mouseLocation
         if let s = dictationScreen ?? NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) }) ?? NSScreen.main {
-            let f = s.visibleFrame
-            panel.setFrameOrigin(NSPoint(x: f.midX - panel.frame.width / 2, y: f.minY + 120))
+            panel.setFrameOrigin(BarScreen.origin(visible: s.visibleFrame, size: panel.frame.size, avoiding: startBox))
         }
     }
 

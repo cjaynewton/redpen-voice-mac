@@ -255,7 +255,10 @@ struct SettingsView: View {
                     Toggle("", isOn: Binding(get: { model.config.riskMarks ?? false }, set: { model.config.riskMarks = $0 }))
                         .labelsHidden().toggleStyle(.switch).tint(Ink.red)
                 }
-                row("Quick draft while Whisper works", "A rough draft types into the box as you talk; a moment later Whisper fixes any words it heard differently. It stops fixing the moment you click or type.") {
+                // The draft goes where your words go while you talk (D-972).
+                row("Quick draft while Whisper works", model.config.whileTalking == .bar
+                    ? "A rough draft shows on the bar as you talk; a moment later Whisper fixes any words it heard differently, and the checked text goes in when you finish."
+                    : "A rough draft types into the box as you talk; a moment later Whisper fixes any words it heard differently. It stops fixing the moment you click or type.") {
                     Toggle("", isOn: Binding(get: { model.config.draftMode ?? false }, set: { model.config.draftMode = $0 }))
                         .labelsHidden().toggleStyle(.switch).tint(Ink.red)
                 }.padding(.bottom, 10)
@@ -402,10 +405,7 @@ struct SettingsView: View {
             Divider().overlay(Ink.line)
             row("Pause music and video while I talk") { Toggle("", isOn: $model.config.pauseMedia).labelsHidden().toggleStyle(.switch).tint(Ink.red) }
             Divider().overlay(Ink.line)
-            row("Words appear as I talk", "Instant: shown in the bar. Most accurate: typed into the box as you go when you're in one, otherwise shown in the bar.") {
-                Toggle("", isOn: Binding(get: { model.config.liveWords ?? true }, set: { model.config.liveWords = $0 }))
-                    .labelsHidden().toggleStyle(.switch).tint(Ink.red)
-            }
+            whileTalking
             Divider().overlay(Ink.line)
             row("Play again when I stop talking", "Off: your video stays paused until you press play, so nothing starts by itself.") {
                 Toggle("", isOn: Binding(get: { model.config.resumeMedia ?? true }, set: { model.config.resumeMedia = $0 }))
@@ -428,6 +428,28 @@ struct SettingsView: View {
             }
             Divider().overlay(Ink.line)
             row("Click at start and stop") { Toggle("", isOn: $model.config.sounds).labelsHidden().toggleStyle(.switch).tint(Ink.red) }
+        }
+    }
+
+    /// While you talk (D-972): one choice in place of the old "Words appear as I talk" switch. The quick draft under
+    /// Whisper follows it. Instant shows its words on the bar either way; it can't type as you talk.
+    private var whileTalking: some View {
+        let choice = model.config.whileTalking
+        return VStack(alignment: .leading, spacing: 0) {
+            Text("While I talk").font(.system(size: 14)).foregroundStyle(Ink.text).padding(.top, 11)
+            engineRow(on: choice == .box, dashed: false, action: { model.config.wordsWhileTalking = TalkingWords.box.rawValue }) {
+                Text("Type into the box as I talk").font(.system(size: 14)).foregroundStyle(Ink.text)
+                note("Words go into the text box as you say them. If you type, click or leave the box, typing stops, the bar says so, and the rest goes in when you finish.")
+            }
+            engineRow(on: choice == .bar, dashed: false, action: { model.config.wordsWhileTalking = TalkingWords.bar.rawValue }) {
+                Text("Show words on the bar, put them in once at the end").font(.system(size: 14)).foregroundStyle(Ink.text)
+                note("Nothing is typed while you talk. When you finish, the whole checked text goes into the box you're in, or into the next box you click.")
+            }
+            // Only Whisper types as you talk; the other engines do the same thing either way.
+            if !model.usesWhisper {
+                note(model.usesInstant ? "Instant shows your words on the bar either way." : "Mac built-in puts your words in when you finish either way.")
+                    .padding(.bottom, 10)
+            }
         }
     }
 

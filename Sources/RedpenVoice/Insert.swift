@@ -102,11 +102,14 @@ enum Insert {
         let safe: () -> Bool = {
             still() && focusedElement().map { CFEqual($0.0, element) } == true
         }
-        guard backspace(count, while: safe) == count,
-              replacement.isEmpty || type(replacement, while: safe),
-              confirm(edit.expected, in: element, while: safe) else {
+        let deleted = backspace(count, while: safe)
+        let retyped = deleted == count && (replacement.isEmpty || type(replacement, while: safe))
+        guard retyped, confirm(edit.expected, in: element, while: safe) else {
             forgetLast()
-            Log.note("draft: replacement not confirmed; checked words kept for Paste last")
+            // Which step failed, in counts only (D-972): the 124 s dictation at 03:54 Oct 31 couldn't be told apart.
+            let now: String = Insert.value(element).map { String($0.utf16.count) } ?? "unreadable"
+            let want = edit.expected.utf16.count
+            Log.note("draft: replacement not confirmed (deleted \(deleted) of \(count), retyped \(retyped), box \(now) of \(want) expected); checked words kept for Paste last")
             return false
         }
         lastEdit = (element, edit.before, edit.range, replacement)

@@ -32,9 +32,13 @@ struct Config: Codable {
     /// Press play again when you stop talking. Off means pause only: a video never starts by itself, and you press
     /// play when you want it. Older config files lack it, so it is optional and on when missing.
     var resumeMedia: Bool?
-    /// Words appear as you talk (Whisper): typed into the box when talking hands-free, shown in the bar while you
-    /// hold the key. On when missing.
+    /// The old "Words appear as I talk" switch. Since D-972 (Oct 31 2026) `wordsWhileTalking` decides; this is read
+    /// only to keep an older file's choice, and Voice never changes it.
     var liveWords: Bool?
+    /// While you talk (D-972): "box" types your words into the text box as you go, "bar" shows them on the bar and
+    /// puts the whole checked text in once when you finish. Older files lack it; `whileTalking` keeps what they did.
+    var wordsWhileTalking: String?
+    var whileTalking: TalkingWords { TalkingWords.choice(saved: wordsWhileTalking, liveWords: liveWords, draftMode: draftMode) }
     /// Names from the list and near the cursor given to Whisper as spelling hints. Off when missing: each hint word
     /// costs time before Whisper starts (about 3 s for a 355-character list on an M1 Max).
     var screenHints: Bool?

@@ -855,12 +855,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The engine is listening before the pre-roll arrives, so nothing waits in a queue.
         s.start(module: module, vocabulary: names.vocabulary)
         // Whisper writes each stretch at a pause while you talk, so only the last few seconds are left at the end.
-        livePieces = 0; liveTyped = 0; liveShown = ""; liveStopped = false; liveLeftover = ""; liveText = ""
+        livePieces = 0; liveTyped = 0; liveShown = ""; liveStopped = false; liveLeftover = ""; liveText = ""; liveStop = nil
+        // Words on the bar, nothing typed until the end (D-972), decided once per dictation.
+        onBar = config.whileTalking == .bar; barWords = BarWords(); barText = ""
         // A dictation still finishing keeps its drafts as typed: the new one's words come after them.
         interruptedDrafting = finishingDrafting.map { ($0, $0.checksStopped, $0.draftsStopped) }
         finishingDrafting?.checksStopped = true; finishingDrafting?.draftsStopped = true
         drafting = nil
-        if config.engine == "whisper", s.drafter != nil, config.mode != "rewrite" {
+        if config.engine == "whisper", s.drafter != nil, onBar {
+            // Words on the bar with the quick draft: the drafts show there as you talk and Whisper's checks take their
+            // place. Nothing is typed, so nothing can stop partway; the whole checked text goes in once at the end.
+            s.onDraft = { [weak self, weak s] i, t in DispatchQueue.main.async { if let s { self?.barDraft(i, t, from: s) } } }
+            s.onCheck = { [weak self, weak s] r, t in DispatchQueue.main.async { if let s { self?.barCheck(r, t, from: s) } } }
+            s.streamDrafts()
+            s.stream(Chunker(pauseSeconds: talk.pauseSeconds))
+        } else if config.engine == "whisper", s.drafter != nil, config.mode != "rewrite" {
             drafting = Drafting(owner: s, startBox: startBox, keys: keys)
             s.onDraft = { [weak self, weak s] i, t in DispatchQueue.main.async { if let s { self?.draft(i, t, from: s) } } }
             s.onCheck = { [weak self, weak s] r, t in DispatchQueue.main.async { if let s { self?.check(r, t, from: s) } } }
@@ -874,11 +883,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             s.onPiece = { [weak self, weak s] piece in DispatchQueue.main.async { if let s { self?.piece(piece, from: s) } } }
             s.stream(Chunker(pauseSeconds: talk.pauseSeconds))
         } else if config.engine == "live" {
-            // Instant (D-816): its words show in the bar as you talk; the box gets the text once, at the end.
+            // Instant (D-816): its words show in the bar as you talk; the box gets the text once, at the end, in
+            // either choice (D-972). Words on the bar also bring the bar back when the level bar is off.
             s.onPartial = { [weak self, weak s] text in
                 DispatchQueue.main.async {
-                    guard let self, let s, self.session === s, self.config.liveWords ?? true, !text.isEmpty else { return }
-                    self.hud.caption(self.names.apply(text))
+                    guard let self, let s, self.session === s, !text.isEmpty else { return }
+                    if self.onBar { self.showBarWords(self.names.apply(text)) } else { self.hud.caption(self.names.apply(text)) }
                 }
             }
         }
@@ -971,20 +981,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var liveLeftover = ""
     /// Exactly what live typing put into the box you started in, so it can come back out if you move away (D-965).
     private var liveText = ""
+    /// Why live typing stopped, for the bar (D-972).
+    private var liveStop: TalkingWords.Stop?
+    /// This dictation shows its words on the bar and types nothing until the end (D-972), and what the bar shows.
+    private var onBar = false
+    private var barWords = BarWords()
+    private var barText = ""
 
-    /// A stretch Whisper finished while you are still talking. Hands-free, it is typed into the box now (in order,
-    /// only into a text box, never in rewrite mode, which needs the whole dictation). Holding the key, Fn or Option
-    /// is down and would turn typed letters into shortcuts, so it is shown in the bar and goes in when you let go.
+    /// Words on the bar while you talk (D-972): the newest that fit, bringing the bar back even when the level bar is
+    /// off, since the words have nowhere else to show.
+    private func showBarWords(_ text: String) {
+        guard !text.isEmpty else { return }
+        barText = text
+        if config.levelLook == "off" { hud.style = "pen"; hud.micName = recorder.inputName }
+        hud.listeningCaption(text)
+    }
+
+    /// A draft or a check, words on the bar: shown, never typed.
+    private func barDraft(_ i: Int, _ text: String, from s: Transcriber.Session) {
+        guard session === s else { return }
+        barWords.draft(i, clean(text)); showBarWords(barWords.text)
+    }
+    private func barCheck(_ range: Range<Int>, _ text: String, from s: Transcriber.Session) {
+        guard session === s else { return }
+        barWords.check(range, clean(text)); showBarWords(barWords.text)
+    }
+
+    private var talkKeyName: String { keys.ownerName ?? keys.keys.first?.name ?? "the key" }
+
+    /// A stretch Whisper finished while you are still talking. Typed into the box now, holding the key or
+    /// hands-free (in order, only into a text box, never in rewrite mode, which needs the whole dictation), or shown
+    /// on the bar when the words go in at the end (D-972).
     private func piece(_ text: String, from s: Transcriber.Session) {
         guard session === s else { return }
         livePieces += 1
         liveShown += (liveShown.isEmpty ? "" : " ") + text
-        guard config.liveWords ?? true else { return }
+        guard !onBar else { showBarWords(clean(liveShown)); return }
         // Typed as you talk, holding the key or hands-free, but only into a text box (D-763). Holding the key needs a
         // box Accessibility names as text; hands-free also takes a box it can't name (Electron apps), as at release.
         let focus = config.mode == "rewrite" ? (kind: FocusKind.notText, role: "") : Insert.focus()
         // Moved away from the box you started in: live typing stops; the whole dictation goes where you are at the end.
-        if let b = startBox, !liveStopped, !isAt(b) { liveStopped = true; Log.note("live: you moved away from the box, live typing stopped") }
+        if let b = startBox, !liveStopped, !isAt(b) {
+            liveStopped = true; liveStop = .leftBox; Log.note("live: you moved away from the box, live typing stopped")
+        }
         let canType = keys.handsFree ? focus.kind != .notText : focus.kind == .text
         if canType, !liveStopped, liveTyped == livePieces - 1, waitingText == nil {
             let out = config.mode == "noUms" ? Fillers.strip(names.apply(text)) : names.apply(text)
@@ -993,17 +1032,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let typed = Insert.text(out, joining: delivery)
             if let b = startBox, let e = Insert.lastEdit, CFEqual(e.element, b.element) { liveText += e.replacement }
             rememberOwnTyping(in: startBox)
-            if typed { liveTyped += 1; Log.note("live: piece \(livePieces) typed, \(keys.handsFree ? "hands-free" : "holding the key")") }
-            else if Insert.typedSome {
+            if typed {
+                liveTyped += 1; Log.note("live: piece \(livePieces) typed, \(keys.handsFree ? "hands-free" : "holding the key")")
+                // The count moves as words go in, so a long dictation shows it is still going (D-972).
+                hud.caption(TalkingWords.typingLine(words: TalkingWords.words(liveShown), handsFree: keys.handsFree, key: talkKeyName))
+                return
+            } else if Insert.typedSome {
                 // Part of it went in before the box changed: keep exactly what didn't, for the end, never retype the rest.
                 let typed = Insert.typedCount - (Insert.typedPadding)
                 let ns = out as NSString
                 liveLeftover = typed < ns.length ? ns.substring(from: max(0, typed)) : ""
                 liveTyped += 1; liveStopped = true; Log.note("live: piece \(livePieces) typed in part, live typing stopped")
             } else { liveStopped = true; Log.note("live: piece \(livePieces) not typed, the rest goes in at the end") }
-        } else {
-            hud.caption(liveShown)
         }
+        // Stopped: the bar says so, keeps counting and says the rest goes in at the end (D-972). Never typed (not in a
+        // text box): the words show on the bar, as before.
+        if liveStopped { hud.stoppedTyping(TalkingWords.stoppedLine(liveStop, words: TalkingWords.words(liveShown))) }
+        else { hud.caption(liveShown) }
     }
 
     /// Name-like words near the cursor: the box you're in and the window's title. Read once, kept nowhere.
@@ -1037,8 +1082,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settleWork?.cancel()
         hud.style = config.levelLook == "off" ? "pen" : config.levelLook; hud.micName = recorder.inputName
         hud.show("", level: true)
-        hud.caption("Hands-free · tap \(keys.ownerName ?? keys.keys.first?.name ?? "the key") to stop")
-        if drafting?.draftsStopped == true { hud.stoppedTyping() }
+        hud.caption("Hands-free · tap \(talkKeyName) to stop")
+        if let d = drafting, d.draftsStopped { hud.stoppedTyping(TalkingWords.stoppedLine(d.stopWhy, words: d.heard)) }
+        else if liveStopped { hud.stoppedTyping(TalkingWords.stoppedLine(liveStop, words: TalkingWords.words(liveShown))) }
+        else if onBar, !barText.isEmpty { hud.caption(barText) }
         wasHandsFree = true
     }
     private var wasHandsFree = false
@@ -1059,6 +1106,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var nextDraft = 0
         var box: (pid: pid_t, element: AXUIElement)?
         var draftsStopped = false, checksStopped = false
+        /// Words heard in drafts so far, typed or not, and why drafts stopped: for the bar (D-972).
+        var heard = 0
+        var stopWhy: TalkingWords.Stop?
         var deliveryUncertain = false
         var firstLag: Double?
         var checks = 0, changed = 0, words = 0
@@ -1077,15 +1127,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return config.mode == "noUms" ? Fillers.strip(n) : n
     }
 
+    /// Drafts stop for good in this dictation. The bar says why and keeps counting the words still to go in (D-972).
     private func stopDrafts(_ d: Drafting) {
         d.draftsStopped = true
         // Late callbacks from an older dictation must never replace a newer one's bar.
         guard session === d.owner else { return }
-        hud.stoppedTyping()
+        hud.stoppedTyping(TalkingWords.stoppedLine(d.stopWhy, words: d.heard))
     }
 
     @discardableResult
     private func draftBlocked(_ d: Drafting, _ reason: DraftSafety.Failure, during path: String) -> Bool {
+        // The first reason is the one the bar gives.
+        if d.stopWhy == nil { d.stopWhy = TalkingWords.Stop(reason) }
         if d.reportedFailures.insert(reason).inserted {
             var detail = ""
             if reason == .hardwareKey, let sample = d.hardwareSample {
@@ -1150,12 +1203,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               i == d.nextDraft else { return }
         d.nextDraft = i + 1
         let out = clean(text)
-        if d.draftsStopped { return }
+        d.heard += TalkingWords.words(out)
+        // Stopped: only the count on the bar moves, so you can see it is still listening (D-972).
+        if d.draftsStopped {
+            if session === d.owner { hud.stoppedTyping(TalkingWords.stoppedLine(d.stopWhy, words: d.heard)) }
+            return
+        }
         if out.trimmingCharacters(in: .whitespaces).isEmpty { d.runs.append(.init(drafts: i..<i + 1, text: "", checked: false)); return }
         if d.box == nil {
             // The first words fix where this dictation goes: a text box with a plain cursor (no selected words, which
             // typing would replace), or nowhere until you let go.
             guard Insert.focus().kind == .text, let (el, pid) = Insert.focusedElement(), Insert.selectionLength(el) == 0 else {
+                if d.stopWhy == nil { d.stopWhy = .noBox }
                 draftBlocked(d, .boxCheck, during: "first draft")
                 stopDrafts(d); return
             }
@@ -1167,6 +1226,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if typed {
             d.runs.append(.init(drafts: i..<i + 1, text: String(repeating: " ", count: Insert.typedPadding) + out, checked: false))
             if d.firstLag == nil { d.firstLag = Date().timeIntervalSince(s.timeOf(s.speechOnset)) }
+            if session === d.owner { hud.caption(TalkingWords.typingLine(words: d.heard, handsFree: keys.handsFree, key: talkKeyName)) }
         } else {
             d.deliveryUncertain = Insert.typedSome || Insert.unconfirmed
             if d.deliveryUncertain { d.checksStopped = true }  // the box no longer matches the record
@@ -1507,7 +1567,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         session = nil
         let seconds = Date().timeIntervalSince(startedAt)
         settleWork?.cancel()
-        hud.writing()
+        // Writing, until the words are in (D-972): beside it, all your words go in now when typing had stopped, or
+        // your newest words when they were on the bar.
+        hud.writing(hud.isTypingStopped ? TalkingWords.writingAfterStop : onBar ? TalkingWords.tail(barText) : "")
         if config.sounds { NSSound(named: "Tink")?.play() }
         let app = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
         let owner = press

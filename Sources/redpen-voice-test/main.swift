@@ -894,6 +894,78 @@ do {
           && DictationEnding.waitTakes(kind: fk("AXTextField", web: true), seenInARow: 1))
 }
 
+// While you talk (D-972): typed into the box, or on the bar and in once at the end. No windows, keys or AX edits:
+// the choice, the bar's words and lines, and where the bar sits.
+do {
+    // Older config files keep what they did. His own (Oct 31): draftMode true, liveWords missing.
+    check("talking.hisConfigTypesIntoBox", TalkingWords.choice(saved: nil, liveWords: nil, draftMode: true) == .box)
+    check("talking.missingIsBox", TalkingWords.choice(saved: nil, liveWords: nil, draftMode: nil) == .box)
+    check("talking.liveWordsOnIsBox", TalkingWords.choice(saved: nil, liveWords: true, draftMode: false) == .box)
+    check("talking.liveWordsOffIsBar", TalkingWords.choice(saved: nil, liveWords: false, draftMode: nil) == .bar)
+    check("talking.draftsTypedEvenWithLiveWordsOff", TalkingWords.choice(saved: nil, liveWords: false, draftMode: true) == .box)
+    check("talking.savedBarWins", TalkingWords.choice(saved: "bar", liveWords: true, draftMode: true) == .bar)
+    check("talking.savedBoxWins", TalkingWords.choice(saved: "box", liveWords: false, draftMode: false) == .box)
+    check("talking.unknownSavedFallsBack", TalkingWords.choice(saved: "sideways", liveWords: false, draftMode: nil) == .bar)
+
+    // The newest words that fit, from a whole word, one line.
+    check("talking.tailShortUnchanged", TalkingWords.tail("so the plan is") == "so the plan is")
+    let long = "so the plan for today is to finish the voice app and then write the essay about the shelf before lunch"
+    let t = TalkingWords.tail(long)
+    check("talking.tailFits", t.count <= 56, "\(t.count)")
+    check("talking.tailShowsNewest", t.hasPrefix("…") && t.hasSuffix("about the shelf before lunch"), t)
+    let firstWord = t.dropFirst().split(separator: " ").first.map(String.init) ?? ""
+    check("talking.tailStartsAtWholeWord", long.split(separator: " ").map(String.init).contains(firstWord), firstWord)
+    check("talking.tailOneLine", !TalkingWords.tail(long.replacingOccurrences(of: " the ", with: "\nthe ")).contains("\n"))
+    check("talking.tailAtSpaceKeepsWord", TalkingWords.tail("aaaa bbbb cccc", limit: 10) == "…bbbb cccc")
+    check("talking.tailOneLongWord", TalkingWords.tail(String(repeating: "x", count: 80), limit: 10) == "…" + String(repeating: "x", count: 9))
+    check("talking.words", TalkingWords.words("  one two\nthree  ") == 3 && TalkingWords.words("") == 0)
+
+    // Why typing stopped, in plain words, and what happens next. Never the clipboard since D-965.
+    check("talking.stopKey", TalkingWords.Stop(.hardwareKey) == .typed)
+    check("talking.stopClick", TalkingWords.Stop(.hardwareClick) == .clicked)
+    check("talking.stopLeftApp", TalkingWords.Stop(.appChanged) == .leftBox && TalkingWords.Stop(.elementChanged) == .leftBox)
+    check("talking.stopBoxChanged", TalkingWords.Stop(.boxCheck) == .boxChanged)
+    check("talking.stopUnchecked", TalkingWords.Stop(.editUnconfirmed) == .unchecked && TalkingWords.Stop(.deliveryUncertain) == .unchecked)
+    let stopped = TalkingWords.stoppedLine(.clicked, words: 120)
+    check("talking.stoppedLine", stopped == "Typing stopped (you clicked). 120 words so far, all go in at the end.", stopped)
+    check("talking.stoppedOneWord", TalkingWords.stoppedLine(nil, words: 1) == "Typing stopped. 1 word so far, all go in at the end.")
+    check("talking.stoppedNoWordsYet", TalkingWords.stoppedLine(.noBox, words: 0) == "Typing stopped (not in a text box). Your words go in at the end.")
+    check("talking.stoppedCountMoves", TalkingWords.stoppedLine(.typed, words: 57) != TalkingWords.stoppedLine(.typed, words: 58))
+    check("talking.typingHandsFree", TalkingWords.typingLine(words: 57, handsFree: true, key: "Fn") == "Hands-free · 57 words · tap Fn to stop")
+    check("talking.typingHeld", TalkingWords.typingLine(words: 1, handsFree: false, key: "Fn") == "1 word")
+    let lines = [stopped, TalkingWords.writingAfterStop, TalkingWords.stoppedLine(.unchecked, words: 3), TalkingWords.stoppedLine(.leftBox, words: 0)]
+        + [TalkingWords.Stop.typed, .clicked, .typedOrClicked, .leftBox, .boxChanged, .noBox, .unchecked].map(\.phrase)
+    check("talking.plainLines", lines.allSatisfy { !$0.contains("\u{2014}") && !$0.contains(":") && !$0.lowercased().contains("clipboard") })
+
+    // The bar's words: drafts in order, Whisper's check takes their place.
+    var bar = BarWords()
+    bar.draft(0, "so the plan"); bar.draft(1, " is to fix "); bar.draft(2, "the bar")
+    check("talking.barDrafts", bar.text == "so the plan is to fix the bar" && bar.words == 8, bar.text)
+    bar.check(0..<2, "So the plan is to fix")
+    check("talking.barCheckReplaces", bar.text == "So the plan is to fix the bar", bar.text)
+    bar.draft(4, "later")
+    check("talking.barGapStaysEmpty", bar.text == "So the plan is to fix the bar later", bar.text)
+    bar.check(2..<5, "")
+    check("talking.barEmptyCheckRemoves", bar.text == "So the plan is to fix", bar.text)
+    bar.check(-1..<1, "never")
+    check("talking.barBadRangeIgnored", bar.text == "So the plan is to fix")
+
+    // The bar never sits on the box you started in (AppKit coordinates, 40 high, 120 up from the bottom as before).
+    let screen = CGRect(x: 0, y: 0, width: 1512, height: 944), size = CGSize(width: 400, height: 40)
+    check("bar.usualPlace", BarScreen.origin(visible: screen, size: size, avoiding: nil) == CGPoint(x: 556, y: 120))
+    check("bar.boxElsewhereUsual", BarScreen.origin(visible: screen, size: size, avoiding: CGRect(x: 300, y: 600, width: 800, height: 60)) == CGPoint(x: 556, y: 120))
+    // A chat composer low on the screen (T3, ChatGPT): the bar goes just above it.
+    check("bar.aboveComposer", BarScreen.origin(visible: screen, size: size, avoiding: CGRect(x: 300, y: 80, width: 900, height: 90)) == CGPoint(x: 556, y: 182))
+    // A box reaching the top: just below it instead.
+    check("bar.belowTallBox", BarScreen.origin(visible: screen, size: size, avoiding: CGRect(x: 300, y: 150, width: 900, height: 780)) == CGPoint(x: 556, y: 98))
+    // A box filling the screen (a document): nowhere is clear, so the usual place.
+    check("bar.fullScreenBoxUsual", BarScreen.origin(visible: screen, size: size, avoiding: CGRect(x: 0, y: 0, width: 1512, height: 944)) == CGPoint(x: 556, y: 120))
+    // A second screen's visible frame and a box on it.
+    let right = CGRect(x: 1512, y: -200, width: 1920, height: 1055)
+    check("bar.otherScreenAbove", BarScreen.origin(visible: right, size: size, avoiding: CGRect(x: 1700, y: -150, width: 1400, height: 120)) == CGPoint(x: 2272, y: -18))
+    check("bar.emptyBoxIgnored", BarScreen.origin(visible: screen, size: size, avoiding: .zero) == CGPoint(x: 556, y: 120))
+}
+
 check("box.noURLChangedConversationTitle", BoxMatch.failure(start: BoxPrint(role: "AXTextArea", identifier: "composer", frame: f0, text: "Same text", title: "Chat A"), now: BoxPrint(role: "AXTextArea", identifier: "composer", frame: f0, text: nil, title: "Chat B"), nowText: "Same text", sameElement: true) == .title)
 
 // The video's words come off the start; yours stay (D-817).

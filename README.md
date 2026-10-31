@@ -45,7 +45,7 @@ Tap the talk key twice to start hands-free. Tap once to stop. Extra taps just af
 ## What it does
 
 - **Any key you like.** Fn, right Option, or a key you pick in Settings.
-- **Words appear as you talk.** With Instant, your words show in the bar while you talk and go into the box right after you let go. With Whisper, each stretch is written at your next pause, so a one-minute dictation lands about 2 seconds after you stop; in a text box the words are typed as you go.
+- **Words appear as you talk, two ways.** Pick one in Settings under While I talk. **Type into the box as I talk** (the default) types Whisper's words into the text box as you go. If you type, click or leave the box, typing stops; the bar says why, keeps counting your words, and the rest goes in when you finish. **Show words on the bar, put them in once at the end** types nothing while you talk: your newest words show on the bar, and the whole checked text goes in once when you finish, into the box you're in or the next one you click. With Instant, your words show in the bar either way and go into the box right after you let go. With Whisper, each stretch is written at your next pause, so a one-minute dictation lands about 2 seconds after you stop. After you stop, the bar says Writing until the words are in.
 - **Your words, as said.** By default nothing is rewritten. Two switches change that:
   - **Take out ums and uhs** removes only the sounds. Every word stays.
   - **Tidy it up** also takes out repeats and false starts and fixes punctuation, using Apple's on-device model. It can change a word now and then.
