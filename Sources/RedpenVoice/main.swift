@@ -1566,6 +1566,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // back out of the box you started in, once the words are in or waiting.
             var whole = false
             var takeBack: (() -> Void)?
+            // The box you started in, when this dictation typed words into it and the whole dictation now goes elsewhere.
+            var typedBox: StartBox?
             // Fast draft, Whisper checks: the drafts are already in the box; Whisper's ending replaces them there, or
             // the whole checked dictation goes where you are.
             let draftHandled = myDrafting.map { $0.typedAny || $0.deliveryUncertain } ?? false
@@ -1575,6 +1577,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case .kept: break
                 case .deliver(let back):
                     whole = true; rest = text
+                    if d.typedAny { typedBox = d.startBox }
                     if back, let b = d.box, let start = d.startBox {
                         let typed = d.runs.map(\.text).joined()
                         takeBack = { self.takeBackTyped(typed, from: b.element, start: start) }
@@ -1590,7 +1593,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if newer { movedAwayNewer = true }
                 else {
                     let plan = DictationEnding.plan(typedInStartBox: !typedText.isEmpty, startBoxAsLeft: self.unchanged(b), inStartBox: false)
-                    whole = true; rest = text
+                    whole = true; rest = text; typedBox = b
                     if plan == .takeBackThenDeliver { takeBack = { self.takeBackTyped(typedText, from: b.element, start: b) } }
                     Log.note("insert: away from the box you started in or it changed, the whole dictation goes where you are")
                 }
@@ -1620,6 +1623,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 } else if movedAwayNewer {
                     Log.note("insert: away from the box you started in and a new press began, kept for paste")
+                } else if let b = typedBox, NSWorkspace.shared.frontmostApplication?.processIdentifier == b.pid,
+                          let (now, _) = Insert.focusedElement(), CFEqual(now, b.element), !DictationEnding.sentBoxTakesWhole(Insert.value(now)) {
+                    // Still in the box you started in, and you edited it: Voice's words are still there, so the whole
+                    // dictation would repeat them. Only a sent (emptied) box takes it. Paste last has the checked text.
+                    if !newer { self.hud.flash("That box changed. Press ⌃⌥V to paste the checked text", for: 3) }
+                    Log.note("insert: the box you started in was edited and still has the typed words, kept for paste")
                 } else if !DictationEnding.typesNow(kind: focus.kind, ownWindow: Insert.ownWindowInFront) {
                     if newer { Log.note("insert: cursor not in a text box (\(focus.role)) and a new press began, kept for paste") }
                     else if !rest.isEmpty {

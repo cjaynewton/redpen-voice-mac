@@ -829,6 +829,11 @@ do {
     check("ending.movedAwayAsLeft", DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: true, inStartBox: false) == P.takeBackThenDeliver)
     check("ending.movedAwayEdited", DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: false, inStartBox: false) == P.deliver)
     check("ending.stillThereEditedOrSent", DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: false, inStartBox: true) == P.deliver)
+    check("ending.sentBoxEmpty", DictationEnding.sentBoxTakesWhole(""))
+    check("ending.sentBoxStrayCharacter", DictationEnding.sentBoxTakesWhole("\n"))
+    check("ending.sentBoxOneLetter", DictationEnding.sentBoxTakesWhole(" x "))
+    check("ending.editedBoxRefuses", !DictationEnding.sentBoxTakesWhole("so the plan is to"))
+    check("ending.unreadableBoxRefuses", !DictationEnding.sentBoxTakesWhole(nil))
     for asLeft in [true, false] {
         for here in [true, false] {
             check("ending.nothingTypedGoesWhereYouAre.\(asLeft).\(here)", DictationEnding.plan(typedInStartBox: false, startBoxAsLeft: asLeft, inStartBox: here) == P.deliver)

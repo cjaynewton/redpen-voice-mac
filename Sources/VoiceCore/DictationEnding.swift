@@ -25,6 +25,14 @@ public enum DictationEnding {
         return inStartBox ? .inPlace : .takeBackThenDeliver
     }
 
+    /// Back in, or still in, the box this dictation typed into after it changed: only a sent box (empty, or the one
+    /// stray character some apps leave) takes the whole dictation. An edited box still holds Voice's words, so typing
+    /// the whole dictation there would repeat them.
+    public static func sentBoxTakesWhole(_ value: String?) -> Bool {
+        guard let value else { return false }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines).count <= 1
+    }
+
     /// Words waiting for a click wait this long. A new dictation ends the wait sooner; Paste last keeps them.
     public static let waitSeconds: TimeInterval = 600
 
