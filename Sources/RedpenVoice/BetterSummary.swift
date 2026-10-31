@@ -103,7 +103,8 @@ enum BetterSummary {
 
     static let prompt = """
     Write meeting notes from the transcript on stdin. Each line starts with its time in brackets and a speaker. "Me" \
-    is the person taking the notes. "Others" is everyone else on the call.
+    is the person taking the notes. "Others" is everyone else on the call. "Person 2", "Person 3" (or a name in that \
+    place) are other people in the room, told apart by voice.
 
     Rules:
     - Use only what was said. Infer nothing. If you are not sure, leave it out.
@@ -113,8 +114,8 @@ enum BetterSummary {
     - A decision is something the people on the call agreed on.
     - A to-do is only a commitment or an ask: someone says they will do something ("I'll", "we'll", "I'm going to") \
     or asks someone to ("can you", "could you", "let's have Sam do"). Greetings, thanks and goodbyes are never to-dos.
-    - Owners are Me, Others, or a name said in the transcript. Never invent a name. A to-do belongs to Me only when a \
-    line marked Me says they will do it.
+    - Owners are Me, Others, a speaker as the transcript marks it (Person 2), or a name said in the transcript. Never \
+    invent a name. A to-do belongs to a speaker only when a line marked with that speaker says they will do it.
     - Leave out small talk: greetings, health, weather, thanks and goodbyes.
     - At most 10 key points, 6 decisions and 10 to-dos. Under a heading with nothing in it, write "None heard."
     - Plain words. No preamble, no closing remarks, no other headings.

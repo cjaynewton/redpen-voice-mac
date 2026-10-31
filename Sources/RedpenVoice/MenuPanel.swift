@@ -22,6 +22,8 @@ struct MenuState {
     var meetingPaused = false
     var notesStatus: String?
     var unfinished = 0
+    /// Voices in the room is on (D-1034), so the menu offers to name them.
+    var nameVoices = false
     /// A newer version found by the daily check, shown instead of a window over your work.
     var update: String?
     /// Something on this Mac that gets in the way, said plainly (the Fn key set to start Apple's dictation).
@@ -46,6 +48,7 @@ final class MenuModel: ObservableObject {
     var pauseMeeting: () -> Void = {}
     var copyNotice: () -> Void = {}
     var unfinished: () -> Void = {}
+    var nameVoices: () -> Void = {}
 }
 
 /// The panel under the menu bar icon, in the settings page's paper, ink and red pen. Only what you reach for
@@ -126,6 +129,7 @@ struct MenuPanel: View {
                 action("Start meeting notes", model.meeting)
             }
             action("Copy notice for the meeting chat", model.copyNotice)
+            if s.nameVoices, s.meetingStarted == nil { action("Name the voices…", model.nameVoices) }
             if s.unfinished > 0, s.notesStatus == nil {
                 action("Write notes for \(s.unfinished == 1 ? "an unfinished meeting" : "\(s.unfinished) unfinished meetings")…", model.unfinished)
             }

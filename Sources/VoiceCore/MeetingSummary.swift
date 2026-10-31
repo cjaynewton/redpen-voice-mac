@@ -104,11 +104,21 @@ extension Meeting {
         for line in transcript.components(separatedBy: "\n") where line.hasPrefix("[") {
             guard let close = line.firstIndex(of: "]"), let at = seconds(String(line[...close])) else { continue }
             let rest = line[line.index(after: close)...].trimmingCharacters(in: .whitespaces)
-            for who in [Speaker.me.rawValue, Speaker.others.rawValue] where rest.hasPrefix(who + ": ") {
-                out.append(Said(at: at, speaker: who, text: String(rest.dropFirst(who.count + 2))))
-            }
+            // The speaker is what comes before the first ": ": Me, Others, Person 2, or a name given to a voice.
+            guard let colon = rest.range(of: ": ") else { continue }
+            let who = String(rest[..<colon.lowerBound])
+            guard isSpeaker(who) else { continue }
+            out.append(Said(at: at, speaker: who, text: String(rest[colon.upperBound...])))
         }
         return out
+    }
+
+    /// A speaker label: one to six words starting with a letter, at most 40 characters, with no brackets, colon or
+    /// line break. The same rule decides what Name the voices accepts, so a named voice is never lost.
+    public static func isSpeaker(_ s: String) -> Bool {
+        guard let f = s.first, f.isLetter, s == s.trimmingCharacters(in: .whitespaces), s.count <= 40,
+              s.split(separator: " ").count <= 6 else { return false }
+        return s.rangeOfCharacter(from: CharacterSet(charactersIn: "[]:\n")) == nil
     }
 
     /// The transcript part of a notes file: what comes after `## Transcript`, up to the next heading.
@@ -236,7 +246,14 @@ extension Meeting {
     /// Where an item is said: the line at its time or either neighbour, else (stricter) anywhere in the meeting.
     /// Returns the index of the line that says it best, whether that meant moving the time, or nil when no line does.
     static func find(_ text: String, near at: Double?, in lines: [Said], words: [Set<String>], task: Bool) -> (index: Int, moved: Bool)? {
-        let item = content(text), nums = numbers(text)
+        // Speaker labels in the item ("Person 3 said...") are who, not what: their words and numbers aren't in the
+        // line's own text, so they don't count either way (D-1034).
+        var bare = text
+        for who in Set(lines.map(\.speaker)) {
+            bare = bare.replacingOccurrences(of: "(?<![A-Za-z0-9])" + NSRegularExpression.escapedPattern(for: who) + "(?![A-Za-z0-9])",
+                                             with: " ", options: .regularExpression)
+        }
+        let item = content(bare), nums = numbers(bare)
         guard !item.isEmpty else { return nil }
         func window(_ i: Int) -> ClosedRange<Int> { max(0, i - 1)...min(lines.count - 1, i + 1) }
         // Backed when every number is there, at least two meaning words are shared (one for a one-word item), and

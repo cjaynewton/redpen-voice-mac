@@ -144,6 +144,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { exit(await MeetingTest.writer(args)) }
             return
         }
+        // `--diarize-test audio.wav out.json [--voice my.wav]`: speakers in the room on one track (D-1034).
+        if let i = CommandLine.arguments.firstIndex(of: "--diarize-test") {
+            let args = Array(CommandLine.arguments[(i + 1)...].prefix { !$0.hasPrefix("--") })
+            Task { exit(await MeetingTest.diarize(args)) }
+            return
+        }
         // `--writer-download-test` with REDPEN_VOICE_DIR set: the writer download's small files, cancel and Remove (D-1010).
         if CommandLine.arguments.contains("--writer-download-test") {
             Task { exit(await MeetingTest.download()) }
@@ -464,6 +470,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // `command`: drawn with Better summary set to your own command. Given at init, so nothing is saved.
             var shown = config
             if CommandLine.arguments.contains("command") { shown.betterSummaryWith = "command"; shown.betterSummaryCommand = "ollama run llama3.2" }
+            // `room`: drawn with Voices in the room and Know my voice on (D-1034).
+            if CommandLine.arguments.contains("room") { shown.roomVoices = true; shown.knowMyVoice = true }
             let model = SettingsModel(config: shown, engine: engine) { _ in }
             let sample = StatsModel.sample(now: Date())
             model.statsTotal = { let s = Stats.score(sample); return (s.words, s.seconds) }
@@ -472,7 +480,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Drawn as a Mac with Claude Code and Codex signed in, for Better summary's row (D-956).
             if CommandLine.arguments.contains("ready") { model.summaryInstalled = ["claude", "chatgpt"] }
             let v = NSHostingView(rootView: SettingsView(model: model).buttonBorderShape(.roundedRectangle(radius: 4)))
-            v.frame = NSRect(x: 0, y: 0, width: 540, height: 2300)
+            v.frame = NSRect(x: 0, y: 0, width: 540, height: 2900)
             let w = NSWindow(contentRect: v.frame, styleMask: [.borderless], backing: .buffered, defer: false)
             w.contentView = v; v.layoutSubtreeIfNeeded(); v.display()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
@@ -1631,6 +1639,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let f0 = Date()
             do { raw = try await s.finish() } catch { Log.note("finish failed: \(error.localizedDescription)") }
             let engineMs = Log.ms(Date().timeIntervalSince(f0))
+            self.learnVoice(from: s)
             let t0 = Date()
             raw = self.names.apply(raw)
             var cleaned: String? = nil
@@ -1784,6 +1793,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.pauseMeeting = { [weak self] in self?.panel.close(); self?.togglePause() }
         menu.copyNotice = { [weak self] in self?.panel.close(); self?.copyNotice() }
         menu.unfinished = { [weak self] in self?.panel.close(); self?.offerUnfinishedMeetings(asked: true) }
+        menu.nameVoices = { [weak self] in self?.panel.close(); self?.nameVoices() }
         refreshMenu()
     }
 
@@ -1840,6 +1850,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.meetingStarted = meeting?.started
         m.meetingPaused = meeting?.isPaused ?? false
         m.notesStatus = notesStatus
+        m.nameVoices = config.roomVoices == true
         m.unfinished = notesWorking == nil ? MeetingNotes.unfinished(except: meeting?.folder).filter { !notesQueue.contains($0) }.count : 0
         return m
     }
@@ -2023,6 +2034,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Only over its own "Asking…": a newer meeting's offer or progress keeps the bar.
                 if self.meeting == nil, case .busy = self.meetingBar.mode { self.meetingBar.finish(text, ok: r.ok) } else { self.hud.flash(text, for: 3.5) }
             }
+        }
+    }
+
+    /// Name the voices (D-1034): the newest notes when they have voices to name, otherwise the notes the user picks.
+    private let namer = NameVoices()
+    private func nameVoices() {
+        if let f = lastNotes, namer.show(f) { return }
+        let p = NSOpenPanel()
+        p.directoryURL = config.meetingsDir
+        p.allowedContentTypes = [.init(filenameExtension: "md")!]
+        p.message = "Choose the meeting notes whose voices you want to name."
+        NSApp.activate(ignoringOtherApps: true)
+        guard p.runModal() == .OK, let f = p.url else { return }
+        if !namer.show(f) { hud.flash("These notes have no voices to name", for: 3) }
+    }
+
+    /// Know my voice (D-1034): a dictation of three seconds or more, while it's on and the voice isn't learned yet,
+    /// adds to the user's voiceprint. Away from the dictation, one at a time, never during a meeting; the audio is
+    /// only read in memory.
+    private var learningVoice = false
+    private func learnVoice(from s: Transcriber.Session) {
+        guard config.knowMyVoice == true, config.roomVoices == true, meeting == nil, !learningVoice, RoomSpeakers.modelsReady,
+              (Voiceprint.load()?.count ?? 0) < Voiceprint.enough else { return }
+        let audio = s.heard()
+        guard audio.count >= 16_000 * 3 else { return }
+        learningVoice = true
+        Task.detached(priority: .utility) { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            await Voiceprint.learn(from: audio) { [weak self] in self?.config.knowMyVoice == true && self?.config.roomVoices == true }
+            await MainActor.run { self?.learningVoice = false; self?.settings?.model.voiceLearned = Voiceprint.load()?.count ?? 0 }
         }
     }
 

@@ -61,6 +61,10 @@ struct Config: Codable {
     /// The user's own command for Better summary: it gets the instructions and the transcript on stdin and prints the
     /// summary. Used only when Better summary is "command".
     var betterSummaryCommand: String?
+    /// Voices in the room (D-1034): the microphone's lines told apart by voice after a meeting. Off when missing.
+    var roomVoices: Bool?
+    /// Know my voice (D-1034): learn the user's voiceprint from their dictations, so their lines in the room say Me.
+    var knowMyVoice: Bool?
     /// The helpers the user has agreed to send a transcript to, after being told where it goes the first time; for
     /// their own command, "command:" and the command, so a new command asks again.
     var betterSummaryAgreed: [String]?

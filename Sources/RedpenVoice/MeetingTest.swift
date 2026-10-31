@@ -1,4 +1,5 @@
 import AVFoundation
+import FluidAudio
 import Foundation
 import MLX
 import VoiceCore
@@ -10,7 +11,7 @@ import VoiceCore
 /// little later and quieter, as on laptop speakers. Everything stays in `out-folder`.
 enum MeetingTest {
     static func run(_ args: [String], engine: Transcriber, config base: Config, names: Names) async -> Int32 {
-        guard args.count >= 3 else { print("usage: --meeting-test me.wav|silent others.wav out-folder"); return 2 }
+        guard args.count >= 3 else { print("usage: --meeting-test me.wav|silent others.wav|silent out-folder [--room] [--voice my.wav]"); return 2 }
         let out = URL(fileURLWithPath: args[2], isDirectory: true)
         var config = base
         if let e = CommandLine.arguments.firstIndex(of: "--engine"), e + 1 < CommandLine.arguments.count { config.engine = CommandLine.arguments[e + 1] }
@@ -18,6 +19,20 @@ enum MeetingTest {
         config.keepMeetingAudio = true
         // Only the engine the notes use is loaded, so the memory figure is the meeting's own.
         config.draftMode = false; config.riskMarks = false
+        // `--room`: voices in the room told apart on the microphone track (D-1034). `--voice my.wav` first learns
+        // that voice as the user's, from pieces of it as dictations would give; run with REDPEN_VOICE_DIR set, so
+        // the voiceprint goes into the test's own folder.
+        if CommandLine.arguments.contains("--room") { config.roomVoices = true }
+        if let v = CommandLine.arguments.firstIndex(of: "--voice"), v + 1 < CommandLine.arguments.count {
+            guard ProcessInfo.processInfo.environment["REDPEN_VOICE_DIR"] != nil else { print("--voice needs REDPEN_VOICE_DIR"); return 2 }
+            config.knowMyVoice = true
+            Voiceprint.forget()
+            if let all = try? AudioConverter().resampleAudioFile(URL(fileURLWithPath: CommandLine.arguments[v + 1])) {
+                let piece = 16_000 * 8
+                for i in 0..<Voiceprint.enough where (i + 1) * piece <= all.count { await Voiceprint.learn(from: Array(all[(i * piece)..<((i + 1) * piece)])) { true } }
+            }
+            print("voice learned from \(Voiceprint.load()?.count ?? 0) pieces")
+        }
         let summarize = !CommandLine.arguments.contains("--no-summary")
         let fm = FileManager.default
         do {
@@ -29,10 +44,11 @@ enum MeetingTest {
             guard engine.state == .ready else { print("engine not ready: \(engine.state)"); return 1 }
             let loaded = Date().timeIntervalSince(t0)
             let rssLoaded = peakMemory()
-            // Feed both files as a recording would.
+            // Feed both files as a recording would. A silent Others is a meeting in one room.
             let othersURL = URL(fileURLWithPath: args[1])
             let others = try TrackWriter(url: work.appendingPathComponent(MeetingManifest.othersFile))
-            let othersSecs = try feed(othersURL, into: others)
+            let othersSecs = args[1] == "silent" ? feedSilence(seconds: (try? AVAudioFile(forReading: URL(fileURLWithPath: args[0])))
+                .map { Double($0.length) / $0.fileFormat.sampleRate } ?? 0, into: others) : try feed(othersURL, into: others)
             let me = try TrackWriter(url: work.appendingPathComponent(MeetingManifest.meFile))
             let meSecs: Double
             switch args[0] {
@@ -69,6 +85,44 @@ enum MeetingTest {
             return 0
         } catch {
             print("meeting-test failed: \(error.localizedDescription)")
+            return 1
+        }
+    }
+
+    /// `--diarize-test audio.wav out.json [--voice my.wav] [--step 0.2] [--threshold 0.6]` (D-1034): speakers in
+    /// the room on one track, for scoring against a reference. Writes the turns and prints how many speakers, how
+    /// long it took, and, with `--voice`, how close each speaker is to that voice.
+    static func diarize(_ args: [String]) async -> Int32 {
+        guard args.count >= 2 else { print("usage: --diarize-test audio.wav out.json [--voice my.wav]"); return 2 }
+        func option(_ name: String) -> String? {
+            CommandLine.arguments.firstIndex(of: name).flatMap { $0 + 1 < CommandLine.arguments.count ? CommandLine.arguments[$0 + 1] : nil }
+        }
+        let config = RoomSpeakers.config(step: option("--step").flatMap(Double.init), threshold: option("--threshold").flatMap(Double.init))
+        do {
+            let samples = try AudioConverter().resampleAudioFile(URL(fileURLWithPath: args[0]))
+            let t0 = Date()
+            let split = try await RoomSpeakers.split(samples, config: config)
+            let seconds = Date().timeIntervalSince(t0)
+            var talk = [Double](repeating: 0, count: split.voices.count)
+            for t in split.turns { talk[t.speaker] += t.end - t.start }
+            print("diarize-test: \(split.voices.count) speakers in \(String(format: "%.1f", seconds)) s for \(Int(Double(samples.count) / 16000)) s of audio")
+            print("  talk seconds: " + talk.map { String(Int($0)) }.joined(separator: ", "))
+            var out: [String: Any] = ["turns": split.turns.map { ["start": $0.start, "end": $0.end, "speaker": $0.speaker] },
+                                      "speakers": split.voices.count, "seconds": seconds]
+            if let v = option("--voice") {
+                let mine = try await RoomSpeakers.split(try AudioConverter().resampleAudioFile(URL(fileURLWithPath: v)), config: config)
+                var own = [Double](repeating: 0, count: mine.voices.count)
+                for t in mine.turns { own[t.speaker] += t.end - t.start }
+                let main = own.indices.max { own[$0] < own[$1] } ?? 0
+                let sims = split.voices.map { RoomSpeakers.cosine($0, mine.voices.isEmpty ? [] : mine.voices[main]) }
+                print("  voice sample: \(mine.voices.count) speakers found in it; similarity to each: " + sims.map { String(format: "%.3f", $0) }.joined(separator: ", "))
+                out["voice"] = sims
+            }
+            let data = try JSONSerialization.data(withJSONObject: out, options: [.prettyPrinted])
+            try data.write(to: URL(fileURLWithPath: args[1]))
+            return 0
+        } catch {
+            print("diarize-test failed: \(error.localizedDescription)")
             return 1
         }
     }
