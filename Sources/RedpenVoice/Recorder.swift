@@ -9,6 +9,10 @@ final class Recorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     private var session: AVCaptureSession?
     private let queue = DispatchQueue(label: "redpen.voice.mic")
     private var target: AVAudioFormat?
+    /// The format buffers are handed over in (the engine's), once the mic has started.
+    var format: AVAudioFormat? { target }
+    /// True while the capture session is really running (the name stays after a stop).
+    var isRunning: Bool { session?.isRunning ?? false }
     private let lock = NSLock()
     private var ring: [AVAudioPCMBuffer] = []
     private var ringFrames: AVAudioFrameCount = 0
@@ -78,15 +82,18 @@ final class Recorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
         lock.unlock()
     }
 
-    /// The key went down: hand over the pre-roll, then everything live.
-    func begin(onBuffer: @escaping (AVAudioPCMBuffer) -> Void, onLevel: @escaping (Float) -> Void) {
+    /// The key went down: hand over the pre-roll, then everything live. Returns the pre-roll's length in frames.
+    @discardableResult
+    func begin(onBuffer: @escaping (AVAudioPCMBuffer) -> Void, onLevel: @escaping (Float) -> Void) -> AVAudioFrameCount {
         lock.lock()
         let pre = ring; ring.removeAll(); ringFrames = 0
         live = onBuffer
-        pushedFrames = pre.reduce(0) { $0 + $1.frameLength }; peak = pre.reduce(0) { max($0, Recorder.peak($1)) }
+        let preFrames = pre.reduce(0) { $0 + $1.frameLength }
+        pushedFrames = preFrames; peak = pre.reduce(0) { max($0, Recorder.peak($1)) }
         lock.unlock()
         level = onLevel
         for b in pre { onBuffer(b) }
+        return preFrames
     }
 
     /// The key came up: stop handing audio over. Capture keeps running for next time.

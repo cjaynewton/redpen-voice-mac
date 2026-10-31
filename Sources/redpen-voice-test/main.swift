@@ -1341,5 +1341,174 @@ do {
     try? FileManager.default.removeItem(at: dir)
 }
 
+// Meeting notes (D-951): clock, file name, lines from words, echo, merge by time, the file, the summary pieces.
+do {
+    check("meeting.clock", Meeting.clock(252) == "04:12" && Meeting.clock(0) == "00:00" && Meeting.clock(3852) == "1:04:12")
+    check("meeting.clockNegative", Meeting.clock(-3) == "00:00")
+    check("meeting.length", Meeting.length(40) == "40 s" && Meeting.length(42 * 60) == "42 min" && Meeting.length(65 * 60) == "1 h 5 min" && Meeting.length(7200) == "2 h")
+    var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(identifier: "America/Toronto")!
+    let start = cal.date(from: DateComponents(year: 2026, month: 10, day: 30, hour: 14, minute: 15, second: 41))!
+    check("meeting.baseName", Meeting.baseName(start, calendar: cal) == "2026-10-30 1415 Meeting", Meeting.baseName(start, calendar: cal))
+    let taken: Set<String> = ["2026-10-30 1415 Meeting", "2026-10-30 1415 Meeting 2"]
+    check("meeting.uniqueFree", Meeting.uniqueBase("2026-10-30 1416 Meeting") { taken.contains($0) } == "2026-10-30 1416 Meeting")
+    check("meeting.uniqueTaken", Meeting.uniqueBase("2026-10-30 1415 Meeting") { taken.contains($0) } == "2026-10-30 1415 Meeting 3")
+
+    // Words into lines: a pause starts a new line, a long run is split, a finished sentence ends a line.
+    let words = [TimedWord("So", start: 0, end: 0.3), TimedWord("the", start: 0.35, end: 0.5), TimedWord("plan.", start: 0.55, end: 1),
+                 TimedWord("Next", start: 2.5, end: 2.8), TimedWord("week", start: 2.85, end: 3.1)]
+    let g = Meeting.group(words)
+    check("meeting.groupPause", g.count == 2 && g[0].text == "So the plan." && g[1].text == "Next week" && g[1].start == 2.5, "\(g)")
+    let run = (0..<40).map { TimedWord("w\($0)", start: Double($0) * 0.7, end: Double($0) * 0.7 + 0.5) }
+    let gr = Meeting.group(run, maxSeconds: 20)
+    check("meeting.groupMax", gr.count == 2 && gr.allSatisfy { $0.end - $0.start <= 20 }, "\(gr.map { $0.end - $0.start })")
+    let sentences = [TimedWord("We", start: 0, end: 1), TimedWord("agree.", start: 4, end: 4.5), TimedWord("Good", start: 4.6, end: 5)]
+    check("meeting.groupSentence", Meeting.group(sentences).count == 2)
+    check("meeting.groupEmpty", Meeting.group([]).isEmpty && Meeting.group([TimedWord(" ", start: 0, end: 1)]).isEmpty)
+
+    // Echo: a Me line that repeats the Others line at the same time goes; your own words stay.
+    let others = [MeetingSegment(start: 10, end: 14, text: "We should ship the pricing page on Friday."),
+                  MeetingSegment(start: 30, end: 31, text: "Yeah.")]
+    let me = [MeetingSegment(start: 10.3, end: 14.2, text: "we should ship the pricing page friday"),   // echo, a word missed
+              MeetingSegment(start: 15, end: 18, text: "Friday works, I'll write the copy."),            // mine, after
+              MeetingSegment(start: 30.2, end: 30.8, text: "Yeah."),                                     // short echo
+              MeetingSegment(start: 31.5, end: 32, text: "Okay."),                                       // short, mine
+              MeetingSegment(start: 60, end: 64, text: "We should ship the pricing page on Friday.")]     // same words, much later
+    let e = Meeting.dropEcho(me: me, others: others)
+    check("meeting.echoDropped", e.dropped == 2, "\(e.dropped)")
+    check("meeting.echoKeepsMine", e.kept.map(\.start) == [15, 31.5, 60], "\(e.kept.map(\.start))")
+    let partial = [MeetingSegment(start: 11, end: 13, text: "ship it on Monday instead, the page isn't ready")]
+    check("meeting.echoPartialKept", Meeting.dropEcho(me: partial, others: others).dropped == 0)
+    check("meeting.echoNoOthers", Meeting.dropEcho(me: me, others: []).kept.count == me.count)
+    check("meeting.echoEmptyMeGone", Meeting.dropEcho(me: [MeetingSegment(start: 1, end: 2, text: " ... ")], others: []).kept.isEmpty)
+
+    // Merge by time; at the same second Others first.
+    let merged = Meeting.merge(me: [MeetingSegment(start: 5, end: 6, text: "b"), MeetingSegment(start: 1, end: 2, text: "a")],
+                               others: [MeetingSegment(start: 5, end: 7, text: "q"), MeetingSegment(start: 9, end: 10, text: "c")])
+    check("meeting.merge", merged.map(\.text) == ["a", "q", "b", "c"] && merged[1].speaker == .others, "\(merged.map(\.text))")
+    // Pause and resume (D-957): the bar's time stands still while paused, the notes mark each pause where it began,
+    // and nothing written inside a pause survives.
+    var pz = MeetingPauses()
+    check("pause.none", pz.recorded(at: 100) == 100 && !pz.isPaused)
+    pz.pause(at: 60); pz.pause(at: 70)  // a second press while paused changes nothing
+    check("pause.frozen", pz.isPaused && pz.recorded(at: 60) == 60 && pz.recorded(at: 190) == 60)
+    pz.resume(at: 190)
+    check("pause.resumed", !pz.isPaused && pz.recorded(at: 250) == 120 && pz.done == [MeetingPause(start: 60, end: 190)])
+    pz.resume(at: 300)  // resume when not paused does nothing
+    check("pause.resumeTwice", pz.done.count == 1)
+    pz.pause(at: 400)
+    check("pause.openClosedAtStop", pz.all(closingAt: 430) == [MeetingPause(start: 60, end: 190), MeetingPause(start: 400, end: 430)]
+          && pz.recorded(at: 430) == 270)
+    check("pause.codable", (try? JSONDecoder().decode(MeetingPauses.self, from: JSONEncoder().encode(pz))) == pz)
+    check("pause.clockShort", Meeting.clockShort(21.9) == "0:21" && Meeting.clockShort(754.2) == "12:34" && Meeting.clockShort(-1) == "0:00")
+    check("pause.span", Meeting.span(130) == "2:10" && Meeting.span(5) == "0:05" && Meeting.span(3730) == "1:02:10")
+    let talk2 = [MeetingLine(start: 50, speaker: .me, text: "Before.", end: 58),
+                 MeetingLine(start: 100, speaker: .others, text: "Thank you.", end: 101),   // invented in the silence
+                 MeetingLine(start: 190, speaker: .others, text: "After.", end: 195)]
+    let marked = Meeting.withPauses(talk2, [MeetingPause(start: 60, end: 190), MeetingPause(start: 300, end: 300.4)])
+    check("pause.marked", marked.map(\.markdown) == ["[00:50] Me: Before.", "[01:00] [paused 2:10]", "[03:10] Others: After."], "\(marked.map(\.markdown))")
+    check("pause.atSameSecondFirst", Meeting.withPauses([MeetingLine(start: 60, speaker: .me, text: "x", end: 59.5)],
+                                                       [MeetingPause(start: 60, end: 70)]).first?.speaker == .pause)
+    let pmd = Meeting.markdown(start: start, seconds: 300, lines: marked, audio: [], echoDropped: 0, engine: "Whisper", paused: 130, calendar: cal)
+    check("pause.header", pmd.contains("- Paused: 2 min, nothing recorded then\n") && pmd.contains("[01:00] [paused 2:10]"))
+    var mfp = MeetingManifest(started: start); mfp.pauses = pz
+    check("pause.manifest", (try? JSONDecoder().decode(MeetingManifest.self, from: JSONEncoder().encode(mfp)))?.pauses == pz)
+
+    // Repeats and paragraphs (from the first live test): "Okay." "Okay." goes, a turn reads as one paragraph.
+    let said2 = [MeetingLine(start: 0, speaker: .others, text: "The serene waters of.", end: 1.5),
+                 MeetingLine(start: 2, speaker: .others, text: "The serene waters of", end: 3),
+                 MeetingLine(start: 3.2, speaker: .me, text: "Okay.", end: 3.6),
+                 MeetingLine(start: 3.8, speaker: .others, text: "Then the match.", end: 5),
+                 MeetingLine(start: 4.0, speaker: .me, text: "Okay.", end: 4.3),
+                 MeetingLine(start: 9, speaker: .me, text: "Okay.", end: 9.5)]
+    let dr = Meeting.dropRepeats(said2)
+    check("meeting.repeatDropped", dr.map(\.text) == ["The serene waters of.", "Okay.", "Then the match.", "Okay."], "\(dr.map(\.text))")
+    check("meeting.repeatLaterKept", dr.last?.start == 9)
+    check("meeting.repeatNotOtherSpeaker", Meeting.dropRepeats([MeetingLine(start: 0, speaker: .others, text: "Yes.", end: 1),
+                                                                MeetingLine(start: 1, speaker: .me, text: "Yes.", end: 2)]).count == 2)
+    check("meeting.repeatDifferentWordsKept", Meeting.dropRepeats([MeetingLine(start: 0, speaker: .me, text: "Okay.", end: 1),
+                                                                   MeetingLine(start: 1, speaker: .me, text: "Okay, okay.", end: 2)]).count == 2)
+    let turns = [MeetingLine(start: 0, speaker: .me, text: "The WSL.", end: 1), MeetingLine(start: 1.5, speaker: .me, text: "Yes.", end: 2),
+                 MeetingLine(start: 4.5, speaker: .me, text: "Okay.", end: 5),
+                 MeetingLine(start: 9, speaker: .me, text: "After a pause.", end: 10),
+                 MeetingLine(start: 10.5, speaker: .others, text: "Their turn.", end: 11),
+                 MeetingLine(start: 11.5, speaker: .me, text: "Mine again.", end: 12)]
+    let ps2 = Meeting.paragraphs(turns)
+    check("meeting.paragraphJoin", ps2.first?.text == "The WSL. Yes. Okay." && ps2.first?.start == 0, "\(ps2.map(\.text))")
+    check("meeting.paragraphGapAndTurns", ps2.map(\.text) == ["The WSL. Yes. Okay.", "After a pause.", "Their turn.", "Mine again."], "\(ps2.map(\.text))")
+    check("meeting.paragraphEmpty", Meeting.paragraphs([]).isEmpty && Meeting.dropRepeats([]).isEmpty)
+    check("meeting.mergeKeepsEnd", Meeting.merge(me: [MeetingSegment(start: 1, end: 4, text: "x")], others: []).first?.end == 4)
+    check("meeting.line", MeetingLine(start: 252, speaker: .me, text: "Hi.").markdown == "[04:12] Me: Hi.")
+
+    // The file: header, transcript in order, audio links, no em dashes.
+    let md = Meeting.markdown(start: start, seconds: 42 * 60, lines: merged, audio: ["2026-10-30 1415 Meeting Me.m4a"], echoDropped: 3,
+                              engine: "Whisper", calendar: cal)
+    check("meeting.mdTitle", md.hasPrefix("# Meeting notes, Friday 30 October 2026\n"), String(md.prefix(60)))
+    check("meeting.mdHeader", md.contains("- Date: 2026-10-30\n") && md.contains("- Started: 14:15\n") && md.contains("- Length: 42 min\n"))
+    check("meeting.mdAudio", md.contains("[2026-10-30 1415 Meeting Me.m4a](<2026-10-30 1415 Meeting Me.m4a>)"))
+    check("meeting.mdEcho", md.contains("3 Me lines were left out"))
+    check("meeting.mdTranscript", md.contains("## Transcript\n\n[00:01] Me: a\n\n[00:05] Others: q\n\n[00:05] Me: b\n\n[00:09] Others: c\n"))
+    check("meeting.notice", Meeting.notice == "Heads up: I'm taking notes on this call with Redpen. It runs on my Mac and nothing is sent anywhere.")
+    check("meeting.mdNoDash", !md.contains("\u{2014}") && !md.contains("\u{2013}"))
+    let quiet = Meeting.markdown(start: start, seconds: 30, lines: [], audio: [], echoDropped: 0, engine: "Whisper", calendar: cal)
+    let noted = Meeting.markdown(start: start, seconds: 30, lines: [], audio: [], echoDropped: 0, engine: "Whisper", notes: [Meeting.silentMacNote], calendar: cal)
+    check("meeting.mdNote", noted.contains(Meeting.silentMacNote + "\n\n## Transcript"))
+    check("meeting.mdEmpty", quiet.contains("Nothing was heard.") && !quiet.contains("- Audio:") && !quiet.contains("left out"))
+
+    // Summary pieces: whole lines, under the limit, nothing lost.
+    let lines = (0..<50).map { "[00:\(String(format: "%02d", $0))] Others: line number \($0) of the meeting" }
+    let ps = Meeting.pieces(lines, maxChars: 300)
+    check("meeting.piecesFit", ps.count > 1 && ps.allSatisfy { $0.count <= 300 }, "\(ps.map(\.count))")
+    check("meeting.piecesWhole", ps.joined(separator: "\n") == lines.joined(separator: "\n"))
+    check("meeting.piecesOne", Meeting.pieces(["short"], maxChars: 300) == ["short"] && Meeting.pieces([], maxChars: 300).isEmpty)
+    let long = String(repeating: "word ", count: 200)
+    let lp = Meeting.pieces([long], maxChars: 100)
+    check("meeting.piecesLongLine", lp.allSatisfy { $0.count <= 100 } && lp.joined(separator: " ").split(separator: " ").count == 200, "\(lp.map(\.count))")
+
+    // Names: Me, Others, or a name said in the meeting; never one the model made up.
+    let said = "[00:01] Others: Thanks Priya, can you send the deck? [00:04] Me: Sure."
+    check("meeting.whoMe", Meeting.who("me", transcript: said) == "Me" && Meeting.who("I", transcript: said) == "Me")
+    check("meeting.whoOthers", Meeting.who("Others", transcript: said) == "Others")
+    check("meeting.whoSilentMe", Meeting.who("Me", transcript: "[00:01] Others: I'll send it.") == "Not clear")
+    check("meeting.unknownTime", Meeting.unknownNames("Meet Friday at 10 AM.", transcript: "[00:01] Others: Friday at ten") == [])
+    check("meeting.whoSaid", Meeting.who("Priya", transcript: said) == "Priya")
+    check("meeting.whoInvented", Meeting.who("John Smith", transcript: said) == "Not clear")
+    check("meeting.unknownSlash", Meeting.unknownNames("Back after the July/August break.", transcript: "[00:01] Others: July and August off") == [])
+    check("meeting.unknownNames", Meeting.unknownNames("Priya will send the deck to Marcus by Friday.", transcript: said) == ["Marcus", "Friday"])
+    let sm = Meeting.summaryMarkdown(Meeting.Summary(points: ["The deck is late."], decisions: [],
+                                                     todos: [Meeting.ToDo(who: "Priya", task: "Send the deck."), Meeting.ToDo(who: "Bob", task: "Book a room.")]),
+                                     transcript: said)
+    check("meeting.summaryLabel", sm.hasPrefix("## Summary\n\n" + Meeting.summaryLabel + "\n\n"))
+    check("meeting.summaryLists", sm.contains("### Decisions\n\nNone heard.\n") && sm.contains("- Priya: Send the deck.") && sm.contains("- Not clear: Book a room."))
+    check("meeting.noSummary", Meeting.noSummary("Apple's model is off on this Mac.").contains("No summary was written. Apple's model"))
+
+    // Cutting long audio: at the quietest moment before the target, never past it.
+    var wave = [Float](repeating: 0.5, count: 16_000 * 10)
+    for i in (16_000 * 7)..<(16_000 * 7 + 4_800) { wave[i] = 0 }
+    let cut = Meeting.cutPoint(wave, target: 16_000 * 9, search: 16_000 * 5)
+    check("meeting.cutQuiet", cut >= 16_000 * 7 && cut <= 16_000 * 7 + 4_800, "\(cut)")
+    check("meeting.cutEnd", Meeting.cutPoint(wave, target: wave.count + 10, search: 100) == wave.count)
+    check("meeting.cutNeverAfter", Meeting.cutPoint([Float](repeating: 0.5, count: 1000), target: 900, search: 500) <= 900)
+
+    // Gaps with no line in them, for asking Whisper again, and how much of a stretch sounds like talk.
+    let lined = [MeetingSegment(start: 2, end: 10, text: "a"), MeetingSegment(start: 11, end: 20, text: "b"), MeetingSegment(start: 45, end: 50, text: "c")]
+    let gaps = Meeting.gaps(lined, length: 120, minimum: 6)
+    check("meeting.gaps", gaps.count == 2 && abs(gaps[0].lowerBound - 20.2) < 0.001 && abs(gaps[0].upperBound - 44.8) < 0.001 && abs(gaps[1].upperBound - 119.8) < 0.001, "\(gaps)")
+    check("meeting.gapsNone", Meeting.gaps([], length: 4, minimum: 6).isEmpty && Meeting.gaps([], length: 30, minimum: 6).count == 1)
+    check("meeting.gapsOverlap", Meeting.gaps([MeetingSegment(start: 0, end: 30, text: "a"), MeetingSegment(start: 5, end: 8, text: "b"), MeetingSegment(start: 31, end: 40, text: "c")], length: 40, minimum: 6).isEmpty)
+    var talk = [Float](repeating: 0, count: 16_000 * 4)
+    for i in 0..<(16_000 * 2) { talk[i] = i % 2 == 0 ? 0.05 : -0.05 }
+    check("meeting.talkSeconds", abs(Meeting.talkSeconds(talk[...]) - 2) < 0.05 && Meeting.talkSeconds(talk[(16_000 * 2)...]) == 0)
+
+    // Folders that may sync to iCloud are flagged; the default is not.
+    check("meeting.syncDefault", !Meeting.mightSync("/Users/a/Redpen Meetings", home: "/Users/a"))
+    check("meeting.syncDocuments", Meeting.mightSync("/Users/a/Documents/Notes", home: "/Users/a") && Meeting.mightSync("/Users/a/Desktop", home: "/Users/a/"))
+    check("meeting.syncLookalike", !Meeting.mightSync("/Users/a/Documents2", home: "/Users/a"))
+
+    // The manifest survives a round trip, so a crashed meeting can be finished.
+    var mf = MeetingManifest(started: start); mf.meOffset = -0.6; mf.othersOffset = 0.12
+    let back = try? JSONDecoder().decode(MeetingManifest.self, from: JSONEncoder().encode(mf))
+    check("meeting.manifest", back == mf && MeetingManifest.samples(bytes: 32_000) == 16_000)
+}
+
 print("\(pass) passed, \(fail) failed")
 exit(fail == 0 ? 0 : 1)

@@ -17,6 +17,11 @@ struct MenuState {
     var last: String?
     var canTakeBack = false
     var testing = false
+    /// When the meeting being recorded started (D-951), how far its notes have got, and meetings never written up.
+    var meetingStarted: Date?
+    var meetingPaused = false
+    var notesStatus: String?
+    var unfinished = 0
     /// A newer version found by the daily check, shown instead of a window over your work.
     var update: String?
     /// Something on this Mac that gets in the way, said plainly (the Fn key set to start Apple's dictation).
@@ -37,6 +42,10 @@ final class MenuModel: ObservableObject {
     var history: () -> Void = {}
     var stats: () -> Void = {}
     var updates: () -> Void = {}
+    var meeting: () -> Void = {}
+    var pauseMeeting: () -> Void = {}
+    var copyNotice: () -> Void = {}
+    var unfinished: () -> Void = {}
 }
 
 /// The panel under the menu bar icon, in the settings page's paper, ink and red pen. Only what you reach for
@@ -50,6 +59,8 @@ struct MenuPanel: View {
             header
             if s.testing { action("Stop the test recording", red: true, model.test).padding(.top, 10) }
             switches.padding(.top, 16)
+            rule
+            meetingRows
             rule
             action("Paste last dictation", keys: "⌃⌥V", model.paste).disabled(s.last == nil)
             action("History…", model.history)
@@ -100,6 +111,27 @@ struct MenuPanel: View {
         return VStack(spacing: 10) {
             toggleRow("Take out ums and uhs", ums).disabled(s.mode == "rewrite")
             toggleRow("Tidy it up", tidy)
+        }
+    }
+
+    /// Start and stop, the time while it records, the notice for the chat, and how far the notes have got.
+    private var meetingRows: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let started = s.meetingStarted {
+                TimelineView(.periodic(from: started, by: 1)) { ctx in
+                    action("Stop meeting notes (\(Meeting.clock(ctx.date.timeIntervalSince(started))))", keys: "⌃⌥M", red: true, model.meeting)
+                }
+                action(s.meetingPaused ? "Resume meeting notes" : "Pause meeting notes", keys: "⌃⌥P", model.pauseMeeting)
+            } else {
+                action("Start meeting notes", model.meeting)
+            }
+            action("Copy notice for the meeting chat", model.copyNotice)
+            if s.unfinished > 0, s.notesStatus == nil {
+                action("Write notes for \(s.unfinished == 1 ? "an unfinished meeting" : "\(s.unfinished) unfinished meetings")…", model.unfinished)
+            }
+            if let n = s.notesStatus {
+                Text(n).font(.system(size: 12.5)).foregroundStyle(Ink.dim).monospacedDigit().padding(.vertical, 4)
+            }
         }
     }
 
