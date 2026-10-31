@@ -25,6 +25,10 @@ final class Recorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     private(set) var peak: Float = 0
     /// Which microphone to read; empty means the system default.
     var deviceUID = ""
+    /// Called on the main queue when the mic in use goes away (unplugged, Bluetooth dropped) or capture fails.
+    /// Capture is already stopped then, so the next start opens a mic that is there.
+    var onLost: ((String) -> Void)?
+    private var watches: [NSObjectProtocol] = []
     private var channels = 1
 
     /// Starts capture on the chosen mic and keeps it running. Safe to call again; it restarts.
@@ -58,6 +62,18 @@ final class Recorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
         session = s
         inputName = device.localizedName
         currentUID = device.uniqueID
+        // A mic that disappears leaves a session that delivers nothing, while inputName still names it, so nothing
+        // ever opened the mic again (a Bluetooth headset dropping, an interface unplugged).
+        let lost: (Notification) -> Void = { [weak self] n in
+            guard let self, self.session === s else { return }
+            let why = n.name == AVCaptureDevice.wasDisconnectedNotification ? "\(device.localizedName) went away" : "capture stopped with an error"
+            self.stopEngine()
+            self.onLost?(why)
+        }
+        watches = [
+            NotificationCenter.default.addObserver(forName: AVCaptureDevice.wasDisconnectedNotification, object: device, queue: .main, using: lost),
+            NotificationCenter.default.addObserver(forName: AVCaptureSession.runtimeErrorNotification, object: s, queue: .main, using: lost),
+        ]
         Log.note("mic: warm on \(inputName), \(deviceChannels) ch -> \(Int(format.sampleRate)) Hz \(isFloat ? "float" : "int16"), running \(s.isRunning)")
     }
 
@@ -96,8 +112,14 @@ final class Recorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     }
 
     func stopEngine() {
+        for w in watches { NotificationCenter.default.removeObserver(w) }
+        watches = []
         session?.stopRunning()
         session = nil
+        // No session, no mic: a start that fails after this must not leave the old name behind, or begin() (which
+        // opens the mic only when inputName is empty) would record nothing on every press.
+        inputName = ""
+        currentUID = ""
         lock.lock(); ring.removeAll(); ringFrames = 0; live = nil; lock.unlock()
     }
 

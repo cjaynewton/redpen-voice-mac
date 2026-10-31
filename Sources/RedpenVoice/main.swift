@@ -503,6 +503,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             exit(0)
         }
         recorder.deviceUID = config.inputDevice
+        recorder.onLost = { [weak self] why in
+            MainActor.assumeIsolated {
+                Log.note("mic: \(why), opening a mic again")
+                // A dictation in progress keeps what it heard; its next press opens the mic again in begin().
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                    guard let self, self.session == nil, self.testFile == nil, self.recorder.inputName.isEmpty else { return }
+                    self.warmMic()
+                }
+            }
+        }
         followDefaultMic()
         // `--mic-test 3` listens for three seconds on the configured mic and prints frames, peak and the engine's text.
         if let i = CommandLine.arguments.firstIndex(of: "--mic-test"), i + 1 < CommandLine.arguments.count, let secs = Double(CommandLine.arguments[i + 1]) {
