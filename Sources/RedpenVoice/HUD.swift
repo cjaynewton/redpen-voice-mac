@@ -272,10 +272,22 @@ final class HUD {
     // Above where chat apps put their typing box, at the same offset on the screen captured on key-down.
     private func place() {
         let mouse = NSEvent.mouseLocation
-        if let s = dictationScreen ?? NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) }) ?? NSScreen.main {
+        if let s = connectedDictationScreen() ?? NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) }) ?? NSScreen.main {
             let f = s.visibleFrame
             panel.setFrameOrigin(NSPoint(x: f.midX - panel.frame.width / 2, y: f.minY + 120))
         }
+    }
+
+    /// The captured display as it is connected now, by its display number. Messages can come minutes after the
+    /// key went down ("Saved for ..." waits up to 10 minutes): a display unplugged or rearranged since then must not
+    /// put the bar off screen, where nobody sees it.
+    private func connectedDictationScreen() -> NSScreen? {
+        guard let captured = dictationScreen else { return nil }
+        let key = NSDeviceDescriptionKey("NSScreenNumber")
+        guard let id = captured.deviceDescription[key] as? NSNumber else { dictationScreen = nil; return nil }
+        let now = NSScreen.screens.first { ($0.deviceDescription[key] as? NSNumber) == id }
+        dictationScreen = now
+        return now
     }
 
     /// The moving part of the bar. Levels arrive from the mic; `step` runs thirty times a second for motion.
