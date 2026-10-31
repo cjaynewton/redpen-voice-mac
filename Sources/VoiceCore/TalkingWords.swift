@@ -32,10 +32,11 @@ public enum TalkingWords: String, Sendable {
 
     /// Why typing into the box stopped while you talked, in the bar's words.
     public enum Stop: Equatable, Sendable {
-        case typed, clicked, typedOrClicked, leftBox, boxChanged, noBox, unchecked
+        case typed, clicked, typedOrClicked, leftBox, boxChanged, noBox, unchecked, longTalk
 
         public var phrase: String {
             switch self {
+            case .longTalk: return "long talk"
             case .typed: return "you typed"
             case .clicked: return "you clicked"
             case .typedOrClicked: return "you typed or clicked"
@@ -62,6 +63,8 @@ public enum TalkingWords: String, Sendable {
     /// can see it is still listening), and what happens next. Since D-965 the whole checked text goes in when you
     /// finish, so the bar no longer says the clipboard.
     public static func stoppedLine(_ why: Stop?, words: Int) -> String {
+        // A long talk (D-1023) isn't a problem, so the bar doesn't say typing stopped.
+        if why == .longTalk { return "Long talk. \(words) \(words == 1 ? "word" : "words") so far, all go in when you stop." }
         let what = why.map { "Typing stopped (\($0.phrase))." } ?? "Typing stopped."
         guard words > 0 else { return what + " Your words go in at the end." }
         return "\(what) \(words) \(words == 1 ? "word" : "words") so far, all go in at the end."

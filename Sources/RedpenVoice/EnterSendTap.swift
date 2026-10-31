@@ -22,6 +22,8 @@ final class EnterSendTap: @unchecked Sendable {
     var onHold: (Int) -> Void = { _ in }
     /// A held press went out (main thread), with why.
     var onSent: (Int, String) -> Void = { _, _ in }
+    /// A long talk's held press was dropped, never sent (main thread), with why.
+    var onDropped: (Int, String) -> Void = { _, _ in }
 
     private init() {}
 
@@ -48,6 +50,28 @@ final class EnterSendTap: @unchecked Sendable {
     /// already went.
     func release(_ id: Int, after delay: Double = 0, why: String) {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [self] in send(id, why: why) { $0.release(id: id) } }
+    }
+
+    /// A long talk (D-1023): the held press waits up to a minute for the words, and is dropped there, never sent. The
+    /// tap's own queue drops it too if the main thread stalls, so Enter can't stay held.
+    func waitLonger(_ id: Int) {
+        lock.lock(); let ok = rules.waitLonger(id: id, now: Self.now); lock.unlock()
+        guard ok else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + LongTalk.enterWait) { [self] in
+            drop(id, why: "a minute passed") { $0.dropAtDeadline(id: id, now: Self.now) }
+        }
+        queue.asyncAfter(deadline: .now() + LongTalk.enterWait + EnterSend.backstop) { [self] in
+            drop(id, why: "the backstop, Voice was busy") { $0.dropAtDeadline(id: id, now: Self.now) }
+        }
+    }
+
+    /// Takes a held press without sending it: not every word went in.
+    func drop(_ id: Int, why: String) { drop(id, why: why) { $0.drop(id: id) } }
+
+    private func drop(_ id: Int, why: String, take: (inout EnterSend) -> Bool) {
+        lock.lock(); let dropped = take(&rules); lock.unlock()
+        guard dropped else { return }
+        if Thread.isMainThread { onDropped(id, why) } else { DispatchQueue.main.async { self.onDropped(id, why) } }
     }
 
     /// A key-down this tap held, by uptime in seconds, within `tolerance`.

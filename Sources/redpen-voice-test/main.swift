@@ -947,6 +947,68 @@ do {
         check("enter.notesShort", E.waitingNote.count <= 40)
     }
 
+    // Long talks land whole (D-1023): past 45 s nothing more is typed as you talk, the ending adds the rest with one
+    // paste, and a held Enter waits up to a minute and is never sent with words missing.
+    do {
+        typealias E = EnterSend
+        check("long.after45", !LongTalk.isLong(seconds: 44.9) && LongTalk.isLong(seconds: 45) && LongTalk.isLong(seconds: 1800))
+        check("long.lengthSeconds", LongTalk.length(seconds: 50.4) == "50 seconds", LongTalk.length(seconds: 50.4))
+        check("long.lengthOneMinute", LongTalk.length(seconds: 68) == "1 minute" && LongTalk.length(seconds: 89) == "1 minute")
+        check("long.lengthMinutes", LongTalk.length(seconds: 184) == "3 minutes" && LongTalk.length(seconds: 1200) == "20 minutes")
+        check("long.writingNote", LongTalk.writingNote(seconds: 184) == "Putting in your 3 minutes of talk")
+        check("long.sendingNote", LongTalk.sendingNote(seconds: 184) == "Sends when your 3 minutes is in")
+        let notes = [LongTalk.writingNote(seconds: 1800), LongTalk.sendingNote(seconds: 1800), LongTalk.notSent,
+                     TalkingWords.stoppedLine(.longTalk, words: 4000)]
+        check("long.notesShortAndPlain", notes.allSatisfy { $0.count <= 60 && !$0.contains(":") && !$0.contains("\u{2014}") }, notes.joined(separator: " | "))
+        check("long.barLine", TalkingWords.stoppedLine(.longTalk, words: 120) == "Long talk. 120 words so far, all go in when you stop.")
+        check("long.barLineNotAlarm", !TalkingWords.stoppedLine(.longTalk, words: 3).contains("stopped"))
+        // The ending keeps the checked runs from the start and takes out only the rough words after them.
+        let all = LongTalk.split([(" So the plan", true), (" is this.", true), (" and then", false), (" more", false)])
+        check("long.splitKeepsChecked", all.keep == 2 && all.erase == " and then more", all.erase)
+        let none = LongTalk.split([(" So the plan", true), (" is this.", true)])
+        check("long.splitAllChecked", none.keep == 2 && none.erase.isEmpty)
+        let rough = LongTalk.split([(" so the", false), (" plan", true)])
+        check("long.splitStopsAtFirstRough", rough.keep == 0 && rough.erase == " so the plan")
+        check("long.splitEmpty", LongTalk.split([]).keep == 0 && LongTalk.split([]).erase.isEmpty)
+
+        // Enter on a long talk: past the 5 s cap and the backstop it still waits; at a minute it is dropped, never sent.
+        var r = E()
+        r.arm(now: 100)
+        check("long.enterHolds", r.keyDown(code: 36, flags: 0, own: false, repeated: false, now: 100.1) == .hold(id: 1))
+        check("long.enterWaitLonger", r.waitLonger(id: 1, now: 100.2))
+        check("long.enterCapDoesNotSend", r.capReached(id: 1, now: 105.2) == nil && r.capReached(id: 1, now: 116) == nil)
+        check("long.enterNotDroppedEarly", !r.dropAtDeadline(id: 1, now: 130))
+        check("long.enterCapNeverSendsLong", r.capReached(id: 1, now: 200) == nil)
+        check("long.enterDroppedAtMinute", r.dropAtDeadline(id: 1, now: 160.3))
+        check("long.enterDroppedOnce", !r.dropAtDeadline(id: 1, now: 170) && r.release(id: 1) == nil && !r.drop(id: 1))
+        check("long.enterUpStillSwallowed", r.keyUp(code: 36, own: false) == .swallow)
+        // Words not all in: dropped at once. Words in: sent as usual.
+        r.arm(now: 300)
+        check("long.enterSecondPress", r.keyDown(code: 36, flags: 0, own: false, repeated: false, now: 300.1) == .hold(id: 2))
+        check("long.enterWaitLongerSecond", r.waitLonger(id: 2, now: 300.1))
+        check("long.enterDropNow", r.drop(id: 2) && r.release(id: 2) == nil)
+        _ = r.keyUp(code: 36, own: false)
+        r.arm(now: 400)
+        check("long.enterThird", r.keyDown(code: 36, flags: 0, own: false, repeated: false, now: 400.1) == .hold(id: 3) && r.waitLonger(id: 3, now: 400.1))
+        // A second Enter from you still sends straight away: your call, not Voice's.
+        check("long.enterYourSecondEnterSends", r.keyDown(code: 36, flags: 0, own: false, repeated: false, now: 401) == .sendNow(id: 3))
+        check("long.enterReleaseSends", r.release(id: 3) == 36 && !r.dropAtDeadline(id: 3, now: 500))
+        check("long.waitLongerOnlyWaiting", !r.waitLonger(id: 3, now: 402) && !r.waitLonger(id: 9, now: 402))
+        // A short dictation is untouched: the 5 s cap still sends.
+        _ = r.keyUp(code: 36, own: false); _ = r.keyUp(code: 36, own: false)
+        r.arm(now: 600)
+        check("long.shortStillCaps", r.keyDown(code: 36, flags: 0, own: false, repeated: false, now: 600.1) == .hold(id: 4)
+              && !r.dropAtDeadline(id: 4, now: 700) && r.capReached(id: 4, now: 605.2) == 36)
+
+        // The one paste confirms as typing does, allowing for the box's own spacing; Paste last stays exact.
+        let loose = PasteEvidence(before: "Plan. Fix", range: NSRange(location: 9, length: 0), text: " the bar  now.", loose: true)
+        check("long.pasteLooseConfirms", loose.landed(value: "Plan. Fix the bar now.", range: NSRange(location: 22, length: 0)))
+        check("long.pasteLooseNeedsWords", !loose.landed(value: "Plan. Fix the bar", range: NSRange(location: 17, length: 0)))
+        check("long.pasteLooseNotUnchanged", !loose.landed(value: "Plan. Fix", range: NSRange(location: 9, length: 0)))
+        let exact = PasteEvidence(before: "Plan. Fix", range: NSRange(location: 9, length: 0), text: " the bar  now.")
+        check("long.pasteExactStaysExact", !exact.landed(value: "Plan. Fix the bar now.", range: NSRange(location: 99, length: 0)))
+    }
+
     // Straight after: any place but a page, a control or Voice's own window takes the words; otherwise they wait.
     check("ending.textTypesNow", DictationEnding.typesNow(kind: .text, ownWindow: false))
     check("ending.unknownNativeTypesNow", DictationEnding.typesNow(kind: .unknown, ownWindow: false))
@@ -1009,7 +1071,7 @@ do {
     check("talking.typingHandsFree", TalkingWords.typingLine(words: 57, handsFree: true, key: "Fn") == "Hands-free · 57 words · tap Fn to stop")
     check("talking.typingHeld", TalkingWords.typingLine(words: 1, handsFree: false, key: "Fn") == "1 word")
     let lines = [stopped, TalkingWords.writingAfterStop, TalkingWords.stoppedLine(.unchecked, words: 3), TalkingWords.stoppedLine(.leftBox, words: 0)]
-        + [TalkingWords.Stop.typed, .clicked, .typedOrClicked, .leftBox, .boxChanged, .noBox, .unchecked].map(\.phrase)
+        + [TalkingWords.Stop.typed, .clicked, .typedOrClicked, .leftBox, .boxChanged, .noBox, .unchecked, .longTalk].map(\.phrase)
     check("talking.plainLines", lines.allSatisfy { !$0.contains("\u{2014}") && !$0.contains(":") && !$0.lowercased().contains("clipboard") })
 
     // The bar's words: drafts in order, Whisper's check takes their place.
