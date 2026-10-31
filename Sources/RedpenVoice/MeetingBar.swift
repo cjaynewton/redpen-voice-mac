@@ -11,7 +11,7 @@ final class MeetingBar: NSObject {
     struct Now { var recorded: Double; var paused: Bool; var me: Float; var others: Float; var noSound: Bool }
 
     /// `offer`: notes saved, with a button for a better summary from this helper ("claude", "chatgpt", "gemini",
-    /// "cursor" or "command"; D-956, D-1012). `busy`: waiting on it.
+    /// "cursor", "command" or "mac"; D-956, D-1010, D-1012). `busy`: waiting on it.
     enum Mode: Equatable { case recording, writing(Int, String), done(String, Bool), offer(String), busy(String) }
 
     var source: () -> Now? = { nil }
@@ -254,14 +254,12 @@ final class MeetingBar: NSObject {
             message.stringValue = text
             label(message, gap: 16)
         case .offer(let helper):
-            let who = BetterSummary.name(helper)
             tick.sizeToFit(); put(tick, ceil(tick.frame.width), 18, gap: 8)
             message.stringValue = "Notes saved"
             label(message, gap: 14)
-            better.attributedTitle = NSAttributedString(string: "Better summary with \(who)",
+            better.attributedTitle = NSAttributedString(string: BetterSummary.button(helper),
                                                         attributes: [.foregroundColor: Self.text, .font: NSFont.systemFont(ofSize: 12.5, weight: .medium)])
-            better.toolTip = helper == "command" ? "Gives this meeting's transcript to your own command, then puts its summary on top of the notes"
-                : "Sends this meeting's transcript to \(who) through your own plan, then puts its summary on top of the notes"
+            better.toolTip = BetterSummary.tip(helper)
             button(better)
             button(notNow, padding: 8, gap: 8)
         case .busy(let text):
@@ -345,6 +343,8 @@ final class MeetingBar: NSObject {
             ("saved", .done("Notes saved", true), nil, false),
             ("offer", .offer("claude"), nil, false),
             ("busy", .busy("Asking Claude for a better summary…"), nil, false),
+            ("offer-mac", .offer(BetterSummary.onMac), nil, false),
+            ("busy-mac", .busy("Writing a better summary on this Mac…"), nil, false),
         ]
         var i = 0
         func next() {

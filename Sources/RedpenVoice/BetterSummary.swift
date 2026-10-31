@@ -6,20 +6,46 @@ import VoiceCore
 /// by each company's command-line tool (Claude Code, Codex, Antigravity CLI, Cursor's agent), never an API key; the
 /// first three with the same programs, flags, time limits and messages as Redpen Grammar's Deep check. Arguments go
 /// straight to the program, never through a shell. "command" is the user's own command line, for anything else
-/// (OpenRouter, a model on this Mac): it runs in their shell and gets the instructions and the transcript on stdin,
+/// (OpenRouter, Ollama): it runs in their shell and gets the instructions and the transcript on stdin,
 /// never in the command line itself. Every answer gets the same check as Apple's summary before it goes into the notes.
 enum BetterSummary {
     /// The helpers Settings looks for on this Mac. "command" is offered always, as it needs nothing installed by name.
+    /// "mac" (D-1010) is a writer downloaded to this Mac and run inside the app, offered when the Mac has the memory.
     static let helpers = ["claude", "chatgpt", "gemini", "cursor"]
+    /// The writer downloaded to this Mac and run inside the app (D-1010). Nothing leaves the Mac.
+    static let onMac = "mac"
 
     static func name(_ h: String) -> String {
-        switch h { case "chatgpt": "ChatGPT"; case "gemini": "Gemini"; case "cursor": "Cursor"; case "command": "your command"; default: "Claude" }
+        switch h {
+        case onMac: LocalNotes.writer?.name ?? "this Mac"
+        case "chatgpt": "ChatGPT"; case "gemini": "Gemini"; case "cursor": "Cursor"; case "command": "your command"; default: "Claude"
+        }
     }
     static func company(_ h: String) -> String {
         switch h { case "chatgpt": "OpenAI"; case "gemini": "Google"; case "cursor": "Cursor"; case "command": "the service your command uses"; default: "Anthropic" }
     }
     static func tool(_ h: String) -> String {
         switch h { case "chatgpt": "Codex"; case "gemini": "the Antigravity CLI"; case "cursor": "Cursor's command-line tool"; case "command": "your command"; default: "Claude Code" }
+    }
+
+    /// The bar offers a summary only from a helper that can write one: on this Mac once the writer is downloaded,
+    /// the user's own command once it's typed.
+    static func canOffer(_ h: String, command: String?) -> Bool {
+        switch h {
+        case onMac: LocalNotes.ready
+        case "command": !(command ?? "").trimmingCharacters(in: .whitespaces).isEmpty
+        default: true
+        }
+    }
+
+    /// The bar's button and its tip.
+    static func button(_ h: String) -> String { h == onMac ? "Better summary on this Mac" : "Better summary with \(name(h))" }
+    static func tip(_ h: String) -> String {
+        switch h {
+        case onMac: "Writes a second summary with \(name(h)) on this Mac and puts it on top of the notes. Nothing leaves the Mac."
+        case "command": "Gives this meeting's transcript to your own command, then puts its summary on top of the notes"
+        default: "Sends this meeting's transcript to \(name(h)) through your own plan, then puts its summary on top of the notes"
+        }
     }
 
     /// The first letter made a capital, for a name that starts a sentence ("Your command didn't answer").
@@ -62,7 +88,11 @@ enum BetterSummary {
 
     /// The line above the summary, saying who wrote it. Never the command itself, which may hold a key.
     static func label(_ h: String) -> String {
-        h == "command" ? "*Written by your own command. Check it against the transcript.*" : Meeting.betterLabel(name(h))
+        switch h {
+        case "command": Meeting.commandLabel
+        case onMac: Meeting.localLabel(name(h))
+        default: Meeting.betterLabel(name(h))
+        }
     }
 
     /// What the bar's first-time question is agreed under: the helper, or for the user's own command, the command
@@ -284,7 +314,8 @@ enum BetterSummary {
         if helper == "command", (command ?? "").trimmingCharacters(in: .whitespaces).isEmpty { return Outcome(ok: false, message: missing(helper)) }
         let t0 = Date()
         // A model on this Mac may be slow on a long meeting: the user's own command gets twice as long.
-        let answer = call(job(helper, prompt: prompt, input: transcript, command: command), limit: helper == "command" ? 600 : 300)
+        let answer = helper == onMac ? LocalNotes.answer(transcript)
+            : call(job(helper, prompt: prompt, input: transcript, command: command), limit: helper == "command" ? 600 : 300)
         guard answer.ok else {
             Log.note("meeting: better summary failed (\(helper)) after \(Log.int(Date().timeIntervalSince(t0)))s")
             return Outcome(ok: false, message: answer.text)

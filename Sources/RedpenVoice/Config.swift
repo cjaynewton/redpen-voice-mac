@@ -55,8 +55,8 @@ struct Config: Codable {
     var keepMeetingAudio: Bool?
     /// The first meeting's tip about telling people has been shown.
     var meetingTipShown: Bool?
-    /// Better summary (D-956, D-1012): "claude", "chatgpt", "gemini" or "cursor" through the user's own plan, or
-    /// "command" for their own command line; off when missing.
+    /// Better summary (D-956, D-1012): "claude", "chatgpt", "gemini" or "cursor" through the user's own plan,
+    /// "command" for their own command line, or "mac", a writer downloaded to this Mac (D-1010); off when missing.
     var betterSummaryWith: String?
     /// The user's own command for Better summary: it gets the instructions and the transcript on stdin and prints the
     /// summary. Used only when Better summary is "command".

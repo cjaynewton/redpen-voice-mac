@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import MLX
 import VoiceCore
 
 /// `--meeting-test me.wav others.wav out-folder [--engine whisper] [--no-summary]`: the whole after-stop pipeline on
@@ -72,7 +73,7 @@ enum MeetingTest {
         }
     }
 
-    /// `--summary-test notes.md out.md [--better claude|chatgpt|gemini|cursor | --better command --command "..."] [--no-apple]`
+    /// `--summary-test notes.md out.md [--better claude|chatgpt|gemini|cursor|mac | --better command --command "..."] [--no-apple]`
     /// (D-956, D-1012): the summary on an existing notes
     /// file's transcript, without transcribing again. Writes the notes with the summary to `out.md`, and the
     /// models' own answers before the check beside it (`out.apple-raw.md`, `out.<helper>-raw.md`), then prints
@@ -116,6 +117,128 @@ enum MeetingTest {
         }
         print("  file: \(out.path)")
         return 0
+    }
+
+    /// `--writer-test model-folder notes.md out.md` (D-1010): Better summary on this Mac from a writer's folder (Redpen's
+    /// copy or Hugging Face's cache), on an existing notes file's transcript, with the same rules the CLI helpers get.
+    /// Prints the load and write times, the prompt's tokens and the memory used; writes the checked summary to
+    /// `out.md` and the writer's own answer beside it (`out.local-raw.md`). Given an answer file in place of the
+    /// folder, it checks that answer instead (a writer's notes from elsewhere). Everything stays on this Mac.
+    static func writer(_ args: [String]) async -> Int32 {
+        guard args.count >= 3, let text = try? String(contentsOfFile: args[1], encoding: .utf8) else {
+            print("usage: --writer-test model-folder|answer.md notes.md out.md"); return 2
+        }
+        let out = URL(fileURLWithPath: args[2])
+        let said = Meeting.transcript(inFile: text).components(separatedBy: "\n").filter { $0.hasPrefix("[") }.joined(separator: "\n")
+        let gb = { (b: Int) in String(format: "%.2f GB", Double(b) / 1_073_741_824) }
+        var isFolder: ObjCBool = false
+        FileManager.default.fileExists(atPath: args[0], isDirectory: &isFolder)
+        print("writer-test")
+        let answer: String
+        if isFolder.boolValue {
+            let before = footprint()
+            do {
+                let w = try await LocalNotes.write(prompt: BetterSummary.prompt, input: said, folder: URL(fileURLWithPath: args[0], isDirectory: true))
+                let peak = footprint().peak
+                // The system takes a moment to reclaim what the GPU held.
+                try? await Task.sleep(for: .seconds(3))
+                print("""
+                  load: \(String(format: "%.1f", w.loadSeconds)) s
+                  prompt: \(w.promptTokens) tokens
+                  write: \(String(format: "%.1f", w.writeSeconds)) s: reading \(String(format: "%.1f", w.promptSeconds)) s, then \(w.tokens) tokens in \(String(format: "%.1f", w.answerSeconds)) s
+                  memory: \(gb(before.now)) before, peak \(gb(peak)), \(gb(footprint().now)) after unloading (MLX: peak \(gb(Memory.peakMemory)), now \(gb(Memory.activeMemory)) active, \(gb(Memory.cacheMemory)) kept)
+                """)
+                answer = w.text
+            } catch {
+                print("  failed: \(error)")
+                return 1
+            }
+            try? answer.write(to: out.deletingPathExtension().appendingPathExtension("local-raw.md"), atomically: true, encoding: .utf8)
+        } else {
+            guard let a = try? String(contentsOfFile: args[0], encoding: .utf8) else { print("  can't read the answer"); return 2 }
+            answer = a
+        }
+        guard let parsed = Meeting.parse(written: answer) else { print("  answer not in the expected form"); return 1 }
+        let c = Meeting.check(parsed, transcript: said)
+        let s = c.summary
+        print("""
+          written: \(parsed.points.count) points, \(parsed.decisions.count) decisions, \(parsed.todos.count) to-dos
+          kept: \(s.points.count) points, \(s.decisions.count) decisions, \(s.todos.count) to-dos
+          check: uncited \(c.uncited), time moved \(c.moved), left out \(c.dropped), not tasks \(c.notTasks)
+          file: \(out.path)
+        """)
+        try? Meeting.summaryMarkdown(c, transcript: said, label: Meeting.localLabel("the writer")).write(to: out, atomically: true, encoding: .utf8)
+        return 0
+    }
+
+    /// `--writer-download-test` (D-1010), run with REDPEN_VOICE_DIR set to an empty test folder: Gemma's small files
+    /// (settings and tokenizer, 32 MB, never the 5 GB model) downloaded into Redpen's models folder there, then each
+    /// checked against its hash, a second run that downloads nothing, a damaged file fetched again, a cancel part way,
+    /// and Remove. Prints PASS or FAIL for each.
+    static func download() async -> Int32 {
+        guard ProcessInfo.processInfo.environment["REDPEN_VOICE_DIR"] != nil else { print("set REDPEN_VOICE_DIR to an empty test folder"); return 2 }
+        let w = LocalWriter.gemma, small = w.files.filter { !$0.name.hasSuffix(".safetensors") }
+        let folder = LocalNotes.own(w)
+        var failed = 0
+        func check(_ name: String, _ ok: Bool, _ detail: String = "") { print("\(ok ? "PASS" : "FAIL") \(name) \(detail)"); if !ok { failed += 1 } }
+        final class Seen: @unchecked Sendable { var calls = 0; var last: Int64 = 0 }
+        // 1. Everything small, from nothing.
+        let seen = Seen()
+        let t0 = Date()
+        do { try await WriterFetch(writer: w, files: small, folder: folder).run { n in seen.calls += 1; seen.last = n } } catch { check("download", false, WriterFetch.code(error)) }
+        let total = small.reduce(Int64(0)) { $0 + $1.size }
+        check("download", small.allSatisfy { LocalWriter.matches($0, at: folder.appendingPathComponent($0.name)) },
+              "\(LocalWriter.gb(total)) in \(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
+        check("download.progress", seen.calls > 0 && seen.last == total, "\(seen.calls) reports, last \(seen.last) of \(total)")
+        check("download.inRedpensFolder", folder.path.hasPrefix(Transcriber.modelsDir.path + "/notes-writers/"))
+        // 2. Again: every file is already there and matches, so nothing comes down.
+        let again = Seen()
+        let t1 = Date()
+        try? await WriterFetch(writer: w, files: small, folder: folder).run { n in again.calls += 1; again.last = n }
+        check("resume.downloadsNothing", again.last == total && Date().timeIntervalSince(t1) < 5, String(format: "%.1f s", Date().timeIntervalSince(t1)))
+        // 3. A damaged file fails its hash and is fetched again.
+        let tok = folder.appendingPathComponent("tokenizer_config.json")
+        try? Data(repeating: 65, count: Int(small.first { $0.name == "tokenizer_config.json" }!.size)).write(to: tok)
+        check("damaged.detected", !LocalWriter.matches(small.first { $0.name == "tokenizer_config.json" }!, at: tok))
+        try? await WriterFetch(writer: w, files: small, folder: folder).run { _ in }
+        check("damaged.fetchedAgain", LocalWriter.matches(small.first { $0.name == "tokenizer_config.json" }!, at: tok))
+        // 4. Cancel part way through the 32 MB tokenizer.
+        let big = small.filter { $0.name == "tokenizer.json" }
+        try? FileManager.default.removeItem(at: folder.appendingPathComponent("tokenizer.json"))
+        let f = WriterFetch(writer: w, files: big, folder: folder)
+        let part = Seen()
+        var cancelled = false
+        do {
+            try await f.run { n in part.last = n; if n > 0 { f.cancel() } }
+        } catch { cancelled = (error as? WriterFetch.Failure) == .cancelled }
+        check("cancel.stops", cancelled && !FileManager.default.fileExists(atPath: folder.appendingPathComponent("tokenizer.json").path),
+              "stopped at \(LocalWriter.gb(part.last)) of \(LocalWriter.gb(big[0].size))")
+        // 5. Remove deletes Redpen's copy and the folders it leaves empty, and nothing in Hugging Face's cache.
+        let hubBefore = (try? FileManager.default.contentsOfDirectory(atPath: LocalNotes.hub.path))?.count
+        LocalNotes.removeOwn(w)
+        check("remove.deletesCopy", !FileManager.default.fileExists(atPath: folder.path))
+        check("remove.leavesNoEmptyFolders", !FileManager.default.fileExists(atPath: Transcriber.modelsDir.appendingPathComponent("notes-writers").path))
+        check("remove.leavesHubCache", (try? FileManager.default.contentsOfDirectory(atPath: LocalNotes.hub.path))?.count == hubBefore)
+        // 6. Never outside Redpen's models folder.
+        let outside = FileManager.default.temporaryDirectory.appendingPathComponent("rv-d1010-keep-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        LocalNotes.removeOwn(at: outside)
+        check("remove.refusesOutside", FileManager.default.fileExists(atPath: outside.path))
+        try? FileManager.default.removeItem(at: outside)
+        print("\(failed == 0 ? "all passed" : "\(failed) failed")")
+        return failed == 0 ? 0 : 1
+    }
+
+    /// This process's memory now and at its highest, as Activity Monitor counts it (the physical footprint, which
+    /// includes what the GPU holds), in bytes.
+    static func footprint() -> (now: Int, peak: Int) {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let r = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count) }
+        }
+        guard r == KERN_SUCCESS else { return (0, 0) }
+        return (Int(info.phys_footprint), Int(info.ledger_phys_footprint_peak))
     }
 
     /// The highest memory this process has used, in bytes.

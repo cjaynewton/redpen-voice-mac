@@ -138,6 +138,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { [config, engine] in exit(await MeetingTest.run(args, engine: engine, config: config, names: Names(text: Config.loadNames()))) }
             return
         }
+        // `--writer-test model-folder notes.md out.md`: Better summary on this Mac from a downloaded writer (D-1010).
+        if let i = CommandLine.arguments.firstIndex(of: "--writer-test") {
+            let args = Array(CommandLine.arguments[(i + 1)...].prefix { !$0.hasPrefix("--") })
+            Task { exit(await MeetingTest.writer(args)) }
+            return
+        }
+        // `--writer-download-test` with REDPEN_VOICE_DIR set: the writer download's small files, cancel and Remove (D-1010).
+        if CommandLine.arguments.contains("--writer-download-test") {
+            Task { exit(await MeetingTest.download()) }
+            return
+        }
         // `--summary-test notes.md out.md [--better claude]`: the summary alone, on notes already written (D-956).
         if let i = CommandLine.arguments.firstIndex(of: "--summary-test") {
             let args = Array(CommandLine.arguments[(i + 1)...].prefix { !$0.hasPrefix("--") })
@@ -1983,7 +1994,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let command = h == "command" ? config.betterSummaryCommand : nil
         let key = BetterSummary.agreement(h, command: command)
         if h == "command", (command ?? "").trimmingCharacters(in: .whitespaces).isEmpty { meetingBar.finish(BetterSummary.missing(h), ok: false); return }
-        if !(config.betterSummaryAgreed ?? []).contains(key) {
+        // On this Mac (D-1010) nothing is sent, so there is nothing to agree to.
+        if h != BetterSummary.onMac, !(config.betterSummaryAgreed ?? []).contains(key) {
             let a = NSAlert()
             if h == "command" {
                 a.messageText = "Give this meeting's transcript to your command?"
@@ -2001,7 +2013,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var c = Config.load(); c.betterSummaryAgreed = (c.betterSummaryAgreed ?? []) + [key]; c.save()
             config.betterSummaryAgreed = c.betterSummaryAgreed; syncSettings()
         }
-        meetingBar.showBusy(h == "command" ? "Running your command for a better summary…" : "Asking \(who) for a better summary…")
+        meetingBar.showBusy(h == BetterSummary.onMac ? "Writing a better summary on this Mac…"
+                            : h == "command" ? "Running your command for a better summary…" : "Asking \(who) for a better summary…")
         Task.detached { [weak self] in
             let r = BetterSummary.write(file: file, helper: h, command: command)
             await MainActor.run {
@@ -2112,7 +2125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if self.meeting == nil {
                     self.lastNotes = r.file
                     // A better summary is offered only when chosen in Settings and something was heard.
-                    if let h = self.config.betterSummaryWith, h != "command" || !(self.config.betterSummaryCommand ?? "").trimmingCharacters(in: .whitespaces).isEmpty,
+                    if let h = self.config.betterSummaryWith, BetterSummary.canOffer(h, command: self.config.betterSummaryCommand),
                        r.meLines + r.othersLines > 0, r.summary != "skipped" { self.meetingBar.offer(h) }
                     else { self.meetingBar.finish("Notes saved", ok: true) }
                 }
