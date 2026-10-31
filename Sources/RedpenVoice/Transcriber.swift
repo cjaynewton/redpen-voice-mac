@@ -102,22 +102,29 @@ final class Transcriber {
     /// Finds the language model, downloads it the first time, and remembers the audio format it wants.
     func prepare(_ config: Config) async {
         generation += 1
+        let mine = generation
+        // A preparation for an engine you have since left (a 626 MB download can take minutes) must not set the
+        // audio format or the state when it finishes: Whisper's float format under the Mac engine, or the Mac
+        // engine's format under Whisper (whose sessions read float samples only), loses the dictation's audio.
+        func current() -> Bool { generation == mine }
         set(.checking)
         if config.engine == "whisper" {
-            await prepareWhisper()
-            if config.draftMode == true || config.riskMarks == true { await loadDraftEngine() }
+            await prepareWhisper(current)
+            if current(), config.draftMode == true || config.riskMarks == true { await loadDraftEngine() }
             return
         }
-        if config.engine == "parakeet" { await prepareParakeet(); return }
+        if config.engine == "parakeet" { await prepareParakeet(current); return }
         if config.engine == "live" { await prepareLive(); return }
         let wanted = Locale(identifier: config.locale)
         let supported = await DictationTranscriber.supportedLocale(equivalentTo: wanted)
+        guard current() else { return }
         guard let supported else { set(.unsupported); Log.note("engine: locale \(config.locale) unsupported"); return }
         locale = supported
         let m = module(config)
         do {
             let status = await AssetInventory.status(forModules: [m])
             Log.note("engine: asset status \(status)")
+            guard current() else { return }
             if status == .unsupported { set(.unsupported); return }
             if status != .installed {
                 _ = try await AssetInventory.reserve(locale: locale)
@@ -125,6 +132,7 @@ final class Transcriber {
                     set(.downloading(0))
                     let watch = Task { [weak self] in
                         while !Task.isCancelled {
+                            guard self?.generation == mine else { break }
                             self?.set(.downloading(Int(req.progress.fractionCompleted * 100)))
                             try? await Task.sleep(for: .seconds(1))
                         }
@@ -133,17 +141,20 @@ final class Transcriber {
                     watch.cancel()
                 }
             }
-            format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [m])
-            guard format != nil else { set(.failed("no audio format")); return }
+            let best = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [m])
+            guard current() else { Log.note("engine: Mac engine ready after you switched away, not used"); return }
+            format = best
+            guard let best else { set(.failed("no audio format")); return }
             set(.ready)
-            Log.note("engine: ready, \(locale.identifier), \(format!.sampleRate) Hz")
+            Log.note("engine: ready, \(locale.identifier), \(best.sampleRate) Hz")
         } catch {
+            guard current() else { return }
             set(.failed(error.localizedDescription)); Log.note("engine: failed \(error.localizedDescription)")
         }
     }
 
     /// Downloads Parakeet the first time (about 600 MB), then loads it. Later launches load it from disk.
-    private func prepareParakeet() async {
+    private func prepareParakeet(_ current: () -> Bool) async {
         do {
             if parakeet == nil {
                 if !Self.parakeetOnDisk { set(.downloading(0)) }
@@ -155,10 +166,12 @@ final class Transcriber {
                 FileManager.default.createFile(atPath: Self.parakeetMarker.path, contents: nil)
                 Log.note("engine: parakeet loaded in \(Log.int(Date().timeIntervalSince(t)))s")
             }
+            guard current() else { return }
             format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)
             set(.ready)
             Log.note("engine: ready, parakeet")
         } catch {
+            guard current() else { return }
             set(.failed(error.localizedDescription)); Log.note("engine: parakeet failed \(error.localizedDescription)")
         }
     }
@@ -238,14 +251,16 @@ final class Transcriber {
     }
 
     /// Downloads Whisper the first time (626 MB), then loads it. Later launches load it from disk with no network.
-    private func prepareWhisper() async {
+    private func prepareWhisper(_ current: @escaping () -> Bool) async {
         do {
             if !Self.whisperOnDisk { set(.downloading(0)) }
-            try await fetchWhisper { [weak self] p in self?.set(.downloading(Int(p * 100))) }
+            try await fetchWhisper { [weak self] p in if current() { self?.set(.downloading(Int(p * 100))) } }
+            guard current() else { Log.note("engine: whisper loaded after you switched away, kept for later"); return }
             format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)
             set(.ready)
             Log.note("engine: ready, whisper")
         } catch {
+            guard current() else { return }
             set(.failed(error.localizedDescription)); Log.note("engine: whisper failed \(error.localizedDescription)")
         }
     }
