@@ -1,4 +1,5 @@
 import AppKit
+import VoiceCore
 
 /// Reopens Redpen Voice within a second or two if it crashes, so nobody ever has to restart it by hand. The app starts
 /// a small copy of itself in watchdog mode (`--watchdog <pid>`), which waits for the app to end. A normal quit leaves a
