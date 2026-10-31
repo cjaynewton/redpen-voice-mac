@@ -481,8 +481,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.state.totalWords = total.words; menu.state.totalSaved = total.minutesSaved
             // `ready`: drawn as a set-up Mac (engine loaded, Fn key already set), for the README pictures.
             if CommandLine.arguments.contains("ready") { menu.state.ready = true; menu.state.status = "Ready"; menu.state.warning = nil }
-            // `meeting`: drawn 12:34 into meeting notes, with an earlier meeting's notes being written (D-951).
-            if CommandLine.arguments.contains("meeting") { menu.state.meetingStarted = Date().addingTimeInterval(-754); menu.state.notesStatus = "Writing notes 40%" }
+            // `meeting`: drawn 12:34 into meeting notes, with an earlier meeting's notes being written (D-951); the README picture leaves the earlier meeting out.
+            if CommandLine.arguments.contains("meeting") {
+                menu.state.meetingStarted = Date().addingTimeInterval(-754)
+                if !CommandLine.arguments.contains("ready") { menu.state.notesStatus = "Writing notes 40%" }
+            }
             let v = NSHostingView(rootView: MenuPanel(model: menu))
             v.frame = NSRect(origin: .zero, size: v.fittingSize)
             Self.shoot(v, to: CommandLine.arguments[i + 1])

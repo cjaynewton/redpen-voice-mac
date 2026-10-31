@@ -64,6 +64,45 @@ Tap the talk key twice to start hands-free. Tap once to stop. Extra taps just af
 - **Pauses your music and video** when you hold to talk or start hands-free, only when something is actually playing. It starts them again after the words are finished. Turn off "Play again when I stop talking" in Settings to leave them paused.
 - **Transcribe a file.** Turn an audio or video file the Mac can read into text, saved beside the file, or on the Desktop if that folder can't be written to.
 
+## Meeting notes
+
+Voice can take notes on a call in Zoom, Meet, Teams or any app that plays the call through your Mac. Choose Start meeting notes in the menu. Your microphone is recorded as Me and what the Mac plays is recorded as Others, each on its own track, so the transcript knows who said what without guessing from voices.
+
+The first time, Voice reminds you to tell people you're taking notes and can copy a short notice for the meeting chat. On laptop speakers the microphone also hears the others; Voice drops those echoed lines from Me, and headphones avoid them.
+
+A small bar stays at the bottom of the screen while it records. It shows the time, a level for Me and one for Others, and Pause and Stop. Drag it anywhere and it remembers the spot. Click the time to fold it down to the red square. Control-Option-P pauses and resumes, and Control-Option-M stops, even while another app is in front. The bar never takes the focus from the call and hides while you dictate.
+
+<p align="center">
+  <img src="docs/screenshots/meeting-bar-recording.png" alt="The meeting bar while recording: a red square, 12:34, a level for Me and one for Others, Pause and a red Stop button" width="382">
+</p>
+
+<table>
+<tr>
+<td valign="top"><img src="docs/screenshots/meeting-bar-paused.png" alt="The meeting bar paused: Paused next to the time, flat levels and a Resume button" width="451"><br><b>Paused</b><br>Nothing is recorded until you resume. The transcript marks how long the pause was.</td>
+</tr>
+<tr>
+<td valign="top"><img src="docs/screenshots/meeting-bar-no-sound.png" alt="The meeting bar warning No sound from the Mac, with an Allow it link" width="583"><br><b>No sound from the Mac</b><br>If the Mac has played no sound at all after 20 seconds, the bar says so. Allow it opens the System Audio Recording setting.</td>
+</tr>
+<tr>
+<td valign="top"><img src="docs/screenshots/meeting-bar-writing.png" alt="The bar writing notes at 40 percent, with a progress line" width="301"><br><b>Writing notes</b><br>After Stop, the notes are written on your Mac and the file opens when it's done.</td>
+</tr>
+</table>
+
+The notes are one Markdown file in `~/Redpen Meetings`, named with the date and time. At the top is a summary with key points, decisions and to-dos, written on this Mac by Apple's model and labelled so you check it against the transcript. If Apple's model isn't available, the file says why there is no summary. Below it is the transcript, one paragraph per turn, each with its time and Me or Others. The audio is kept beside the notes, one file for each track, unless you turn that off in Settings.
+
+The recording is saved to disk as it goes. If Voice or the Mac quits during a meeting, the menu offers to write notes for the unfinished meeting the next time it opens.
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/menu-meeting-dark.png">
+  <img src="docs/screenshots/menu-meeting-light.png" alt="The menu during a meeting: Stop meeting notes with the time, in red, Pause meeting notes, and Copy notice for the meeting chat" width="300">
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/settings-meeting-dark.png">
+  <img src="docs/screenshots/settings-meeting-light.png" alt="The Meeting notes part of Settings: the folder the notes go in, with Change, and Keep the audio" width="540">
+</picture>
+</p>
+
 ## The menu
 
 Click the Voice icon in the menu bar for today's words, your speed and the minutes they saved you, with an all-time line under them; the two switches; Paste last dictation, History, Stats, Transcribe a file, Settings and Check for updates.
@@ -175,6 +214,7 @@ On [TORGO](https://www.cs.toronto.edu/~complingweb/data/TORGO/torgo.html), recor
 - **Clipboard.** Ordinary dictation leaves your clipboard alone. Paste last marks its text so clipboard managers can skip it. Voice puts back every original clipboard item and format only after confirming the paste, unless you copied something new meanwhile. It waits up to 1.2 seconds for the shortcut keys to come up and up to 2 seconds after posting the paste. If delivery can't be confirmed, the words stay on the clipboard for Command-V. A second Paste last is refused while one is in progress and for 1.5 seconds after it finishes. An app can still accept a paste late, so check the box before pasting again.
 - **How long dictations are kept** is your choice in the History window: the last 2,000, the last week, or nothing (Paste last then works until Voice quits).
 - **Videos.** When it pauses a video, it listens to that app's sound for about a second, in memory only. Whisper uses those words to remove the video's speech from the start; the other engines leave out the opening sound instead. While the pause is held, Voice also checks short samples for unexpected playback. No system audio is saved.
+- **Meeting notes.** Only while you take meeting notes, Voice records your microphone and the Mac's sound to `~/Library/Application Support/Redpen Voice/Meetings in progress/`. When the notes are written, that folder is deleted and the notes go to your meetings folder (`~/Redpen Meetings` unless you choose another), with the audio beside them if Keep the audio is on. Settings warns you if the folder you pick is synced to a cloud service. The summary is written on this Mac by Apple's model. The log holds timings and counts, never the words.
 - **Network.** The Whisper or Instant model downloads once from Hugging Face if you choose one; Apple's speech files for your language download once from Apple if the Mac doesn't have them yet; and the app checks GitHub once a day for a newer version.
 
 ## Install

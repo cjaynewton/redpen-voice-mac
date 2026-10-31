@@ -310,7 +310,11 @@ final class MeetingBar: NSObject {
             panel.orderFrontRegardless()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [self] in
                 box.display()
-                if let rep = box.bitmapImageRepForCachingDisplay(in: box.bounds) {
+                // Twice the size, as a Retina screen shows it, like the other README pictures.
+                if let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(box.bounds.width * 2), pixelsHigh: Int(box.bounds.height * 2),
+                                              bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                              bytesPerRow: 0, bitsPerPixel: 0) {
+                    rep.size = box.bounds.size
                     box.cacheDisplay(in: box.bounds, to: rep)
                     try? rep.representation(using: .png, properties: [:])?.write(to: folder.appendingPathComponent("meeting-bar-\(name).png"))
                 }
