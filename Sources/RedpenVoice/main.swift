@@ -1349,8 +1349,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// conversation (D-998): the drafts are out of reach, so nothing more is typed anywhere and Paste last has it.
     private func finishDrafts(_ d: Drafting, _ s: Transcriber.Session, text: String, released: Date) -> DraftEnd {
         let end: DraftEnd
-        if s.echoFailed { draftBlocked(d, .echoFailed, during: "ending"); end = .kept }
-        else if text.isEmpty { draftBlocked(d, .emptyText, during: "ending"); end = .kept }
+        // Neither ending types anything, so the bar says why or goes: it used to stay on Writing until the next press.
+        if s.echoFailed {
+            draftBlocked(d, .echoFailed, during: "ending"); end = .kept
+            hud.flash("A video was playing and its words couldn't be checked. Press ⌃⌥V to paste", for: 3.5)
+        }
+        else if text.isEmpty { draftBlocked(d, .emptyText, during: "ending"); end = .kept; hud.hide() }
         else {
             // An uncertain draft only matters if it changed the box: one that reads exactly as Voice's confirmed
             // record still holds just the drafts in d.runs.
