@@ -36,6 +36,9 @@ final class StatsModel: ObservableObject {
     var load: () -> [DayStats]
     var onReset: () -> Void = {}
     var openSettings: () -> Void = {}
+    /// Words landed (D-1034): what the log says about every word going in, read each time the window is drawn again.
+    @Published var landed: WordsLanded.Read?
+    var loadLanded: () -> WordsLanded.Read? = { nil }
 
     private var watches: [NSObjectProtocol] = []
 
@@ -48,7 +51,7 @@ final class StatsModel: ObservableObject {
                    NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main, using: refresh)]
     }
 
-    func reload() { days = load() }
+    func reload() { days = load(); landed = loadLanded() }
     func reset() { onReset(); reload() }
 
     /// Made-up heavy daily use from August 16, 2026 through today, shared by all pictures that show stats.
@@ -77,6 +80,32 @@ final class StatsModel: ObservableObject {
         }
         return out
     }
+
+    /// Made-up log lines in the real formats for pictures (D-1034): a week of dictations, a few kept and one lost.
+    /// Never anyone's real log.
+    static func sampleLanded(now: Date, calendar: Calendar = .current) -> WordsLanded.Read {
+        let iso = ISO8601DateFormatter()
+        var lines: [String] = []
+        let today = calendar.startOfDay(for: now)
+        for back in (0..<7).reversed() {
+            guard let day = calendar.date(byAdding: .day, value: -back, to: today) else { continue }
+            let n = calendar.isDateInWeekend(day) ? 9 : 46 - back * 2
+            // Today's run ends now, the build started just before it; earlier days start at 9.
+            let start = back == 0 ? max(day, now.addingTimeInterval(-Double(n) * 60)) : day.addingTimeInterval(9 * 3600)
+            let step = back == 0 ? (now.timeIntervalSince(start) / Double(n + 1)) : 300
+            if back == 0 { lines.append(iso.string(from: start) + " launched 0.13.0 (15), built sample") }
+            for i in 0..<n {
+                let t = start.addingTimeInterval(Double(i + 1) * step)
+                if t > now { break }
+                let s = iso.string(from: t)
+                lines.append("\(s) audio: 63344 frames (4.0s), peak 0.344")
+                if i % 23 == 7 { lines.append("\(s) insert: the box you started in was sent after Voice typed into it, nothing typed again, kept for paste") }
+                if i == 30, back == 3 { lines.append("\(s) engine: the ending failed, 4 pieces kept") }
+                lines.append("\(s) dictation 6s, 18 words, write 200ms, engine 1500ms, key up to done 2100ms, into Sample, inserted \(i % 23 != 7)")
+            }
+        }
+        return WordsLanded.read(lines.joined(separator: "\n"))
+    }
 }
 
 struct StatsView: View {
@@ -100,6 +129,9 @@ struct StatsView: View {
                         .font(.system(size: 13)).foregroundStyle(Ink.dim).padding(.top, 28)
                 } else {
                     totals.padding(.top, 26)
+                }
+                if let r = model.landed { landedSection(r) }
+                if !model.days.isEmpty {
                     heading("Words a day", "The last 30 days.")
                     WordsChart(points: Stats.daily(model.days, now: model.now()))
                         .frame(height: 132)
@@ -148,6 +180,31 @@ struct StatsView: View {
     private func line(_ figure: String, _ label: String) -> some View {
         (Text(figure).foregroundStyle(Ink.text).fontWeight(.medium) + Text(" " + label).foregroundStyle(Ink.mid))
             .font(.system(size: 13)).monospacedDigit()
+    }
+
+    // MARK: Words landed
+
+    /// One plain line a day for the last 7 days (D-1034), today first, then this build's rate and why words were
+    /// kept or lost. From the log, so it reaches back only as far as the log does.
+    private func landedSection(_ r: WordsLanded.Read) -> some View {
+        let now = model.now(), cal = Calendar.current
+        let week = cal.date(byAdding: .day, value: -6, to: cal.startOfDay(for: now)) ?? now
+        let lines = WordsLanded.table(r, now: now, calendar: cal)
+        return VStack(alignment: .leading, spacing: 0) {
+            heading("Words landed", "Did every word go in? Landed in full means they went in and Voice found nothing wrong. Kept means they wait on Paste last (⌃⌥V) and in History. Lost means some never came out of the engine.")
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(Array(lines.enumerated()), id: \.offset) { i, l in
+                    Text(l).foregroundStyle(i == 0 ? Ink.text : Ink.mid)
+                }
+            }.font(.system(size: 13)).monospacedDigit()
+            VStack(alignment: .leading, spacing: 4) {
+                if let s = WordsLanded.sinceLine(r, calendar: cal) { Text(s).foregroundStyle(Ink.text) }
+                if let why = WordsLanded.reasonsLine(r, from: week) { Text(why).foregroundStyle(Ink.mid) }
+                Text(r.first.map { "From the log on this Mac, which goes back to \(WordsLanded.stamp($0, calendar: cal)). Voice starts a new log when it passes 1 MB." }
+                     ?? "Nothing in the log yet.").foregroundStyle(Ink.dim)
+            }
+            .font(.system(size: 12.5)).monospacedDigit().fixedSize(horizontal: false, vertical: true).padding(.top, 10)
+        }
     }
 
     // MARK: Speed
