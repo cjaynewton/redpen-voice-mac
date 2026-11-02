@@ -900,6 +900,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             Log.note("media: apps [\(players.map(\.name).joined(separator: ", "))], loudness \(peak.map { String(format: "%.4f", $0) } ?? "no tap"), paused \(playing)")
                             guard playing else { s.mediaSettled(); return }  // nothing playing: every word kept
                             self.pausedMedia = true
+                            // The last pause's watch would see this video still playing while Chrome answers and give
+                            // the new pause up (Nov 2 2026). It starts again, for this pause, once the pause is made.
+                            self.mediaPauseMonitor.stop()
                             let pauseToken = self.mediaPause.generation
                             // Until Chrome answers, a resume has nothing to put back, so it presses nothing.
                             self.pausedHow = .chrome(token: "", tabs: [])

@@ -64,8 +64,9 @@ enum Media {
         let token = BrowserMedia.token()
         let js = BrowserMedia.pauseScript(token: token)
         chrome.async {
-            var result = run(BrowserMedia.pauseRunner, [js, "front"])
-            if result == .nothingFound { result = run(BrowserMedia.pauseRunner, [js, "all"]) }
+            let started = Date()
+            let result = run(BrowserMedia.pauseRunner, [js, "first"], limit: 4)
+            Log.note("media: Chrome answered in \(Log.ms(Date().timeIntervalSince(started)))ms")
             DispatchQueue.main.async {
                 guard stillPaused() else {
                     if case .handled(let tabs, _) = result { resume(.chrome(token: token, tabs: tabs)) }
@@ -74,21 +75,25 @@ enum Media {
                 }
                 switch result {
                 case .handled(let tabs, _): done(.chrome(token: token, tabs: tabs), result)
-                case .failed("timed out"): done(.chrome(token: token, tabs: []), result)
+                // Too slow to know what paused: press nothing, and the resume looks in every tab for this pause's marks.
+                case .failed("timed out"), .failed("slow"): done(.chrome(token: token, tabs: []), result)
                 default: pressPlayPause(); done(.key, result)
                 }
             }
         }
     }
 
-    /// Plays back what `pause` paused. Chrome tabs get their own videos back and nothing else; a Chrome pause that
-    /// timed out (no tabs known) presses nothing.
+    /// Plays back what `pause` paused. Chrome tabs get their own videos back and nothing else. A Chrome pause that was
+    /// too slow to say which tabs looks in every tab for its marks, so a pause that landed late still comes back; one
+    /// that never got an answer at all (no token yet) presses nothing.
     static func resume(_ paused: Paused, wait: Bool = false) {
         guard case .chrome(let token, let tabs) = paused else { pressPlayPause(); return }
-        guard !tabs.isEmpty else { return }
+        guard !token.isEmpty else { return }
+        let js = BrowserMedia.resumeScript(token: token)
         let work = {
-            let r = run(BrowserMedia.resumeRunner, [BrowserMedia.resumeScript(token: token)] + tabs.map(String.init))
-            Log.note("media: Chrome resume, \(r)")
+            let r = tabs.isEmpty ? run(BrowserMedia.pauseRunner, [js, "every"], limit: 4)
+                                 : run(BrowserMedia.resumeRunner, [js] + tabs.map(String.init))
+            Log.note("media: Chrome resume\(tabs.isEmpty ? " (every tab)" : ""), \(r)")
         }
         // Quitting: finish before the app goes, but never hold the quit longer than the run's own time limit.
         if wait { chrome.sync(execute: work) } else { chrome.async(execute: work) }

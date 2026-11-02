@@ -602,6 +602,9 @@ check("browser.notchrome", !BrowserMedia.isChrome(path: "/System/Applications/Mu
 check("browser.handled", BrowserMedia.outcome(status: 0, output: "1234:1,5678:2\n", error: "") == .handled(tabs: [1234, 5678], count: 3))
 check("browser.none", BrowserMedia.outcome(status: 0, output: "\n", error: "") == .nothingFound)
 check("browser.zero", BrowserMedia.outcome(status: 0, output: "1234:0", error: "") == .nothingFound)
+check("browser.slow", BrowserMedia.outcome(status: 0, output: "slow", error: "") == .failed("slow"))
+check("browser.slow.found", BrowserMedia.outcome(status: 0, output: "1234:1,slow", error: "") == .handled(tabs: [1234], count: 1))
+check("browser.runner.sites", BrowserMedia.pauseRunner.contains("\"primevideo.\"") && BrowserMedia.pauseRunner.contains("with timeout of 1 second"))
 check("browser.off", BrowserMedia.outcome(status: 1, output: "", error: "execution error: Google Chrome got an error: Executing JavaScript through AppleScript is turned off. To turn it on, from the menu bar, go to View > Developer > Allow JavaScript from Apple Events. (12)") == .scriptsOff)
 check("browser.denied", BrowserMedia.outcome(status: 1, output: "", error: "execution error: Not authorized to send Apple events to Google Chrome. (-1743)") == .notAllowed)
 if case .failed = BrowserMedia.outcome(status: 1, output: "", error: "execution error: something else (-1728)") { check("browser.failed", true) } else { check("browser.failed", false) }
