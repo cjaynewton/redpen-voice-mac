@@ -482,7 +482,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // `command`: drawn with Better summary set to your own command. Given at init, so nothing is saved.
             var shown = config
             if CommandLine.arguments.contains("command") { shown.betterSummaryWith = "command"; shown.betterSummaryCommand = "ollama run llama3.2" }
-            // `room`: drawn with Voices in the room and Know my voice on (D-1034).
+            // `room`: drawn with Tell people apart in person and Know my voice on (D-1034).
             if CommandLine.arguments.contains("room") { shown.roomVoices = true; shown.knowMyVoice = true }
             let model = SettingsModel(config: shown, engine: engine) { _ in }
             let sample = StatsModel.sample(now: Date())

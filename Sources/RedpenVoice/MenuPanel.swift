@@ -22,7 +22,7 @@ struct MenuState {
     var meetingPaused = false
     var notesStatus: String?
     var unfinished = 0
-    /// Voices in the room is on (D-1034), so the menu offers to name them.
+    /// Tell people apart in person is on (D-1034), so the menu offers to name them.
     var nameVoices = false
     /// A newer version found by the daily check, shown instead of a window over your work.
     var update: String?

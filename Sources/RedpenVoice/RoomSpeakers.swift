@@ -55,7 +55,7 @@ enum RoomSpeakers {
         }
     }
 
-    /// Downloads the models from Hugging Face, once, when the user turns on Voices in the room.
+    /// Downloads the models from Hugging Face, once, when the user turns on Tell people apart in person.
     static func download() async throws {
         let m = OfflineDiarizerManager(config: config())
         try await m.prepareModels()
