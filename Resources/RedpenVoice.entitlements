@@ -5,5 +5,8 @@
 	<!-- The hardened runtime blocks the microphone unless the app says it uses it. -->
 	<key>com.apple.security.device.audio-input</key>
 	<true/>
+	<!-- Asking Chrome to pause the tab that is playing, instead of pressing the play/pause key. -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
 </dict>
 </plist>
