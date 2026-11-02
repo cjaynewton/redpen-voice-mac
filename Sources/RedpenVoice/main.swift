@@ -737,7 +737,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let m = meeting { _ = m.stop(); meeting = nil; Log.note("meeting: quit mid-meeting, the recording is kept for the next launch") }
         guard session != nil else {
             // Words still being written are dropped on quit; the video they paused is put back.
-            if pausedMedia, config.resumeMedia ?? true { pausedMedia = false; Media.pressPlayPause(); Log.note("media: resumed on quit") }
+            if pausedMedia, config.resumeMedia ?? true { pausedMedia = false; Media.resume(pausedHow, wait: true); Log.note("media: resumed on quit") }
             return .terminateNow
         }
         Log.note("quit asked mid-dictation, finishing first")
@@ -899,34 +899,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             let playing = MediaGate.isPlaying(peak: peak)
                             Log.note("media: apps [\(players.map(\.name).joined(separator: ", "))], loudness \(peak.map { String(format: "%.4f", $0) } ?? "no tap"), paused \(playing)")
                             guard playing else { s.mediaSettled(); return }  // nothing playing: every word kept
-                            self.pausedMedia = true; Media.pressPlayPause()
-                            let pauseWatch = self.mediaPauseMonitor.start(players)
-                            let pausedAt = Date()
-                            // The video's own sound reached the mic until the pause took hold: listen for that app going
-                            // quiet, then leave out everything before it, plus 0.15 s for the speakers and the room.
-                            Self.waitForQuiet(players.map(\.object), tries: 8, record: played) { quietAt in
-                                DispatchQueue.main.async {
-                                    self.mediaPauseMonitor.didSettle(pauseWatch)
-                                    // Every word you said is kept and the video's words come off the start (D-817),
-                                    // when Voice heard the video and the engine can write it down. Otherwise the
-                                    // start is left out as before: the Mac's own engine, drafts typed as you talk,
-                                    // nothing heard, or Instant, which drops the rest of a dictation when two voices
-                                    // overlap (6 of 211 WildSpeech clips with other people talking, Oct 26 2026).
-                                    let audio = played.mono16k()
-                                    let canTakeOff = ["whisper", "parakeet"].contains(self.config.engine) && s.drafter == nil
-                                    if canTakeOff, played.peak > 0, audio.count > 1600 {
-                                        // The second before the key went down came from the mic alone; the app's sound
-                                        // wasn't heard then, so that part is left out, all but its last 0.15 s.
-                                        if mine.preRoll > 2400 { s.silence(upTo: mine.preRoll - 2400) }
-                                        s.mediaEcho(audio)
+                            self.pausedMedia = true
+                            let pauseToken = self.mediaPause.generation
+                            // Until Chrome answers, a resume has nothing to put back, so it presses nothing.
+                            self.pausedHow = .chrome(token: "", tabs: [])
+                            Media.pause(players, stillPaused: { [weak self] in self?.mediaPause.owns(pauseToken) == true }) { how, outcome in
+                                self.chromeAnswer(outcome)
+                                guard let how else { s.mediaSettled(); return }
+                                self.pausedHow = how
+                                let pauseWatch = self.mediaPauseMonitor.start(players)
+                                let pausedAt = Date()
+                                // The video's own sound reached the mic until the pause took hold: listen for that app going
+                                // quiet, then leave out everything before it, plus 0.15 s for the speakers and the room.
+                                Self.waitForQuiet(players.map(\.object), tries: 8, record: played) { quietAt in
+                                    DispatchQueue.main.async {
+                                        self.mediaPauseMonitor.didSettle(pauseWatch)
+                                        // Every word you said is kept and the video's words come off the start (D-817),
+                                        // when Voice heard the video and the engine can write it down. Otherwise the
+                                        // start is left out as before: the Mac's own engine, drafts typed as you talk,
+                                        // nothing heard, or Instant, which drops the rest of a dictation when two voices
+                                        // overlap (6 of 211 WildSpeech clips with other people talking, Oct 26 2026).
+                                        let audio = played.mono16k()
+                                        let canTakeOff = ["whisper", "parakeet"].contains(self.config.engine) && s.drafter == nil
+                                        if canTakeOff, played.peak > 0, audio.count > 1600 {
+                                            // The second before the key went down came from the mic alone; the app's sound
+                                            // wasn't heard then, so that part is left out, all but its last 0.15 s.
+                                            if mine.preRoll > 2400 { s.silence(upTo: mine.preRoll - 2400) }
+                                            s.mediaEcho(audio)
+                                            s.mediaSettled()
+                                            Log.note("media: kept every word; the video's \(String(format: "%.1f", Double(audio.count) / 16000)) s will come off the start, quiet \(Log.ms(quietAt.timeIntervalSince(pausedAt)))ms after the pause")
+                                            return
+                                        }
+                                        let cut = s.sampleAt(quietAt.addingTimeInterval(0.15))
+                                        s.silence(upTo: cut)
                                         s.mediaSettled()
-                                        Log.note("media: kept every word; the video's \(String(format: "%.1f", Double(audio.count) / 16000)) s will come off the start, quiet \(Log.ms(quietAt.timeIntervalSince(pausedAt)))ms after the pause")
-                                        return
+                                        Log.note("media: left out the first \(String(format: "%.1f", Double(cut) / 16000)) s (the video's sound), quiet \(Log.ms(quietAt.timeIntervalSince(pausedAt)))ms after the pause")
                                     }
-                                    let cut = s.sampleAt(quietAt.addingTimeInterval(0.15))
-                                    s.silence(upTo: cut)
-                                    s.mediaSettled()
-                                    Log.note("media: left out the first \(String(format: "%.1f", Double(cut) / 16000)) s (the video's sound), quiet \(Log.ms(quietAt.timeIntervalSince(pausedAt)))ms after the pause")
                                 }
                             }
                         }
@@ -1859,17 +1867,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: w)
     }
     private var resumeWork: DispatchWorkItem?
+    /// How the held pause was made, so the video comes back the same way (the key, or the same Chrome tabs).
+    private var pausedHow: Media.Paused = .key
+    private var chromeHintShown = false
+    private var chromeHint: String?
+
+    /// Logs how Chrome answered a pause and, once a run, says how to let Voice pause the right tab when it couldn't.
+    /// The hint waits for the video to come back, so it never covers the talking bar.
+    private func chromeAnswer(_ outcome: BrowserMedia.Outcome?) {
+        guard let outcome else { return }
+        Log.note("media: Chrome pause, \(outcome)")
+        guard !chromeHintShown, outcome == .scriptsOff || outcome == .notAllowed else { return }
+        chromeHintShown = true
+        chromeHint = outcome == .scriptsOff
+            ? "To pause the right video, turn on Chrome's View › Developer › Allow JavaScript from Apple Events"
+            : "To pause the right video, allow Redpen Voice to control Chrome in Privacy & Security › Automation"
+    }
 
     private func resumeNow() {
         resumeWork = nil
+        if let hint = chromeHint, session == nil { chromeHint = nil; hud.flash(hint, for: 5) }
         guard MediaGate.shouldResume(paused: pausedMedia, recordingAgain: session != nil || writing > 0) else { return }
         let pauseToken = mediaPause.generation
         // "Play again when I stop talking" off: pause only, so nothing ever starts by itself.
         guard config.resumeMedia ?? true else { pausedMedia = false; Log.note("media: left paused, play again is off"); return }
         // Quitting: no time to listen, the app is about to go.
-        if quitting { pausedMedia = false; Media.pressPlayPause(); Log.note("media: resumed on quit"); return }
+        if quitting { pausedMedia = false; Media.resume(pausedHow, wait: true); Log.note("media: resumed on quit"); return }
         let players = Media.playingApps()
-        guard !players.isEmpty else { pausedMedia = false; Media.pressPlayPause(); Log.note("media: resumed"); return }
+        guard !players.isEmpty else { pausedMedia = false; Media.resume(pausedHow); Log.note("media: resumed"); return }
         SoundTap.loudness(of: players.map(\.object), for: 0.2) { peak in
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.mediaPause.owns(pauseToken) else { return }
@@ -1883,7 +1908,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     Log.note("media: not resumed, couldn't listen to [\(players.map(\.name).joined(separator: ", "))]")
                 } else if MediaGate.shouldResume(paused: true, playingNow: playing) {
                     self.pausedMedia = false
-                    Media.pressPlayPause()
+                    Media.resume(self.pausedHow)
                     Log.note("media: resumed")
                 } else {
                     self.pausedMedia = false

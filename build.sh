@@ -61,6 +61,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>SUEnableAutomaticChecks</key><true/>
   <key>NSMicrophoneUsageDescription</key><string>Redpen Voice keeps the microphone on while it's open, holding only the last 0.6 seconds in memory so your first word isn't cut. Nothing is kept until you press the talk key. When you start meeting notes, it records your microphone and saves it in your meetings folder on this Mac.</string>
   <key>NSAudioCaptureUsageDescription</key><string>When a video or song is playing as you start talking, Redpen Voice listens to that app for about a second, to pause it and to take its words off the start of your dictation. That is held in memory only and never saved. When you start meeting notes, it records what the Mac plays and saves it in your meetings folder on this Mac.</string>
+  <key>NSAppleEventsUsageDescription</key><string>When a Chrome video is playing as you start talking, Redpen Voice asks that tab to pause it, and plays it again when you stop. With several video tabs open, the play/pause key can start the wrong one.</string>
   <key>NSSpeechRecognitionUsageDescription</key><string>Redpen Voice turns your speech into text on this Mac.</string>
 </dict></plist>
 PLIST

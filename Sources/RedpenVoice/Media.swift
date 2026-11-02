@@ -47,4 +47,79 @@ enum Media {
         guard let pair = VoiceEvents.playPausePair() else { return }
         pair.down.post(tap: .cghidEventTap); pair.up.post(tap: .cghidEventTap)
     }
+
+    /// How a pause was made, so the video comes back the same way: the key again, or the same Chrome tabs.
+    enum Paused { case key, chrome(token: String, tabs: [Int]) }
+
+    /// Pauses what is playing. Sound from Chrome is paused in its tabs (the tab showing in each window first, then
+    /// every tab), so the key can't land on a paused tab and start it. Anything else, or Chrome saying no, gets the
+    /// key as before. Chrome taking too long presses nothing, since some of its tabs may already be paused.
+    /// `stillPaused` is asked once Chrome answers: a pause let go of meanwhile (a quit) presses nothing, puts back
+    /// what Chrome paused, and hands back nil.
+    static func pause(_ players: [Player], stillPaused: @escaping () -> Bool,
+                      done: @escaping (Paused?, BrowserMedia.Outcome?) -> Void) {
+        guard players.contains(where: { BrowserMedia.isChrome(path: path($0.pid)) }) else {
+            pressPlayPause(); done(.key, nil); return
+        }
+        let token = BrowserMedia.token()
+        let js = BrowserMedia.pauseScript(token: token)
+        chrome.async {
+            var result = run(BrowserMedia.pauseRunner, [js, "front"])
+            if result == .nothingFound { result = run(BrowserMedia.pauseRunner, [js, "all"]) }
+            DispatchQueue.main.async {
+                guard stillPaused() else {
+                    if case .handled(let tabs, _) = result { resume(.chrome(token: token, tabs: tabs)) }
+                    Log.note("media: pause let go of while Chrome answered, \(result)")
+                    done(nil, result); return
+                }
+                switch result {
+                case .handled(let tabs, _): done(.chrome(token: token, tabs: tabs), result)
+                case .failed("timed out"): done(.chrome(token: token, tabs: []), result)
+                default: pressPlayPause(); done(.key, result)
+                }
+            }
+        }
+    }
+
+    /// Plays back what `pause` paused. Chrome tabs get their own videos back and nothing else; a Chrome pause that
+    /// timed out (no tabs known) presses nothing.
+    static func resume(_ paused: Paused, wait: Bool = false) {
+        guard case .chrome(let token, let tabs) = paused else { pressPlayPause(); return }
+        guard !tabs.isEmpty else { return }
+        let work = {
+            let r = run(BrowserMedia.resumeRunner, [BrowserMedia.resumeScript(token: token)] + tabs.map(String.init))
+            Log.note("media: Chrome resume, \(r)")
+        }
+        // Quitting: finish before the app goes, but never hold the quit longer than the run's own time limit.
+        if wait { chrome.sync(execute: work) } else { chrome.async(execute: work) }
+    }
+
+    /// One Chrome run at a time, off the main thread: Chrome can take a moment to answer.
+    private static let chrome = DispatchQueue(label: "redpen.media.chrome")
+
+    /// Runs an AppleScript through osascript with the page script as an argument, never inside the script text.
+    /// The Mac asks once whether Redpen Voice may control Chrome.
+    private static func run(_ script: String, _ args: [String], limit: Double = 2.5) -> BrowserMedia.Outcome {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        p.arguments = ["-e", script] + args
+        let out = Pipe(), err = Pipe()
+        p.standardOutput = out; p.standardError = err
+        let finished = DispatchSemaphore(value: 0)
+        p.terminationHandler = { _ in finished.signal() }
+        do { try p.run() } catch { return .failed(error.localizedDescription) }
+        if finished.wait(timeout: .now() + limit) == .timedOut {
+            p.terminate()
+            Log.note("media: Chrome took over \(limit)s, stopped asking")
+            return .failed("timed out")
+        }
+        let o = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let e = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return BrowserMedia.outcome(status: p.terminationStatus, output: o, error: e)
+    }
+
+    private static func path(_ pid: pid_t) -> String {
+        var buf = [CChar](repeating: 0, count: 4096)
+        return proc_pidpath(pid, &buf, UInt32(buf.count)) > 0 ? String(cString: buf) : ""
+    }
 }
