@@ -33,10 +33,12 @@ public enum BrowserMedia {
     /// then tabs on video and music sites, then the rest. "first" stops after the first round that finds something
     /// (a pause); "every" runs all three (a resume whose tabs were never learned). Each tab gets one second: a page that
     /// is busy or asleep is skipped instead of holding up the pause (Nov 2 2026, a pause that took over 2.5 s). A page
-    /// that can't run scripts (a Chrome settings page) is skipped too; scripts turned off or Voice not allowed stops the
-    /// run with Chrome's error.
+    /// that can't run scripts (a Chrome settings page) is skipped too, and so is a tab in a Chrome profile with scripts
+    /// turned off: the switch is per profile, and one refusing window used to stop the whole run (Nov 2 2026, 08:49).
+    /// "refused" is printed only when nothing was found and some tab refused. Voice not allowed stops the run.
     public static let pauseRunner = """
     property slow : false
+    property refused : false
 
     on run argv
     \tset js to item 1 of argv
@@ -71,6 +73,7 @@ public enum BrowserMedia {
     \tif not (untilFound and found is not {}) then set found to found & my runIn(js, likely)
     \tif not (untilFound and found is not {}) then set found to found & my runIn(js, others)
     \tif slow then set end of found to "slow"
+    \tif refused and found is {} then set end of found to "refused"
     \tset AppleScript's text item delimiters to ","
     \treturn found as text
     end run
@@ -85,8 +88,9 @@ public enum BrowserMedia {
     \t\t\t\tend timeout
     \t\t\t\tif r is not missing value and (r as integer) > 0 then set end of found to ((id of (contents of t)) as text) & ":" & ((r as integer) as text)
     \t\t\ton error msg number n
+    \t\t\t\tif n is -1743 then error msg number n
     \t\t\t\tif n is -1712 then set slow to true
-    \t\t\t\tif n is -1743 or msg contains "Apple Events" or msg contains "turned off" then error msg number n
+    \t\t\t\tif msg contains "Apple Events" or msg contains "turned off" then set refused to true
     \t\t\tend try
     \t\tend repeat
     \tend tell
@@ -118,7 +122,7 @@ public enum BrowserMedia {
     \t\t\t\t\t\tend timeout
     \t\t\t\t\t\tif r is not missing value then set end of found to tid & ":" & ((r as integer) as text)
     \t\t\t\t\ton error msg number n
-    \t\t\t\t\t\tif n is -1743 or msg contains "Apple Events" or msg contains "turned off" then error msg number n
+    \t\t\t\t\t\tif n is -1743 then error msg number n
     \t\t\t\t\tend try
     \t\t\t\tend if
     \t\t\tend repeat
@@ -159,6 +163,7 @@ public enum BrowserMedia {
         }
         // A tab too slow to answer may still pause later, so pressing the key then could start a second video.
         if tabs.isEmpty, output.contains("slow") { return .failed("slow") }
+        if tabs.isEmpty, output.contains("refused") { return .scriptsOff }
         return tabs.isEmpty ? .nothingFound : .handled(tabs: tabs, count: count)
     }
 

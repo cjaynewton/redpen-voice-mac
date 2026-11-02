@@ -126,7 +126,7 @@ enum SoundTap {
             AudioDeviceDestroyIOProcID(dev, proc)
             AudioHardwareDestroyAggregateDevice(dev)
             AudioHardwareDestroyProcessTap(tap)
-            if box.frames == 0 { Log.note("media listen: tap failed, no audio frames (audio permission may be unavailable)") }
+            if box.frames == 0 { Log.note("media listen: no audio frames (the app is paused or silent, or audio capture isn't allowed)") }
             done(box.frames > 0 ? box.value : nil)
         }
     }

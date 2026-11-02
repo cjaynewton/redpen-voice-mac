@@ -58,7 +58,9 @@ enum Media {
     /// what Chrome paused, and hands back nil.
     static func pause(_ players: [Player], stillPaused: @escaping () -> Bool,
                       done: @escaping (Paused?, BrowserMedia.Outcome?) -> Void) {
-        guard players.contains(where: { BrowserMedia.isChrome(path: path($0.pid)) }) else {
+        // Chrome said no a moment ago: the key at once, so the wait for Chrome never lengthens the cut at the start
+        // of the dictation (it added about 0.6 s to every cut on Nov 2 2026).
+        guard players.contains(where: { BrowserMedia.isChrome(path: path($0.pid)) }), Date() >= keyUntil else {
             pressPlayPause(); done(.key, nil); return
         }
         let token = BrowserMedia.token()
@@ -68,6 +70,7 @@ enum Media {
             let result = run(BrowserMedia.pauseRunner, [js, "first"], limit: 4)
             Log.note("media: Chrome answered in \(Log.ms(Date().timeIntervalSince(started)))ms")
             DispatchQueue.main.async {
+                if result == .scriptsOff || result == .notAllowed { keyUntil = Date().addingTimeInterval(600) }
                 guard stillPaused() else {
                     if case .handled(let tabs, _) = result { resume(.chrome(token: token, tabs: tabs)) }
                     Log.note("media: pause let go of while Chrome answered, \(result)")
@@ -98,6 +101,9 @@ enum Media {
         // Quitting: finish before the app goes, but never hold the quit longer than the run's own time limit.
         if wait { chrome.sync(execute: work) } else { chrome.async(execute: work) }
     }
+
+    /// Until when to skip asking Chrome, after it said no: ten minutes, so turning the switch on is picked up soon.
+    nonisolated(unsafe) private static var keyUntil = Date.distantPast
 
     /// One Chrome run at a time, off the main thread: Chrome can take a moment to answer.
     private static let chrome = DispatchQueue(label: "redpen.media.chrome")
