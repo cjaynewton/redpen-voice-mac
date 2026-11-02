@@ -44,7 +44,7 @@ final class SettingsModel: ObservableObject {
     @Published var voiceLearned = Voiceprint.load()?.count ?? 0
     @Published var roomDownload: String?
 
-    /// Fetches the speaker models (about 21 MB) from Hugging Face, once, when Voices in the room is turned on.
+    /// Fetches the speaker models (about 21 MB) from Hugging Face, once, when Tell people apart in person is turned on.
     func downloadRoomModels() {
         guard !RoomSpeakers.modelsReady, roomDownload != "downloading" else { return }
         roomDownload = "downloading"
@@ -572,7 +572,7 @@ struct SettingsView: View {
         }
     }
 
-    /// Voices in the room and Know my voice (D-1034). Turning the first on downloads the speaker models once;
+    /// Tell people apart in person and Know my voice (D-1034). Turning the first on downloads the speaker models once;
     /// turning Know my voice off forgets the voice.
     @ViewBuilder private var roomRows: some View {
         let on = model.config.roomVoices == true
@@ -582,9 +582,9 @@ struct SettingsView: View {
         case (true, false, "failed"?): "The voice models didn't download. Turn this off and on to try again."
         case (true, true, _): "In a meeting where the Mac plays nothing, lines from your microphone say Me, Person 2, Person 3, told apart on this Mac afterwards. Give them names from the menu."
         case (true, false, _): "Waiting for the voice models."
-        default: "For meetings in one room, where the Mac plays nothing: tells apart the people sharing your microphone, on this Mac. Needs a 21 MB download from Hugging Face, once."
+        default: "For meetings in person, where everyone talks into your microphone and the Mac plays nothing. Tells their voices apart on this Mac. Needs a 21 MB download from Hugging Face, once."
         }
-        row("Voices in the room", note) {
+        row("Tell people apart in person", note) {
             Toggle("", isOn: Binding(get: { on }, set: { v in
                 model.config.roomVoices = v
                 if v { model.downloadRoomModels() }

@@ -395,9 +395,9 @@ public enum Meeting {
     /// Under the header when the Mac's sound was silent the whole meeting: most likely the permission is off.
     public static let silentMacNote = "The Mac's sound was silent for the whole meeting, so only your microphone is here. If others were talking, allow Redpen Voice under System Audio Recording in Privacy & Security, then try again."
 
-    /// The same, when the microphone's voices were told apart (D-1034): most likely a meeting in one room, but a
+    /// The same, when the microphone's voices were told apart (D-1034): most likely a meeting in person, but a
     /// call with the permission off looks the same, so it is still said.
-    public static let roomSilentNote = "The Mac played nothing, so this was taken as a meeting in one room. If it was a call, allow Redpen Voice under System Audio Recording in Privacy & Security."
+    public static let roomSilentNote = "The Mac played nothing, so this was taken as a meeting in person. If it was a call, allow Redpen Voice under System Audio Recording in Privacy & Security."
 
     // MARK: The summary
 
