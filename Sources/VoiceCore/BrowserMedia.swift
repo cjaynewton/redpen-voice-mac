@@ -59,22 +59,25 @@ public enum BrowserMedia {
     """
 
     /// Runs a page script in the tabs with these ids only, wherever they are now. Same output as the pause runner.
+    /// Ids are matched as text: Chrome's tab ids pass AppleScript's integer limit (536,870,911), so "as integer" turned
+    /// 1388772979 into a decimal that matched no tab and nothing came back (Nov 1 2026, every resume "nothingFound").
     public static let resumeRunner = """
     on run argv
     \tset js to item 1 of argv
+    \tset wanted to items 2 thru -1 of argv
     \tset found to {}
     \ttell application id "\(chromeBundleID)"
-    \t\trepeat with i from 2 to count of argv
-    \t\t\tset tid to (item i of argv) as integer
-    \t\t\trepeat with w in windows
-    \t\t\t\ttry
-    \t\t\t\t\tset t to (first tab of w whose id is tid)
-    \t\t\t\t\tset r to execute t javascript js
-    \t\t\t\t\tif r is not missing value then set end of found to (tid as text) & ":" & ((r as integer) as text)
-    \t\t\t\t\texit repeat
-    \t\t\t\ton error msg number n
-    \t\t\t\t\tif n is -1743 or msg contains "Apple Events" or msg contains "turned off" then error msg number n
-    \t\t\t\tend try
+    \t\trepeat with w in windows
+    \t\t\trepeat with t in tabs of w
+    \t\t\t\tset tid to (id of t) as text
+    \t\t\t\tif wanted contains tid then
+    \t\t\t\t\ttry
+    \t\t\t\t\t\tset r to execute t javascript js
+    \t\t\t\t\t\tif r is not missing value then set end of found to tid & ":" & ((r as integer) as text)
+    \t\t\t\t\ton error msg number n
+    \t\t\t\t\t\tif n is -1743 or msg contains "Apple Events" or msg contains "turned off" then error msg number n
+    \t\t\t\t\tend try
+    \t\t\t\tend if
     \t\t\tend repeat
     \t\tend repeat
     \tend tell
