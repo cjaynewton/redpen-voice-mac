@@ -1059,8 +1059,11 @@ final class Transcriber {
         let m: any SpeechModule = config.engine == "transcription"
             ? SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [], attributeOptions: [])
             : DictationTranscriber(locale: locale, contentHints: [], transcriptionOptions: [.punctuation], reportingOptions: [], attributeOptions: [])
-        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("redpen-meeting-\(UUID().uuidString).caf")
-        defer { try? FileManager.default.removeItem(at: tmp) }
+        let scratch: URL
+        do { scratch = try MeetingFiles.scratch(in: FileManager.default.temporaryDirectory) }
+        catch { Log.note("meeting: private Apple audio folder failed, \(MeetingNotes.code(error))"); throw error }
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let tmp = scratch.appendingPathComponent("audio.caf")
         let f = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: 1, interleaved: false)!
         do {
             let out = try AVAudioFile(forWriting: tmp, settings: f.settings, commonFormat: .pcmFormatFloat32, interleaved: false)
@@ -1069,6 +1072,8 @@ final class Transcriber {
             audio.withUnsafeBufferPointer { b.floatChannelData![0].update(from: $0.baseAddress!, count: audio.count) }
             try out.write(from: b)
         }
+        do { try MeetingFiles.setMode(0o600, at: tmp) }
+        catch { Log.note("meeting: private Apple audio failed, \(MeetingNotes.code(error))"); throw error }
         var segs: [MeetingSegment] = []
         let collect: Task<[MeetingSegment], Error>
         func seg(_ range: CMTimeRange, _ text: String) -> MeetingSegment {

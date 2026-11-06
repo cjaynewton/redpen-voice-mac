@@ -2035,6 +2035,28 @@ do {
     check("repeat.pointsUnchanged", Meeting.merge([Meeting.Summary(points: [point, point])], overview: "").points.count == 1)
 }
 
+do {
+    let fm = FileManager.default, root = fm.temporaryDirectory.appendingPathComponent("voice-private-test-" + UUID().uuidString)
+    defer { try? fm.removeItem(at: root) }
+    do {
+        try MeetingFiles.createFolder(root)
+        check("private.folder", (try? MeetingFiles.requireMode(0o700, at: root)) != nil)
+        let file = root.appendingPathComponent("transcript.md")
+        try MeetingFiles.save(Data("synthetic transcript".utf8), to: file)
+        check("private.firstWrite", (try? MeetingFiles.requireMode(0o600, at: file)) != nil && (try? String(contentsOf: file)) == "synthetic transcript")
+        try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
+        check("private.detectMode", (try? MeetingFiles.requireMode(0o600, at: file)) == nil)
+        try MeetingFiles.save(Data("replacement".utf8), to: file)
+        check("private.replaced", (try? MeetingFiles.requireMode(0o600, at: file)) != nil && (try? String(contentsOf: file)) == "replacement")
+        let scratch = try MeetingFiles.scratch(in: root)
+        check("private.scratch", (try? MeetingFiles.requireMode(0o700, at: scratch)) != nil)
+        let link = root.appendingPathComponent("link.md")
+        try fm.createSymbolicLink(at: link, withDestinationURL: file)
+        check("private.symlinkRejected", (try? MeetingFiles.save(Data("unsafe".utf8), to: link)) == nil && (try? String(contentsOf: file)) == "replacement")
+        check("private.failedWrite", (try? MeetingFiles.save(Data("x".utf8), to: root.appendingPathComponent("missing/notes.md"))) == nil)
+    } catch { check("private.setup", false, String(describing: error)) }
+}
+
 // Recording failures stay latched for both tracks, including a later successful write.
 do {
     let saving = MeetingSaving(), first = Date(timeIntervalSince1970: 100)

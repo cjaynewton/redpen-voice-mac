@@ -65,19 +65,19 @@ enum MeetingNotes {
 
     /// Replaces a notes file with `text`, readable only by this account from the first byte.
     static func savePrivately(_ text: String, to file: URL) throws {
-        let fm = FileManager.default
-        let tmp = file.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString).md")
-        guard fm.createFile(atPath: tmp.path, contents: Data(text.utf8), attributes: [.posixPermissions: 0o600]) else {
-            throw CocoaError(.fileWriteUnknown)
-        }
-        do { _ = try fm.replaceItemAt(file, withItemAt: tmp) } catch { try? fm.removeItem(at: tmp); throw error }
+        do { try MeetingFiles.save(Data(text.utf8), to: file) }
+        catch { Log.note("meeting: private notes save failed, \(code(error))"); throw error }
+    }
+
+    static func privateFolder(_ folder: URL) throws {
+        do { try MeetingFiles.createFolder(folder) }
+        catch { Log.note("meeting: private folder failed, \(code(error))"); throw error }
     }
 
     static func save(_ m: MeetingManifest, in folder: URL) throws {
         let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]; enc.dateEncodingStrategy = .iso8601
-        let url = folder.appendingPathComponent(MeetingManifest.file)
-        try enc.encode(m).write(to: url, options: .atomic)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        do { try MeetingFiles.save(enc.encode(m), to: folder.appendingPathComponent(MeetingManifest.file)) }
+        catch { Log.note("meeting: private manifest save failed, \(code(error))"); throw error }
     }
 
     static func load(_ folder: URL) -> MeetingManifest? {
@@ -150,9 +150,13 @@ enum MeetingNotes {
         let rate = Double(MeetingManifest.rate)
         let settings: [String: Any] = [AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: rate, AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: 32_000]
         let fmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: 1, interleaved: false)!
-        try? FileManager.default.removeItem(at: out)
+        let scratch: URL
+        do { scratch = try MeetingFiles.scratch(in: out.deletingLastPathComponent()) }
+        catch { Log.note("meeting: private audio folder failed, \(code(error))"); throw error }
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let temp = scratch.appendingPathComponent("audio.m4a")
         do {
-            let file = try AVAudioFile(forWriting: out, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+            let file = try AVAudioFile(forWriting: temp, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
             let h = try FileHandle(forReadingFrom: track)
             defer { try? h.close() }
             let step = Int(rate) * 30
@@ -168,7 +172,8 @@ enum MeetingNotes {
                 at += s.count
             }
         }
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: out.path)
+        do { try MeetingFiles.place(temp, at: out) }
+        catch { Log.note("meeting: private audio save failed, \(code(error))"); throw error }
     }
 
     /// Writes the notes for one recorded meeting. `progress` hears 0 to 100 and a few words for the bar.
@@ -179,7 +184,7 @@ enum MeetingNotes {
         guard var manifest = load(work) else { throw NSError(domain: "RedpenVoice", code: 22, userInfo: [NSLocalizedDescriptionKey: "The recording's notes file is missing"]) }
         let fm = FileManager.default
         let folder = config.meetingsDir
-        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        try privateFolder(folder)
         let meTrack = work.appendingPathComponent(MeetingManifest.meFile), othersTrack = work.appendingPathComponent(MeetingManifest.othersFile)
         let cutoff = manifest.savingStopped.map { max(0, $0.timeIntervalSince(manifest.started)) }
         let meLimit = cutoff.map { max(0, $0 - (manifest.meOffset ?? 0)) }
@@ -237,8 +242,7 @@ enum MeetingNotes {
                                           notes: (manifest.savingStopped.map { [Meeting.savingNote(at: max(0, $0.timeIntervalSince(manifest.started)))] } ?? [])
                                             + (othersPeak == 0 && length > 15 ? [(room?.names.count ?? 0) >= 2 ? Meeting.roomSilentNote : Meeting.silentMacNote] : []),
                                           paused: pauses.reduce(0) { $0 + $1.seconds }, room: room?.names ?? [])
-            try transcript.write(to: file, atomically: true, encoding: .utf8)
-            try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+            try savePrivately(transcript, to: file)
             manifest.notesFile = file.path
             try? save(manifest, in: work)
         }
