@@ -60,6 +60,45 @@ do {
 do { try MeetingNotes.savePrivately("synthetic", to: root.appendingPathComponent("missing/notes.md")) }
 catch {}
 check(Log.messages.contains { $0.hasPrefix("meeting: private notes save failed,") }, "private save failure logged")
+func wave(_ frames: Int, hz: Double = 440) -> [Float] {
+    (0..<frames).map { Float(sin(2 * .pi * hz * Double($0) / 16000)) * 0.4 }
+}
+func raw(_ name: String, _ samples: [Float]) throws -> URL {
+    let url = root.appendingPathComponent(name + ".pcm")
+    let ints = samples.map { Int16($0 * 32767).littleEndian }
+    try MeetingFiles.save(ints.withUnsafeBufferPointer { Data(buffer: $0) }, to: url)
+    return url
+}
+func decoded(_ track: URL, _ name: String, offset: Double = 0, limit: Double? = nil) throws -> [Float] {
+    let url = root.appendingPathComponent(name + ".m4a")
+    try MeetingNotes.exportAudio(track, to: url, offset: offset, limit: limit)
+    let f = try AVAudioFile(forReading: url)
+    let b = AVAudioPCMBuffer(pcmFormat: f.processingFormat, frameCapacity: AVAudioFrameCount(f.length))!
+    try f.read(into: b)
+    return Array(UnsafeBufferPointer(start: b.floatChannelData![0], count: Int(b.frameLength)))
+}
+func rms(_ samples: [Float], at: Double) -> Float {
+    let start = Int(at * 16000), end = min(samples.count, start + 800)
+    guard start < end else { return 0 }
+    return (samples[start..<end].reduce(0) { $0 + $1 * $1 } / Float(end - start)).squareRoot()
+}
+let tone = try raw("tone", wave(16000))
+let late = try decoded(tone, "late", offset: 60)
+check(abs(Double(late.count) / 16000 - 61) < 0.08, "late Others duration")
+check(rms(late, at: 59.8) < 0.001 && rms(late, at: 60.1) > 0.1, "late Others starts at meeting minute one")
+let preroll = try raw("preroll", wave(9600, hz: 220) + wave(16000, hz: 880))
+let trimmed = try decoded(preroll, "trimmed", offset: -0.6)
+check(abs(Double(trimmed.count) / 16000 - 1) < 0.08 && rms(trimmed, at: 0.1) > 0.1, "microphone preroll trimmed")
+let ordinary = try decoded(tone, "ordinary")
+check(abs(Double(ordinary.count) / 16000 - 1) < 0.08 && rms(ordinary, at: 0.1) > 0.1, "zero offset control")
+let silent = try raw("empty", [])
+let silenceOnly = try decoded(silent, "silent", offset: 0.5)
+check(silenceOnly.count >= 8000 && silenceOnly.allSatisfy { abs($0) < 0.001 }, "silent delayed track")
+let gap = try raw("gap", wave(8000) + [Float](repeating: 0, count: 8000) + wave(8000))
+let gapped = try decoded(gap, "gapped")
+check(rms(gapped, at: 0.7) < 0.001 && rms(gapped, at: 1.1) > 0.1, "device gap stays on clock")
+let limited = try decoded(tone, "limited", offset: 1, limit: 0.25)
+check(abs(Double(limited.count) / 16000 - 1.25) < 0.08, "saving cutoff includes timeline padding")
 print("\(passed) I/O checks passed")
 '''
     main = folder / 'main.swift'

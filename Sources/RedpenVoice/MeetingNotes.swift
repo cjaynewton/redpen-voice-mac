@@ -146,7 +146,7 @@ enum MeetingNotes {
     }
 
     /// A raw track to a small .m4a beside the notes (AAC, 32 kbit/s, about 14 MB an hour).
-    static func exportAudio(_ track: URL, to out: URL, limit: Double? = nil) throws {
+    static func exportAudio(_ track: URL, to out: URL, offset: Double = 0, limit: Double? = nil) throws {
         let rate = Double(MeetingManifest.rate)
         let settings: [String: Any] = [AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: rate, AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: 32_000]
         let fmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: 1, interleaved: false)!
@@ -160,15 +160,26 @@ enum MeetingNotes {
             let h = try FileHandle(forReadingFrom: track)
             defer { try? h.close() }
             let step = Int(rate) * 30
-            var at = 0
+            guard offset.isFinite, abs(offset * rate) < Double(Int.max) else { throw CocoaError(.fileReadCorruptFile) }
+            let shift = Int((offset * rate).rounded())
+            func append(_ samples: [Float]) throws {
+                let b = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(samples.count))!
+                b.frameLength = AVAudioFrameCount(samples.count)
+                samples.withUnsafeBufferPointer { b.floatChannelData![0].update(from: $0.baseAddress!, count: samples.count) }
+                try file.write(from: b)
+            }
+            // Export on the meeting clock: delayed tracks begin with silence; microphone pre-roll is removed.
+            var padding = max(0, shift)
+            while padding > 0 {
+                let n = min(padding, step)
+                try append([Float](repeating: 0, count: n)); padding -= n
+            }
+            var at = max(0, -shift)
             let total = limit.map { max(0, Int($0 * rate)) } ?? Int.max
             while at < total {
                 let s = try read(h, from: at, count: min(step, total - at))
                 if s.isEmpty { break }
-                let b = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(s.count))!
-                b.frameLength = AVAudioFrameCount(s.count)
-                s.withUnsafeBufferPointer { b.floatChannelData![0].update(from: $0.baseAddress!, count: s.count) }
-                try file.write(from: b)
+                try append(s)
                 at += s.count
             }
         }
@@ -252,8 +263,8 @@ enum MeetingNotes {
         let base = file.deletingPathExtension().lastPathComponent, beside = file.deletingLastPathComponent()
         if keepAudio {
             do {
-                try exportAudio(othersTrack, to: beside.appendingPathComponent(base + " Others.m4a"), limit: othersLimit)
-                try exportAudio(meTrack, to: beside.appendingPathComponent(base + " Me.m4a"), limit: meLimit)
+                try exportAudio(othersTrack, to: beside.appendingPathComponent(base + " Others.m4a"), offset: manifest.othersOffset ?? 0, limit: othersLimit)
+                try exportAudio(meTrack, to: beside.appendingPathComponent(base + " Me.m4a"), offset: manifest.meOffset ?? 0, limit: meLimit)
             } catch {
                 Log.note("meeting: audio not saved, \(code(error)); the raw tracks stay in the recording folder")
                 throw error
