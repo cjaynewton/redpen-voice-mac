@@ -7,6 +7,8 @@ import VoiceCore
 @MainActor
 final class NameVoices {
     private var window: NSWindow?
+    /// Told when names are saved, so a window showing these notes can show the new names (D-1126).
+    var saved: ((URL) -> Void)?
 
     /// Opens for `file`; false when its transcript has no voices to name (only Me and Others).
     @discardableResult
@@ -29,6 +31,7 @@ final class NameVoices {
             do { try MeetingNotes.savePrivately(out, to: file) } catch { return "The notes file can't be saved." }
             Log.note("meeting: named \(changes.filter { $0.voice.rawValue != $0.name }.count) voices")
             self?.window?.close()
+            self?.saved?(file)
             return nil
         }
         let host = NSHostingView(rootView: view)

@@ -1675,16 +1675,22 @@ do {
                 Meeting.ToDo(who: "Me", task: "Book the studio for the March 3 shoot.", at: 9999)])
     let ck = Meeting.check(raw, transcript: tx)
     check("summary.checkKept", ck.summary.points.first == Meeting.Cited("The marketing budget rises 20% for Q3.", at: 5), "\(ck.summary.points)")
-    check("summary.checkMoved", ck.summary.points.contains(Meeting.Cited("The marketing budget rises 20% in Q3.", at: 5)) && ck.moved == 1, "\(ck.moved)")
+    // Moved to the line that says it, then kept once: it repeats the first point (D-1126).
+    check("summary.checkMoved", ck.moved >= 1 && ck.summary.points.filter { $0.text.contains("20%") }.count == 1, "\(ck.moved)")
     check("summary.checkWrongNumber", !ck.summary.points.contains { $0.text.contains("30%") })
     check("summary.checkUncitedFound", ck.summary.points.contains(Meeting.Cited("The studio is booked for the March 3 shoot.", at: 150)))
     check("summary.checkNotSaid", !ck.summary.points.contains { $0.text.contains("Europe") } && ck.dropped == 2, "\(ck.dropped)")
     check("summary.checkUncitedCount", ck.uncited == 2, "\(ck.uncited)")
-    check("summary.todoKept", ck.summary.todos.first == Meeting.ToDo(who: "Me", task: "Send the revised budget deck to Priya by Friday.", at: 70), "\(ck.summary.todos)")
+    check("summary.todoKept", ck.summary.todos.first == Meeting.ToDo(who: "Me", task: "Send the revised budget deck to Priya by Friday.", at: 70, when: "Friday"), "\(ck.summary.todos)")
     check("summary.todoPleasantry", !ck.summary.todos.contains { $0.task.contains("weekend") })
     check("summary.todoNotAsked", !ck.summary.todos.contains { $0.task.contains("Gen Z") } && ck.notTasks == 2, "\(ck.notTasks)")
-    check("summary.todoOwner", ck.summary.todos.contains(Meeting.ToDo(who: "Not clear", task: "Book the studio for the March 3 shoot.", at: 150)))
-    check("summary.todoBadTime", ck.summary.todos.contains(Meeting.ToDo(who: "Me", task: "Book the studio for the March 3 shoot.", at: 150)))
+    // A made-up owner is Not clear; alone, that copy stays, and beside one with an owner, the owned one wins.
+    check("summary.todoOwner", Meeting.check(Meeting.Summary(todos: [Meeting.ToDo(who: "Bob", task: "Book the studio for the March 3 shoot.", at: 150)]), transcript: tx).summary.todos
+          .contains(Meeting.ToDo(who: "Not clear", task: "Book the studio for the March 3 shoot.", at: 150, when: "March 3"))
+          && ck.summary.todos.contains { $0.who == "Me" && $0.task.hasPrefix("Book the studio") }, "\(ck.summary.todos)")
+    check("summary.todoBadTime", ck.summary.todos.filter { $0.task.hasPrefix("Book the studio") }.count == 1)
+    check("summary.todoBadTimeAlone", Meeting.check(Meeting.Summary(todos: [Meeting.ToDo(who: "Me", task: "Book the studio for the March 3 shoot.", at: 9999)]), transcript: tx).summary.todos.prefix(1)
+          == [Meeting.ToDo(who: "Me", task: "Book the studio for the March 3 shoot.", at: 150, when: "March 3")])
     check("summary.commitment", Meeting.isCommitment("Sure, I’ll do that") && Meeting.isCommitment("Could you book it?") && !Meeting.isCommitment("The numbers were strong."))
     check("summary.pleasantry", Meeting.isPleasantry("Thank everyone for coming") && Meeting.isPleasantry("Enjoy the weekend") && !Meeting.isPleasantry("Book the studio"))
 
@@ -1716,10 +1722,10 @@ do {
 
     let sm = Meeting.summaryMarkdown(ck, transcript: tx)
     check("summary.mdLabel", sm.hasPrefix("## Summary\n\n" + Meeting.summaryLabel + "\n\n### Overview\n\nA planning call about the Q3 budget.\n\n"))
-    check("summary.mdTimes", sm.contains("- The marketing budget rises 20% for Q3. [00:05]") && sm.contains("- Me: Send the revised budget deck to Priya by Friday. [01:10]"))
+    check("summary.mdTimes", sm.contains("- The marketing budget rises 20% for Q3. [00:05]") && sm.contains("- Me: Send the revised budget deck to Priya by Friday. (by Friday) [01:10]"))
     check("summary.mdNone", sm.contains("### Decisions\n\nNone heard.\n"))
     check("summary.mdDropped", sm.contains("2 more items were left out because no line of the transcript says them."))
-    let empty = Meeting.summaryMarkdown(Meeting.check(Meeting.Summary(), transcript: tx), transcript: tx)
+    let empty = Meeting.summaryMarkdown(Meeting.check(Meeting.Summary(), transcript: "[00:01] Others: Hello there."), transcript: tx)
     check("summary.mdEmpty", empty.contains("### Overview\n\nNone heard.") && empty.contains("### To-dos\n\nNone heard.\n") && !empty.contains("left out"))
     check("summary.mdNames", Meeting.summaryMarkdown(Meeting.Checked(summary: Meeting.Summary(overview: "The call was led by Marcus.")), transcript: tx).contains("check them: Marcus"))
 
@@ -1763,6 +1769,148 @@ do {
     check("summary.freeAfterBetter", Meeting.placing(free, in: both) == both)
     check("summary.betterTranscript", Meeting.said(Meeting.transcript(inFile: both)) == heard)
     check("meeting.noSummary", Meeting.noSummary("Apple's model is off on this Mac.").contains("No summary was written. Apple's model"))
+
+    // What has to happen (D-1108, D-1126): dates and what is critical come from the lines, never the model.
+    check("steps.date", Meeting.date(in: "I'll redraw it tonight and send it over.") == "tonight"
+          && Meeting.date(in: "Can you place the order Monday morning?") == "Monday morning"
+          && Meeting.date(in: "Let's get it done by the end of the week.") == "end of the week"
+          && Meeting.date(in: "We need it first thing tomorrow") == "first thing tomorrow", "\(String(describing: Meeting.date(in: "Can you place the order Monday morning?")))")
+    check("steps.dateNone", Meeting.date(in: "You may want to check the hood fan.") == nil && Meeting.date(in: "I'll call the city.") == nil)
+    check("steps.dateAfterCommitment", Meeting.date(in: "We met Monday, and I'll send it Friday.") == "Friday")
+    check("steps.soon", Meeting.isSoon("tomorrow morning") && Meeting.isSoon("tonight") && Meeting.isSoon("ASAP") && !Meeting.isSoon("Monday") && !Meeting.isSoon("end of the week"))
+    let room = """
+    [15:01] Lena: The inspection is the one thing that could push the kitchen past Christmas.
+
+    [15:09] Me: I'll call the city tomorrow morning and ask for the first open inspection slot.
+
+    [15:15] Marco: Does the permit even cover the hood fan? Nobody knows.
+
+    [16:00] Marco: I'll redraw the island 15 cm shorter.
+
+    [17:00] Lena: Can you place the cabinet order Monday?
+
+    [17:05] Me: Sure.
+    """
+    let roomLines = Meeting.said(room)
+    check("steps.waits", Meeting.waitsOn(around: 1, in: roomLines) && !Meeting.waitsOn(around: 3, in: roomLines))
+    check("steps.deadlineReply", Meeting.deadline(around: 4, in: roomLines) == "Monday" && Meeting.deadline(around: 3, in: roomLines) == nil
+          && Meeting.deadline(around: 0, in: Meeting.said("[00:01] Me: I'll send the deck.\n\n[00:04] Others: Sure, by Friday works.")) == "Friday")
+    let rc = Meeting.check(Meeting.Summary(overview: "A kitchen walk-through.",
+        decisions: [Meeting.Cited("The island gets 15 cm shorter.", at: 960)],
+        todos: [Meeting.ToDo(who: "Marco", task: "Redraw the island 15 cm shorter.", at: 960),
+                Meeting.ToDo(who: "Me", task: "Place the cabinet order.", at: 1020),
+                Meeting.ToDo(who: "Me", task: "Call the city and ask for the first open inspection slot.", at: 909, when: "next year", critical: false)],
+        open: [Meeting.Cited("Does the permit cover the hood fan?", at: 915), Meeting.Cited("Is the budget approved?", at: 915)]), transcript: room)
+    let call = rc.summary.todos.first { $0.task.hasPrefix("Call the city") }
+    check("steps.checkDate", call?.when == "tomorrow morning" && call?.critical == true, "\(String(describing: call))")
+    check("steps.checkOpen", rc.summary.open.map(\.text) == ["Does the permit cover the hood fan?"] && rc.dropped >= 1, "\(rc.summary.open)")
+    let ranked = Meeting.ranked(rc.summary.todos + [Meeting.ToDo(who: "Not clear", task: "Check the hood fan.", at: 915)])
+    check("steps.ranked", ranked.map { Meeting.urgency($0) } == [.critical, .dated, .undated, .unowned], "\(ranked)")
+    check("steps.why", Meeting.why(call!) == "Due tomorrow morning" && Meeting.why(Meeting.ToDo(who: "Me", task: "x", critical: true)) == "Something waits on it" && Meeting.why(ranked[2]) == nil)
+    let rmd = Meeting.summaryMarkdown(rc, transcript: room)
+    check("steps.mdFirst", rmd.range(of: "### To-dos")!.lowerBound < rmd.range(of: "### Still open")!.lowerBound
+          && rmd.range(of: "### Still open")!.lowerBound < rmd.range(of: "### Decisions")!.lowerBound
+          && rmd.range(of: "### Decisions")!.lowerBound < rmd.range(of: "### Key points")!.lowerBound)
+    check("steps.mdLine", rmd.contains("- Me: Call the city and ask for the first open inspection slot. (critical, by tomorrow morning) [15:09]"), rmd)
+    let back2 = Meeting.parse(written: rmd)
+    check("steps.parseBack", Set((back2?.todos ?? []).map(\.task)) == Set(rc.summary.todos.map(\.task)))
+    let backCall = back2?.todos.first { $0.task.hasPrefix("Call the city") }
+    check("steps.parseMarks", backCall?.when == "tomorrow morning" && backCall?.critical == true && backCall?.who == "Me"
+          && back2?.open.map(\.text) == ["Does the permit cover the hood fan?"], "\(String(describing: back2))")
+    // From the code review: each of these once put a wrong owner, a wrong date or a made-up job on the list.
+    let sameSecond = Meeting.check(Meeting.Summary(todos: [Meeting.ToDo(who: "Me", task: "Send the budget deck tomorrow morning.", at: 60)]),
+                                   transcript: "[01:00] Others: I'll handle the venue booking.\n\n[01:00] Me: I'll send the budget deck tomorrow morning.")
+    check("review.sameSecond", sameSecond.summary.todos.first { $0.task.contains("budget") }.map { $0.who == "Me" && $0.when == "tomorrow morning" && $0.critical } == true, "\(sameSecond.summary.todos)")
+    let samePage = AfterCallPage.html(AfterCallPage.read("# Meeting notes, x\n\n## Summary\n\n### To-dos\n\n- Me: Send the budget deck. (critical, by tomorrow morning) [01:00]\n\n## Transcript\n\n[01:00] Others: I'll handle the venue booking.\n\n[01:00] Me: I'll send the budget deck tomorrow morning.\n"), sender: "", audio: true)
+    check("review.sameSecondPage", samePage.contains("data-line=\"1\" data-track=\"me\""), "page")
+    check("review.letMeKnow", Meeting.promiser(around: 0, in: Meeting.said("[00:01] Me: Let me know when you have sent the signed contract to legal."), task: "Send the signed contract to legal.") == nil)
+    let noJobs = Meeting.promises(in: Meeting.said("[00:01] Me: I can't make it tomorrow, sorry.\n\n[00:05] Me: I have to leave at noon today.\n\n[00:09] Me: Let me know by Friday what you think.\n\n[00:12] Me: I'll go with the 3rd option.\n\n[00:15] Me: I can tell you that on Monday the client was angry.\n\n[00:20] Me: I won't send it tomorrow."))
+    check("review.noMadeUpJobs", noJobs.isEmpty, "\(noJobs)")
+    check("review.ordinalDate", Meeting.date(in: "Go with the 3rd option.") == nil && Meeting.date(in: "Send it by the 3rd.") == "the 3rd" && Meeting.date(in: "On the 3rd of May.") != nil, "\(String(describing: Meeting.date(in: "Send it by the 3rd.")))")
+    let twoPeople = Meeting.check(Meeting.Summary(todos: [Meeting.ToDo(who: "Me", task: "Send the contract to legal.", at: 1), Meeting.ToDo(who: "Person 2", task: "Review the contract with legal.", at: 5)]),
+                                  transcript: "[00:01] Me: I'll send the contract to legal.\n\n[00:05] Person 2: I'll review the contract with legal.")
+    check("review.twoPeople", twoPeople.summary.todos.count == 2, "\(twoPeople.summary.todos)")
+    check("review.morningRoundTrip", Meeting.todoMark("Call them (critical, by the morning)") == ("Call them", "the morning", true))
+    check("real.sweepMidSentence", Meeting.promises(in: Meeting.said("[07:54] Others: uh that's taking place on friday at 10 so i'll be able to find a lot give you kind of where we're headed.")).isEmpty
+          && Meeting.promises(in: Meeting.said("[00:01] Others: Uh, so I'll send the list on Friday.")).map(\.task) == ["Send the list on Friday."])
+    let longOpen = Array(repeating: "There are pieces here and pieces there but not one plan.", count: 5).joined(separator: " ")
+    check("real.openItem", Meeting.openItem(longOpen) == nil && Meeting.openItem(longOpen + " Is the influencer list finalized? " + longOpen) == "Is the influencer list finalized?"
+          && Meeting.openItem("How deep should we segment?") == "How deep should we segment?")
+    check("real.monthThe", Meeting.date(in: "Our goal is to have it complete by June the 10th.") == "June the 10th")
+    // Claude notes by default (D-1272): labels, the backup, the link, and deadlines nobody said.
+    check("d1272.basicLabel", Meeting.summaryLabel.hasPrefix("*Basic notes, made on this Mac") && Meeting.isBasic(Meeting.summaryLabel)
+          && Meeting.isBasic("*Written on this Mac by Apple's model. Check it against the transcript.*") && !Meeting.isBasic(Meeting.betterLabel("Claude")))
+    let fb = Meeting.fallbackLabel("Claude didn't answer within 5 minutes. Try again later.")
+    check("d1272.fallbackLabel", fb == "*Basic notes, made on this Mac by Apple's model, because Claude didn't write them this time: Claude didn't answer within 5 minutes. Try again later. Check them against the transcript.*"
+          && Meeting.isBasic(fb) && Meeting.fallbackLabel("").contains("this time. Check"), fb)
+    let fbSection = Meeting.summaryMarkdown(Meeting.Checked(summary: Meeting.Summary(overview: "A call.")), transcript: tx, label: fb)
+    let fbFile = Meeting.placing(fbSection, in: "# Meeting notes, x\n\n## Transcript\n\n" + tx + "\n")
+    check("d1272.fallbackPlaced", fbFile.contains("## Summary\n\n" + fb) && Meeting.placingBetter(Meeting.summaryMarkdown(Meeting.Checked(summary: Meeting.Summary(overview: "Better.")), transcript: tx, label: Meeting.betterLabel("Claude")), in: fbFile).contains(Meeting.freeHeading + "\n\n" + fb))
+    let unsaid = Meeting.said("[01:10] Me: I'll send the revised budget deck to Priya.\n\n[01:20] Others: Great.")
+    check("d1272.unsaidDate", Meeting.withoutUnsaidDates("Send the revised budget deck to Priya by this afternoon.", around: 0, in: unsaid) == "Send the revised budget deck to Priya."
+          && Meeting.withoutUnsaidDates("Send the deck by Friday, with the numbers.", around: 0, in: unsaid) == "Send the deck, with the numbers."
+          && Meeting.withoutUnsaidDates("Send the deck by Friday.", around: 0, in: Meeting.said("[00:01] Me: I'll send the deck by Friday.")) == "Send the deck by Friday."
+          && Meeting.withoutUnsaidDates("Send the deck.", around: 0, in: unsaid) == "Send the deck.", Meeting.withoutUnsaidDates("Send the deck by Friday, with the numbers.", around: 0, in: unsaid))
+    let unsaidCk = Meeting.check(Meeting.Summary(todos: [Meeting.ToDo(who: "Me", task: "Send the revised budget deck to Priya by this afternoon.", at: 70)]), transcript: "[01:10] Me: I'll send the revised budget deck to Priya.")
+    check("d1272.unsaidDateChecked", unsaidCk.summary.todos.first.map { $0.task == "Send the revised budget deck to Priya." && $0.when == nil && !$0.critical } == true, "\(unsaidCk.summary.todos)")
+    let basicPage = AfterCallPage.read("# Meeting notes, x\n\n" + fbSection + "\n## Transcript\n\n" + tx + "\n")
+    let basicHTML = AfterCallPage.html(basicPage, sender: "", audio: false)
+    check("d1272.pageBasic", basicPage.basic && basicHTML.contains("data-act=\"better\">Get better notes") && basicHTML.contains("because Claude didn&#39;t write them this time")
+          && !basicHTML.contains("Check them against"), basicPage.byline ?? "nil")
+    let claudePage = AfterCallPage.read("# Meeting notes, x\n\n" + Meeting.summaryMarkdown(Meeting.Checked(summary: Meeting.Summary(overview: "A call.")), transcript: tx, label: Meeting.betterLabel("Claude")) + "\n## Transcript\n\n" + tx + "\n")
+    check("d1272.pageClaude", !claudePage.basic && claudePage.byline == "Written by Claude (your account)." && !AfterCallPage.html(claudePage, sender: "", audio: false).contains("Get better notes"), claudePage.byline ?? "nil")
+    // From the second review: dates that name something, or that someone said, are never taken out.
+    let near = Meeting.said("[00:01] Me: Let's grow repeat sales by the third quarter, prep for the board meeting, the weekly numbers, the early shift, and send it tomorrow.")
+    let keep = ["Grow repeat sales by the 3rd quarter.", "Prep the deck for Friday's board meeting.", "Review this week's numbers with Sam.",
+                "Brief the morning shift on the new layout.", "Book the Sunday Times ad.", "Send it by tomorrow morning.", "Send Priya the notes from the May 12 workshop."]
+    let kept = keep.map { Meeting.withoutUnsaidDates($0, around: 0, in: near) }
+    check("review2.datesKept", kept == keep, "\(zip(keep, kept).filter { $0 != $1 })")
+    check("review2.deadlineStillOut", Meeting.withoutUnsaidDates("Send the deck by Friday.", around: 0, in: near) == "Send the deck."
+          && Meeting.withoutUnsaidDates("Send the deck on Monday, then call Sam.", around: 0, in: near) == "Send the deck, then call Sam.")
+    check("review.byEmail", Meeting.todoMark("Send the file (by email)") == ("Send the file (by email)", nil, false) && Meeting.todoMark("Send it (by Friday)") == ("Send it", "Friday", false))
+    check("steps.markPlain", Meeting.todoMark("Book the room (10:30)") == ("Book the room (10:30)", nil, false) && Meeting.todoMark("Ship it (critical)") == ("Ship it", nil, true))
+    let renamed = Meeting.renaming([(Speaker(rawValue: "Marco"), "Marc")], in: "## Summary\n\n### To-dos\n\n- " + Meeting.todoLine(rc.summary.todos[0]) + " [16:00]\n\n## Transcript\n\n" + room)
+    check("steps.renameKeepsMarks", renamed?.contains("- Marc: Redraw the island 15 cm shorter.") == true)
+    let mail = Meeting.followUp(rc.summary, meeting: "the kitchen walk-through", sender: "Cedric", people: ["Marco", "Lena"])
+    check("steps.emailSubject", mail.subject == "Next steps from the kitchen walk-through")
+    check("steps.emailBody", mail.body.hasPrefix("Hi Marco and Lena,") && mail.body.contains("- Cedric: Call the city and ask for the first open inspection slot, by tomorrow morning")
+          && mail.body.contains("Decided\n- The island gets 15 cm shorter") && mail.body.contains("Still open\n- Does the permit cover the hood fan?")
+          && mail.body.hasSuffix("Cedric\n") && !mail.body.contains("—"), mail.body)
+    check("steps.emailEmpty", Meeting.followUp(Meeting.Summary(), meeting: "x", sender: "", people: []).body.contains("Hi all,\n\nHere's what we agreed"))
+
+    // From the first real run: one turn holds several promises, a model names the wrong owner, and says things twice.
+    let turn = Meeting.said("[03:26] Person 2: The wood is warmer. I'll sit with it for a few days. So I'll send the drawing tonight, and you'll hear from me. And I'll call them in the morning.\n\n[03:40] Person 3: I'll order Monday.")
+    check("steps.sentenceDate", Meeting.deadline(around: 0, in: turn, task: "Call them in the morning.") == "the morning"
+          && Meeting.deadline(around: 0, in: turn, task: "Send the drawing tonight.") == "tonight"
+          && Meeting.deadline(around: 0, in: turn, task: "Sit with the wood for a few days.") == nil)
+    check("steps.promiser", Meeting.promiser(around: 0, in: turn, task: "Send the drawing tonight.") == "Person 2"
+          && Meeting.promiser(around: 0, in: Meeting.said("[00:01] Person 3: Can you send the drawing?"), task: "Send the drawing.") == nil)
+    let twice = Meeting.check(Meeting.Summary(todos: [Meeting.ToDo(who: "Me", task: "Send the drawing tonight.", at: 206),
+                                                      Meeting.ToDo(who: "Me", task: "Send the drawing tonight, and you'll hear from me.", at: 206),
+                                                      Meeting.ToDo(who: "Me", task: "Order the cabinets Monday.", at: 220)]), transcript: Meeting.transcript(inFile: "## Transcript\n\n[03:26] Person 2: The wood is warmer. I'll sit with it for a few days. So I'll send the drawing tonight, and you'll hear from me. And I'll call them in the morning.\n\n[03:40] Person 3: I'll order the cabinets Monday.\n"))
+    check("steps.distinctOwner", twice.summary.todos.map(\.who) == ["Person 2", "Person 3", "Person 2"] && twice.summary.todos[0].when == "tonight" && twice.summary.todos[0].critical
+          && twice.summary.todos[2].task == "Call them in the morning." && twice.summary.todos[2].critical, "\(twice.summary.todos)")
+
+    let missed = Meeting.promises(in: Meeting.said("[01:01] Person 2: I'll redraw it tonight and send it over. Perfect.\n\n[01:42] Person 3: Then I'll place the order Monday morning, as soon as Marco's drawing is in.\n\n[03:22] Person 3: They're in the car. I'll bring them in.\n\n[03:30] Me: Will I see you Friday?"))
+    check("steps.promises", missed.map(\.task) == ["Redraw it tonight and send it over.", "Place the order Monday morning, as soon as Marco's drawing is in."]
+          && missed.map(\.who) == ["Person 2", "Person 3"] && missed[0].critical && !missed[1].critical && missed[1].when == "Monday morning", "\(missed)")
+    // The After the call page (D-1126): built from the file, nothing said can become markup.
+    let notesFile = "# Meeting notes, Monday 2 November 2026\n\n- Date: 2026-11-02\n- Started: 10:05\n- Length: 34 min\n\n" + rmd + "\n## Transcript\n\n" + room
+        + "\n\n[18:00] Person 3: <script>alert('x')</script> & \"quotes\"\n"
+    let pn = AfterCallPage.read(notesFile)
+    check("page.read", pn.title == "Meeting notes, Monday 2 November 2026" && pn.started == "10:05" && pn.length == "34 min"
+          && pn.summary?.todos.count == 3 && pn.unnamed && pn.people == ["Lena", "Marco"], "\(pn.people) \(String(describing: pn.summary?.todos.count))")
+    let ph = AfterCallPage.html(pn, sender: "Cedric", audio: true)
+    check("page.escaped", !ph.contains("<script>alert") && ph.contains("&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt; &amp; &quot;quotes&quot;"))
+    check("page.oneScript", ph.components(separatedBy: "<script>").count == 2 && ph.contains("default-src 'none'"))
+    check("page.actionsFirst", ph.range(of: "What has to happen")!.lowerBound < ph.range(of: "Follow-up email")!.lowerBound
+          && ph.range(of: "Follow-up email")!.lowerBound < ph.range(of: "Go deeper")!.lowerBound)
+    check("page.critical", ph.contains("r-critical\">Critical</div><div class=\"act-what\">Call the city") && !ph.contains("Due tomorrow morning") && ph.contains("Tomorrow morning") && ph.contains("Hear it · 15:09"))
+    check("page.sound", ph.contains("data-track=\"me\" data-from=\"908.7\" data-to=\"915.0\""), "sound")
+    check("page.noAudio", AfterCallPage.html(pn, sender: "Cedric", audio: false).contains("Show what was said · 15:09"))
+    check("page.names", ph.contains("data-act=\"names\">Name the voices"))
+    check("page.noSummary", AfterCallPage.html(AfterCallPage.read("# Meeting notes, x\n\n" + Meeting.noSummary("Apple Intelligence is off.") + "\n## Transcript\n\n[00:01] Me: Hi there.\n"), sender: "", audio: false)
+          .contains("No summary was written. Apple Intelligence is off.") )
 
     // Cutting long audio: at the quietest moment before the target, never past it.
     var wave = [Float](repeating: 0.5, count: 16_000 * 10)

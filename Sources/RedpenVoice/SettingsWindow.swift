@@ -516,9 +516,24 @@ struct SettingsView: View {
             }
             roomRows
             Divider().overlay(Ink.line)
+            claudeNotesRow
             betterSummaryRow
-            Text("Start meeting notes from the menu. Your microphone is Me and what the Mac plays is Others. Everything stays on this Mac unless you ask Claude, ChatGPT, Gemini, Cursor or your own command for a better summary, and the notes are plain Markdown files.")
+            Text("Start meeting notes from the menu. Your microphone is Me and what the Mac plays is Others. The audio always stays on this Mac. The meeting's text stays here too, unless notes by your Claude account are on, or you ask Claude, ChatGPT, Gemini, Cursor or your own command for a better summary. The notes are plain Markdown files.")
                 .font(.system(size: 12.5)).foregroundStyle(Ink.dim).fixedSize(horizontal: false, vertical: true).padding(.top, 4)
+        }
+    }
+
+    /// Notes by the user's own Claude account after every meeting (D-1272), one click to turn off. Asked once after a
+    /// meeting when Claude Code is on this Mac; switched on here, it counts as the yes.
+    private var claudeNotesRow: some View {
+        let has = (model.summaryInstalled ?? []).contains("claude")
+        let on = model.config.claudeNotes == true
+        let note = !has && model.summaryInstalled != nil
+            ? "Needs Claude Code, signed in with your Claude account. Until then, basic notes are made on this Mac by Apple's model."
+            : on ? "Claude writes the notes after every meeting, through your own account. The meeting's text goes to Claude; the audio stays on this Mac."
+            : "Off: basic notes, made on this Mac by Apple's model. On: Claude writes them through your own account. Only the meeting's text goes to Claude."
+        return row("Notes by your Claude account", note) {
+            Toggle("", isOn: Binding(get: { model.config.claudeNotes == true }, set: { v in model.config.setClaudeNotes(v) })).labelsHidden().toggleStyle(.switch).tint(Ink.red).disabled(!has && !on)
         }
     }
 

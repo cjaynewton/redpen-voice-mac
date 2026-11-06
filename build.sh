@@ -80,6 +80,33 @@ else
 fi
 [[ "$SIGN_ID" == "-" ]] && echo "Note: ad-hoc signed. macOS may ask you to allow Accessibility again after each rebuild."
 [[ -n "$REDPEN_SKIP_INSTALL" ]] && exit 0
+# Never replace or restart the app while Cedric is talking to it. Reads the log since the app last launched:
+# a dictation, test recording or meeting that started and hasn't ended yet means busy. A dictation only counts
+# while the log is still being written (hands-free writes every few seconds), so a missed end line can't block
+# installs for long. Meeting notes count until they stop, then while their summary is still being written.
+voice_busy() {
+  local log=~/Library/Logs/RedpenVoice.log
+  pgrep -x RedpenVoice >/dev/null && [[ -f $log ]] || return 0
+  local age=$(( $(date +%s) - $(stat -f %m "$log") ))
+  awk -v age="$age" '
+    / launched [0-9]/ { s = "" }
+    / recording from / || / test: recording to / { if (s != "meeting notes") s = "a dictation" }
+    / dictation [0-9]+s, / || / cancelled: / || / no words, / || / test: saved / || / test: cannot / { if (s == "a dictation") s = "" }
+    / meeting: recording, / { s = "meeting notes" }
+    / meeting: stopped, / { s = "a meeting summary" }
+    / meeting: (summary from|summary failed|could not start|mic failed)/ { s = "" }
+    END { if (s == "meeting notes" || (s != "" && age < 120)) print s }
+  ' "$log"
+}
+busy=$(voice_busy)
+if [[ -n "$busy" && "$REDPEN_INSTALL_WHILE_RECORDING" != "1" ]]; then
+  echo "Redpen Voice is in the middle of $busy. Waiting up to a minute for it to finish..."
+  for i in {1..60}; do sleep 1; busy=$(voice_busy); [[ -z "$busy" ]] && break; done
+  if [[ -n "$busy" ]]; then
+    echo "Built but NOT installed: Redpen Voice is still in the middle of $busy. Run this again when it's done (or set REDPEN_INSTALL_WHILE_RECORDING=1)."
+    exit 0
+  fi
+fi
 # Compare actual signatures before touching the installed copy. Ad-hoc and unsigned copies have no team.
 signing_team() {
   local details team
@@ -106,13 +133,7 @@ rm -rf ~/Applications/"Redpen Voice.app"
 cp -R "$APP" ~/Applications/"Redpen Voice.app"
 echo "Installed ~/Applications/Redpen Voice.app"
 if pgrep -x RedpenVoice >/dev/null; then
-  # Never restart while a dictation or a test recording is in flight: the log's last line says which.
-  LOG=~/Library/Logs/RedpenVoice.log
-  for i in {1..120}; do
-    last=$(tail -1 "$LOG" 2>/dev/null)
-    [[ "$last" == *"recording from"* || "$last" == *"test: recording"* ]] || break
-    sleep 1
-  done
+  # The busy check above already waited for any dictation or meeting to finish before the copy was replaced.
   # A rebuild is a normal quit: leave the note so the crash watchdog doesn't reopen the old copy.
   for p in $(pgrep -f "$HOME/Applications/Redpen Voice.app/Contents/MacOS/RedpenVoice" ); do
     touch "$HOME/Library/Application Support/Redpen Voice/clean-quit-$p"

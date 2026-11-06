@@ -22,6 +22,42 @@ enum MeetingNotes {
         let othersLines: Int
         let echoDropped: Int
         let summary: String
+        /// Claude was chosen but didn't write the notes: its plain reason, for the bar (D-1272). Nil otherwise.
+        var claudeFailed: String? = nil
+        /// Claude wrote the notes.
+        var byClaude = false
+        /// Notes of some kind were written (Claude's or Apple's), not only a line saying why there are none.
+        var wrote = false
+    }
+
+    /// Who writes the notes after a meeting (D-1272): the user's own Claude account once they said yes, else Apple's
+    /// model on this Mac.
+    enum Writer: String { case apple, claude }
+
+    /// Puts notes above the transcript of a saved notes file: Claude's when chosen, with Apple's as the labelled
+    /// backup when Claude fails or times out, never notes that look real but aren't (D-1272). Returns a word for the
+    /// log and the test, and Claude's reason when it was chosen and didn't write them.
+    static func summarize(_ file: URL, writer: Writer, progress: @escaping (Int, String) -> Void) async -> (note: String, claudeFailed: String?, wrote: Bool) {
+        var label = Meeting.summaryLabel, claudeFailed: String?
+        if writer == .claude {
+            progress(85, "Writing the notes with Claude…")
+            let r = await Task.detached { BetterSummary.write(file: file, helper: "claude") }.value
+            if r.ok { return ("claude", nil, true) }
+            // Better summary's own "Your notes are unchanged" isn't true here: basic notes are being written now.
+            claudeFailed = r.message.replacingOccurrences(of: " Your notes are unchanged.", with: "")
+            label = Meeting.fallbackLabel(claudeFailed ?? "")
+            Log.note("meeting: Claude didn't write the notes, Apple's basic notes instead")
+        }
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return ("unreadable", claudeFailed, false) }
+        progress(85, "Writing basic notes…")
+        let said = Meeting.transcript(inFile: text).components(separatedBy: "\n").filter { $0.hasPrefix("[") }.joined(separator: "\n")
+        let section = await MeetingSummary.section(for: said, label: label) { p in progress(85 + p * 14 / 100, "Writing basic notes…") }
+        // Read again: the file may have changed while the model worked.
+        if let now = try? String(contentsOf: file, encoding: .utf8) {
+            do { try savePrivately(Meeting.placing(section.text, in: now), to: file) }
+            catch { Log.note("meeting: summary not saved, \(code(error))") }
+        }
+        return (section.note, claudeFailed, section.checked != nil)
     }
 
     /// An error for the log: its kind and number only. macOS's own wording can name the meeting's file or folder.
@@ -134,7 +170,9 @@ enum MeetingNotes {
     }
 
     /// Writes the notes for one recorded meeting. `progress` hears 0 to 100 and a few words for the bar.
+    /// `writer` is asked only once the transcript is saved, so a question about it never holds up the transcript.
     static func write(_ work: URL, engine: Transcriber, config: Config, names: Names, summarize: Bool = true,
+                      writer: @escaping () async -> Writer = { .apple },
                       progress: @escaping @MainActor (Int, String) -> Void) async throws -> Result {
         guard var manifest = load(work) else { throw NSError(domain: "RedpenVoice", code: 22, userInfo: [NSLocalizedDescriptionKey: "The recording's notes file is missing"]) }
         let fm = FileManager.default
@@ -211,22 +249,18 @@ enum MeetingNotes {
                 throw error
             }
         }
-        var summaryNote = "skipped"
+        var summaryNote = "skipped", claudeFailed: String?, wrote = false
         if summarize, !transcript.contains("\n## Summary\n") {
-            await progress(85, "Writing the summary…")
-            let said = Meeting.transcript(inFile: transcript).components(separatedBy: "\n").filter { $0.hasPrefix("[") }.joined(separator: "\n")
-            let section = await MeetingSummary.section(for: said) { p in Task { @MainActor in progress(85 + p * 14 / 100, "Writing the summary…") } }
-            summaryNote = section.note
             // Above the transcript, where it's read first (D-956); the transcript was saved on its own already.
-            if let now = try? String(contentsOf: file, encoding: .utf8) {
-                do { try savePrivately(Meeting.placing(section.text, in: now), to: file) }
-                catch { Log.note("meeting: summary not saved, \(code(error))") }
-            }
+            let who = await writer()
+            let r = await Self.summarize(file, writer: who) { p, w in Task { @MainActor in progress(p, w) } }
+            summaryNote = r.note; claudeFailed = r.claudeFailed; wrote = r.wrote
         }
         // Only now does the recording's own folder go: a quit before this finishes the same notes next launch.
         try? fm.removeItem(at: work)
         await progress(100, "Notes saved")
-        return Result(file: file, seconds: length, meLines: result.me, othersLines: result.others, echoDropped: result.echo, summary: summaryNote)
+        return Result(file: file, seconds: length, meLines: result.me, othersLines: result.others, echoDropped: result.echo, summary: summaryNote,
+                      claudeFailed: claudeFailed, byClaude: summaryNote == "claude", wrote: wrote)
     }
 }
 
@@ -262,6 +296,8 @@ enum MeetingSummary {
         var decisions: [Item]
         @Guide(description: "Only things someone said they will do, or asked someone to do. Empty when there are none.", .maximumCount(10))
         var todos: [ToDo]
+        @Guide(description: "Questions asked or problems raised that nobody settled by the end. Empty when everything was settled.", .maximumCount(6))
+        var open: [Item]
     }
 
     static let instructions = """
@@ -278,6 +314,13 @@ enum MeetingSummary {
     - Never invent names. Write Me, Others or a speaker as the transcript marks it (Person 2) unless a person's name \
     is said in the transcript. A to-do belongs to a speaker only when a line marked with that speaker says they will \
     do it.
+    - A suggestion, an idea or one person's view is not a decision. Write a decision only when the others clearly \
+    agreed to it.
+    - Give a to-do an owner only when the transcript says who will do it; otherwise write Not clear. Never add a \
+    deadline, day or time that nobody said.
+    - Copy money, numbers and percentages exactly as they were said. Never round them, merge two of them, or finish a \
+    number that was cut off.
+    - Still open is a question asked or a problem raised that nobody settled by the end.
     - Leave out small talk: greetings, health, weather, thanks and goodbyes.
     - Empty lists are fine. Do not add advice or opinions.
     """
@@ -302,7 +345,7 @@ enum MeetingSummary {
     /// Each piece of the transcript gets its own notes; a piece too long for the model's window is split in two and
     /// tried again. The pieces' items are merged in code, in turn from each piece, so every part of the meeting is
     /// heard; only the overview is combined by the model.
-    static func section(for transcript: String, progress: @escaping (Int) -> Void) async -> (text: String, note: String, checked: Meeting.Checked?, raw: Meeting.Summary?) {
+    static func section(for transcript: String, label: String = Meeting.summaryLabel, progress: @escaping (Int) -> Void) async -> (text: String, note: String, checked: Meeting.Checked?, raw: Meeting.Summary?) {
         if let why = unavailable { return (Meeting.noSummary(why), "unavailable", nil, nil) }
         let lines = transcript.components(separatedBy: "\n").filter { $0.hasPrefix("[") }
         guard !lines.isEmpty else { return (Meeting.noSummary("Nothing was heard to summarise."), "empty", nil, nil) }
@@ -315,23 +358,45 @@ enum MeetingSummary {
         let t0 = Date()
         do {
             let parts = Meeting.pieces(lines, maxChars: budget)
-            var notes: [Notes] = []
+            var notes: [Notes] = [], skipped = 0, lastError: Error?
             for (i, p) in parts.enumerated() {
-                notes += try await fitting(p.components(separatedBy: "\n"), noMe: noMe)
+                let piece = p.components(separatedBy: "\n")
+                // A piece that fails whatever its size (the model busy or missing, a language it doesn't take) is
+                // left out and said; the notes from the other pieces are kept (D-1272).
+                do { notes += try await fitting(piece, noMe: noMe, skipped: &skipped) }
+                catch { lastError = error; skipped += piece.count; Log.note("meeting: summary left out a part of \(piece.count) lines (\(type(of: error)))") }
                 progress((i + 1) * 90 / parts.count)
+            }
+            // Nothing written at all: the first failure's own message, as before (Apple Intelligence off, busy).
+            if notes.isEmpty, let lastError { throw lastError }
+            // Every piece refused: no notes, said plainly, never empty headings that look like notes.
+            guard !notes.isEmpty else {
+                Log.note("meeting: Apple's model declined every part of the meeting")
+                return (Meeting.noSummary("Apple's model declined to summarise this meeting."), "declined", nil, nil)
             }
             let raw: Meeting.Summary
             if notes.count == 1 {
                 raw = summary(notes[0])
             } else {
-                let overview = try await respond(overviewInstructions, notes.enumerated().map { "Part \($0.offset + 1): \($0.element.overview)" }.joined(separator: "\n"))
-                raw = Meeting.merge(notes.map(summary), overview: plain(overview))
+                // The overview of the whole is one more request, which can be refused too: then the parts' own first
+                // sentences, in order, stand in for it.
+                let overview: String
+                do {
+                    overview = plain(try await respond(overviewInstructions, notes.enumerated().map { "Part \($0.offset + 1): \($0.element.overview)" }.joined(separator: "\n")))
+                } catch {
+                    Log.note("meeting: overview failed (\(type(of: error))), using the parts' own")
+                    // The start, the middle and the end, so the overview says where the meeting ended up.
+                    let picks = Array(Set([0, notes.count / 2, notes.count - 1])).sorted()
+                    overview = picks.compactMap { Meeting.sentences(plain(notes[$0].overview)).first }.joined(separator: " ")
+                }
+                raw = Meeting.merge(notes.map(summary), overview: overview)
             }
             progress(100)
             let checked = Meeting.check(raw, transcript: transcript)
             let s = checked.summary
-            Log.note("meeting: summary from \(notes.count) pieces in \(Log.int(Date().timeIntervalSince(t0)))s, \(s.points.count) points, \(s.decisions.count) decisions, \(s.todos.count) to-dos; check moved \(checked.moved), left out \(checked.dropped), not tasks \(checked.notTasks), uncited \(checked.uncited)")
-            return (Meeting.summaryMarkdown(checked, transcript: transcript), "\(notes.count) pieces", checked, raw)
+            Log.note("meeting: summary from \(notes.count) pieces in \(Log.int(Date().timeIntervalSince(t0)))s, \(s.points.count) points, \(s.decisions.count) decisions, \(s.todos.count) to-dos; check moved \(checked.moved), left out \(checked.dropped), not tasks \(checked.notTasks), uncited \(checked.uncited); lines it wouldn't take \(skipped)")
+            let gap = skipped == 0 ? "" : "\n\nApple's model couldn't summarise \(skipped) \(skipped == 1 ? "line" : "lines") of this meeting, so \(skipped == 1 ? "it isn't" : "they aren't") in these notes. \(skipped == 1 ? "It's" : "They're") still in the transcript."
+            return (Meeting.summaryMarkdown(checked, transcript: transcript, label: label + gap), "\(notes.count) pieces" + (skipped > 0 ? ", \(skipped) lines refused" : ""), checked, raw)
         } catch {
             let text = "\(error)"
             if CommandLine.arguments.contains("--summary-test") { print("    model error: \(error)") }
@@ -341,14 +406,43 @@ enum MeetingSummary {
         }
     }
 
-    /// Notes for these lines, split in two (and again) while they are too long for the model's window.
-    private static func fitting(_ lines: [String], noMe: Bool) async throws -> [Notes] {
+    /// Notes for these lines. A piece the model can't take, too long for its window or refused by its safety check
+    /// (GenerationError 2 on a 61-minute call, the whole meeting lost; D-1272), is split in two and tried again;
+    /// a few lines it still refuses are left out and counted, so one stretch never costs the meeting its notes.
+    /// A model that isn't there, or is busy, fails the summary as before: splitting wouldn't help.
+    private static func fitting(_ lines: [String], noMe: Bool, skipped: inout Int) async throws -> [Notes] {
         do {
             return [try await summarise(lines.joined(separator: "\n"), noMe: noMe)]
-        } catch where "\(error)".localizedCaseInsensitiveContains("context") && lines.count > 1 {
-            Log.note("meeting: summary piece too long, splitting it")
+        } catch let e as LanguageModelSession.GenerationError {
+            // Splitting helps only a piece that's too long or that the safety check refused; these fail the same
+            // way at any size, so they go up at once instead of one request per line.
+            switch e {
+            case .assetsUnavailable, .rateLimited, .concurrentRequests, .unsupportedLanguageOrLocale, .unsupportedGuide: throw e
+            default: break
+            }
+            guard lines.count > 1 else {
+                Log.note("meeting: summary left out \(lines.count) lines the model wouldn't take (\(kind(e)))")
+                skipped += lines.count
+                return []
+            }
+            Log.note("meeting: summary piece of \(lines.count) lines failed (\(kind(e))), splitting it")
             let half = lines.count / 2
-            return try await fitting(Array(lines[..<half]), noMe: noMe) + fitting(Array(lines[half...]), noMe: noMe)
+            var out = try await fitting(Array(lines[..<half]), noMe: noMe, skipped: &skipped)
+            out += try await fitting(Array(lines[half...]), noMe: noMe, skipped: &skipped)
+            return out
+        }
+    }
+
+    /// The kind of error, for the log: never its text, which can quote the meeting.
+    static func kind(_ e: LanguageModelSession.GenerationError) -> String {
+        switch e {
+        case .exceededContextWindowSize: "too long"
+        case .guardrailViolation: "safety check"
+        case .refusal: "refused"
+        case .decodingFailure: "unreadable answer"
+        case .unsupportedLanguageOrLocale: "language"
+        case .unsupportedGuide: "unsupported"
+        default: "other"
         }
     }
 
@@ -364,7 +458,8 @@ enum MeetingSummary {
         Meeting.Summary(overview: plain(n.overview),
                         points: n.points.map { Meeting.Cited($0.text, at: Meeting.seconds($0.time)) },
                         decisions: n.decisions.map { Meeting.Cited($0.text, at: Meeting.seconds($0.time)) },
-                        todos: n.todos.map { Meeting.ToDo(who: $0.who, task: $0.task, at: Meeting.seconds($0.time)) })
+                        todos: n.todos.map { Meeting.ToDo(who: $0.who, task: $0.task, at: Meeting.seconds($0.time)) },
+                        open: n.open.map { Meeting.Cited($0.text, at: Meeting.seconds($0.time)) })
     }
 
     private static func summarise(_ piece: String, noMe: Bool) async throws -> Notes {

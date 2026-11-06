@@ -10,6 +10,24 @@ import VoiceCore
 /// is a muted microphone as long as the other track; `echo` is the other track heard again by the microphone, a
 /// little later and quieter, as on laptop speakers. Everything stays in `out-folder`.
 enum MeetingTest {
+    /// `--notes claude|apple` (D-1272): who writes the notes, as the app decides after the one question; Apple when
+    /// missing. Claude goes through the `claude` program on this Mac, signed in with the user's own account.
+    static var writer: MeetingNotes.Writer {
+        CommandLine.arguments.firstIndex(of: "--notes").flatMap { $0 + 1 < CommandLine.arguments.count ? MeetingNotes.Writer(rawValue: CommandLine.arguments[$0 + 1]) : nil } ?? .apple
+    }
+
+    /// What the top notes in a file are: who wrote them (from the label), and the counts, for the test's printout.
+    static func describe(_ file: URL) -> String {
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return "notes: file can't be read" }
+        let n = AfterCallPage.read(text)
+        guard let s = n.summary else { return "notes: none (\(n.noSummary ?? "no summary"))" }
+        let open = s.open.count, crit = s.todos.filter(\.critical).count
+        return """
+        notes: \(n.byline ?? "no label")
+            kept: \(s.points.count) points, \(s.decisions.count) decisions, \(s.todos.count) to-dos (\(crit) critical), \(open) still open
+        """
+    }
+
     static func run(_ args: [String], engine: Transcriber, config base: Config, names: Names) async -> Int32 {
         guard args.count >= 3 else { print("usage: --meeting-test me.wav|silent others.wav|silent out-folder [--room] [--voice my.wav]"); return 2 }
         let out = URL(fileURLWithPath: args[2], isDirectory: true)
@@ -64,7 +82,7 @@ enum MeetingTest {
             try MeetingNotes.save(m, in: work)
             let t1 = Date()
             var marks: [Int: Double] = [:]
-            let r = try await MeetingNotes.write(work, engine: engine, config: config, names: names, summarize: summarize) { pct, _ in
+            let r = try await MeetingNotes.write(work, engine: engine, config: config, names: names, summarize: summarize, writer: { writer }) { pct, _ in
                 for step in [80, 100] where pct >= step && marks[step] == nil { marks[step] = Date().timeIntervalSince(t1) }
             }
             let total = Date().timeIntervalSince(t1)
@@ -81,7 +99,9 @@ enum MeetingTest {
               audio saved + summary: \(String(format: "%.1f", total - written)) s, summary \(r.summary)
               total after stop: \(String(format: "%.1f", total)) s
               memory: \(gb(rssLoaded)) with the engine loaded, peak \(gb(peakMemory()))
+              writer asked: \(writer.rawValue)\(r.claudeFailed.map { ", Claude failed: \($0)" } ?? "")
             """)
+            print("  " + describe(r.file))
             return 0
         } catch {
             print("meeting-test failed: \(error.localizedDescription)")
@@ -135,6 +155,26 @@ enum MeetingTest {
     static func summary(_ args: [String]) async -> Int32 {
         guard args.count >= 2, let text = try? String(contentsOfFile: args[0], encoding: .utf8) else { print("usage: --summary-test notes.md out.md [--better claude]"); return 2 }
         let out = URL(fileURLWithPath: args[1])
+        // `--notes claude|apple` (D-1272): the app's own after-meeting path on a copy with no notes yet, Claude first
+        // with Apple as the labelled backup, or Apple alone.
+        if CommandLine.arguments.contains("--notes") {
+            let bare = text.components(separatedBy: "\n## ").enumerated().filter { i, b in
+                i == 0 || !(b.hasPrefix("Summary\n") || b.hasPrefix("Summary written on this Mac\n"))
+            }.map(\.element).joined(separator: "\n## ")
+            do {
+                if !FileManager.default.fileExists(atPath: out.path) { FileManager.default.createFile(atPath: out.path, contents: nil, attributes: [.posixPermissions: 0o600]) }
+                try MeetingNotes.savePrivately(bare, to: out)
+            } catch { print("can't write \(out.path)"); return 1 }
+            let t0 = Date()
+            let r = await MeetingNotes.summarize(out, writer: writer) { _, _ in }
+            print("""
+            summary-test
+              writer asked: \(writer.rawValue), \(String(format: "%.1f", Date().timeIntervalSince(t0))) s, \(r.note)\(r.claudeFailed.map { ", Claude failed: \($0)" } ?? "")
+              \(describe(out))
+              file: \(out.path)
+            """)
+            return 0
+        }
         let said = Meeting.transcript(inFile: text).components(separatedBy: "\n").filter { $0.hasPrefix("[") }.joined(separator: "\n")
         func report(_ who: String, _ c: Meeting.Checked?, _ raw: Meeting.Summary?, seconds: Double) {
             guard let c, let raw else { print("\(who): no summary"); return }

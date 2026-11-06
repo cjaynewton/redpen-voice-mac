@@ -16,7 +16,14 @@ extension Meeting {
         public var who: String
         public var task: String
         public var at: Double?
-        public init(who: String, task: String, at: Double? = nil) { self.who = who; self.task = task; self.at = at }
+        /// The deadline as it was said ("tomorrow morning", "Monday"), found by code in the line that says the to-do,
+        /// never written by a model (D-1126). Nil when no date was said.
+        public var when: String?
+        /// Something else waits on it, or its date is today, tonight or tomorrow (D-1108), found the same way.
+        public var critical: Bool
+        public init(who: String, task: String, at: Double? = nil, when: String? = nil, critical: Bool = false) {
+            self.who = who; self.task = task; self.at = at; self.when = when; self.critical = critical
+        }
     }
 
     public struct Summary: Equatable, Sendable {
@@ -24,11 +31,13 @@ extension Meeting {
         public var points: [Cited]
         public var decisions: [Cited]
         public var todos: [ToDo]
-        public init(overview: String = "", points: [Cited] = [], decisions: [Cited] = [], todos: [ToDo] = []) {
-            self.overview = overview; self.points = points; self.decisions = decisions; self.todos = todos
+        /// Questions asked or problems raised that nobody settled (D-1126).
+        public var open: [Cited]
+        public init(overview: String = "", points: [Cited] = [], decisions: [Cited] = [], todos: [ToDo] = [], open: [Cited] = []) {
+            self.overview = overview; self.points = points; self.decisions = decisions; self.todos = todos; self.open = open
         }
-        public var isEmpty: Bool { overview.isEmpty && points.isEmpty && decisions.isEmpty && todos.isEmpty }
-        public var items: Int { points.count + decisions.count + todos.count }
+        public var isEmpty: Bool { overview.isEmpty && points.isEmpty && decisions.isEmpty && todos.isEmpty && open.isEmpty }
+        public var items: Int { points.count + decisions.count + todos.count + open.count }
     }
 
     /// One line of the transcript: when, who, what.
@@ -53,8 +62,22 @@ extension Meeting {
         public init(summary: Summary) { self.summary = summary }
     }
 
-    /// The label above Apple's summary.
-    public static let summaryLabel = "*Written on this Mac by Apple's model. Check it against the transcript.*"
+    /// The label above Apple's summary: basic notes, said plainly (D-1272), since Apple's model scored 1.3 out of 10
+    /// on three real calls where Claude Sonnet scored 8.
+    public static let summaryLabel = "*Basic notes, made on this Mac by Apple's model. Check them against the transcript.*"
+
+    /// The label when Claude was chosen but didn't write the notes, with its own plain reason (D-1272).
+    public static func fallbackLabel(_ why: String) -> String {
+        let reason = why.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "*Basic notes, made on this Mac by Apple's model, because Claude didn't write them this time"
+            + (reason.isEmpty ? "." : ": \(reason.hasSuffix(".") ? String(reason.dropLast()) : reason).")
+            + " Check them against the transcript.*"
+    }
+
+    /// Notes written by Apple's model, under either label, or an older file's "Written on this Mac by Apple's model".
+    public static func isBasic(_ summaryBlock: String) -> Bool {
+        summaryBlock.contains("*Basic notes, made on this Mac") || summaryBlock.contains("*Written on this Mac by Apple's model")
+    }
 
     /// The label above a summary from the user's own Claude, ChatGPT or Gemini.
     public static func betterLabel(_ who: String) -> String { "*Written by \(who) (your account). Check it against the transcript.*" }
@@ -295,23 +318,39 @@ extension Meeting {
         let end = (lines.last?.at ?? 0) + 600
         var out = Checked(summary: Summary(overview: s.overview))
         func real(_ at: Double?) -> Double? { at.flatMap { $0 <= end ? $0 : nil } }
-        /// The time of the line that says it, or nil when none does.
-        func locate(_ text: String, _ at: Double?, task: Bool) -> Double? {
+        /// The line that says it, or nil when none does.
+        func line(_ text: String, _ at: Double?, task: Bool) -> Int? {
             if real(at) == nil { out.uncited += 1 }
             guard let hit = find(text, near: real(at), in: lines, words: words, task: task) else { return nil }
             if hit.moved, real(at) != nil { out.moved += 1 }
-            return lines[hit.index].at
+            return hit.index
         }
+        /// The time of the line that says it, or nil when none does.
+        func locate(_ text: String, _ at: Double?, task: Bool) -> Double? { line(text, at, task: task).map { lines[$0].at } }
         for p in s.points {
             if let at = locate(p.text, p.at, task: false) { out.summary.points.append(Cited(p.text, at: at)) } else { out.dropped += 1 }
         }
         for d in s.decisions {
             if let at = locate(d.text, d.at, task: false) { out.summary.decisions.append(Cited(d.text, at: at)) } else { out.dropped += 1 }
         }
+        for o in s.open {
+            // A question is one line on the list: a writer that pasted a whole turn gives its question, or nothing.
+            guard let text = openItem(o.text) else { out.dropped += 1; continue }
+            if let at = locate(text, o.at, task: false) { out.summary.open.append(Cited(text, at: at)) } else { out.dropped += 1 }
+        }
         for t in s.todos {
             if isPleasantry(t.task) { out.notTasks += 1; continue }
-            if let at = locate(t.task, t.at, task: true) {
-                out.summary.todos.append(ToDo(who: who(t.who, transcript: transcript), task: t.task, at: at))
+            if let i = line(t.task, t.at, task: true) {
+                // The date and whether it is critical come from the line found, whatever the writer said. Two lines
+                // can share a second (Me and Others), so it is that line, never the first one at that time.
+                let at = lines[i].at
+                // A deadline in the writer's words that no line near it says is taken out ("by this afternoon").
+                let t = ToDo(who: t.who, task: withoutUnsaidDates(t.task, around: i, in: lines), at: t.at)
+                let when = deadline(around: i, in: lines, task: t.task)
+                // A promise in the first person belongs to whoever said it, whoever the writer named (D-1126).
+                let owner = promiser(around: i, in: lines, task: t.task) ?? who(t.who, transcript: transcript)
+                out.summary.todos.append(ToDo(who: owner, task: t.task, at: at, when: when,
+                                              critical: when.map(isSoon) == true || waitsOn(around: i, in: lines, task: t.task)))
             } else if find(t.task, near: real(t.at), in: lines, words: words, task: false) != nil {
                 // Said, but nobody took it on or asked for it: not a to-do.
                 out.notTasks += 1
@@ -319,12 +358,22 @@ extension Meeting {
                 out.dropped += 1
             }
         }
+        // A dated promise the writer missed is still a to-do: code finds them in the transcript (D-1126).
+        out.summary.todos += promises(in: lines)
+        // The same thing said twice is kept once.
+        out.summary.points = distinct(out.summary.points, text: \.text)
+        out.summary.decisions = distinct(out.summary.decisions, text: \.text)
+        // To-dos only repeat when the same person has them: two people's jobs on the same thing are both kept.
+        // "Not clear" matches anyone, and the copy with an owner is the one kept.
+        let owned = out.summary.todos.filter { !isUnowned($0.who) } + out.summary.todos.filter { isUnowned($0.who) }
+        out.summary.todos = distinct(owned, text: \.task, same: { $0.who == $1.who || isUnowned($0.who) || isUnowned($1.who) })
+        out.summary.open = distinct(out.summary.open, text: \.text)
         return out
     }
 
     /// The pieces of a long meeting as one summary: items taken in turn from each piece, so the end of a meeting
     /// counts as much as its start, near-repeats left out, up to the caps, then in the order they were said.
-    public static func merge(_ parts: [Summary], overview: String, points: Int = 10, decisions: Int = 6, todos: Int = 10) -> Summary {
+    public static func merge(_ parts: [Summary], overview: String, points: Int = 10, decisions: Int = 6, todos: Int = 10, open: Int = 6) -> Summary {
         func inTurn<T>(_ lists: [[T]], cap: Int, text: (T) -> String, at: (T) -> Double?) -> [T] {
             var out: [T] = [], seen: [Set<String>] = []
             for i in 0..<(lists.map(\.count).max() ?? 0) {
@@ -342,7 +391,8 @@ extension Meeting {
         return Summary(overview: overview,
                        points: inTurn(parts.map(\.points), cap: points, text: \.text, at: \.at),
                        decisions: inTurn(parts.map(\.decisions), cap: decisions, text: \.text, at: \.at),
-                       todos: inTurn(parts.map(\.todos), cap: todos, text: \.task, at: \.at))
+                       todos: inTurn(parts.map(\.todos), cap: todos, text: \.task, at: \.at),
+                       open: inTurn(parts.map(\.open), cap: open, text: \.text, at: \.at))
     }
 
     // MARK: Markdown
@@ -352,12 +402,14 @@ extension Meeting {
         let s = c.summary
         func time(_ at: Double?) -> String { at.map { " [\(clock($0))]" } ?? "" }
         func list(_ items: [String]) -> String { items.isEmpty ? "None heard.\n" : items.map { "- \($0)" }.joined(separator: "\n") + "\n" }
+        // What has to happen comes first, most critical first (D-1108); the rest is there for whoever wants it.
         var out = "## Summary\n\n\(label)\n\n"
         out += "### Overview\n\n" + (s.overview.isEmpty ? "None heard." : s.overview) + "\n\n"
-        out += "### Key points\n\n" + list(s.points.map { $0.text + time($0.at) }) + "\n"
+        out += "### To-dos\n\n" + list(ranked(s.todos).map { todoLine($0) + time($0.at) }) + "\n"
+        out += "### Still open\n\n" + list(s.open.map { $0.text + time($0.at) }) + "\n"
         out += "### Decisions\n\n" + list(s.decisions.map { $0.text + time($0.at) }) + "\n"
-        out += "### To-dos\n\n" + list(s.todos.map { "\($0.who): \($0.task)" + time($0.at) })
-        let body = ([s.overview] + s.points.map(\.text) + s.decisions.map(\.text) + s.todos.map(\.task)).joined(separator: ". ")
+        out += "### Key points\n\n" + list(s.points.map { $0.text + time($0.at) })
+        let body = ([s.overview] + s.points.map(\.text) + s.decisions.map(\.text) + s.todos.map(\.task) + s.open.map(\.text)).joined(separator: ". ")
         let odd = unknownNames(body, transcript: transcript)
         if !odd.isEmpty { out += "\nNot in the transcript, so check them: \(odd.joined(separator: ", ")).\n" }
         if c.dropped > 0 {
@@ -378,7 +430,7 @@ extension Meeting {
             let line = raw.trimmingCharacters(in: .whitespaces)
             if line.isEmpty || line.hasPrefix("```") { continue }
             let bare = line.trimmingCharacters(in: CharacterSet(charactersIn: "#*_: ")).lowercased()
-            let known = ["overview", "key points", "points", "decisions", "to-dos", "todos", "to do", "action items"].contains(bare)
+            let known = ["overview", "key points", "points", "decisions", "to-dos", "todos", "to do", "action items", "still open", "open questions"].contains(bare)
             let heading = line.hasPrefix("#") || known
             if heading {
                 switch bare {
@@ -386,6 +438,7 @@ extension Meeting {
                 case let b where b.hasPrefix("key point") || b == "points": section = "points"; found = true
                 case let b where b.hasPrefix("decision"): section = "decisions"; found = true
                 case let b where b.hasPrefix("to-do") || b.hasPrefix("todo") || b.hasPrefix("action item"): section = "todos"; found = true
+                case let b where b.hasPrefix("still open") || b.hasPrefix("open question"): section = "open"; found = true
                 default: section = ""
                 }
                 continue
@@ -398,12 +451,14 @@ extension Meeting {
             case "overview": overview.append(item)
             case "points" where m != nil: let c = cited(item); s.points.append(Cited(c.text, at: c.at))
             case "decisions" where m != nil: let c = cited(item); s.decisions.append(Cited(c.text, at: c.at))
+            case "open" where m != nil: let c = cited(item); s.open.append(Cited(c.text, at: c.at))
             case "todos" where m != nil:
-                let c = cited(item)
-                if let colon = c.text.range(of: ": "), c.text[..<colon.lowerBound].split(separator: " ").count <= 4 {
-                    s.todos.append(ToDo(who: String(c.text[..<colon.lowerBound]), task: String(c.text[colon.upperBound...]), at: c.at))
+                let c = cited(item), mark = todoMark(c.text)
+                if let colon = mark.text.range(of: ": "), mark.text[..<colon.lowerBound].split(separator: " ").count <= 4 {
+                    s.todos.append(ToDo(who: String(mark.text[..<colon.lowerBound]), task: String(mark.text[colon.upperBound...]), at: c.at,
+                                        when: mark.when, critical: mark.critical))
                 } else {
-                    s.todos.append(ToDo(who: "Not clear", task: c.text, at: c.at))
+                    s.todos.append(ToDo(who: "Not clear", task: mark.text, at: c.at, when: mark.when, critical: mark.critical))
                 }
             default: break
             }

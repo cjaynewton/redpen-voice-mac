@@ -49,6 +49,8 @@ final class MenuModel: ObservableObject {
     var copyNotice: () -> Void = {}
     var unfinished: () -> Void = {}
     var nameVoices: () -> Void = {}
+    /// After the call (D-1126): a meeting's notes, actions first.
+    var openNotes: () -> Void = {}
     /// Send a report (D-1034).
     var report: () -> Void = {}
 }
@@ -132,6 +134,7 @@ struct MenuPanel: View {
                 action("Start meeting notes", model.meeting)
             }
             action("Copy notice for the meeting chat", model.copyNotice)
+            if s.meetingStarted == nil { action("Open meeting notes…", model.openNotes) }
             if s.nameVoices, s.meetingStarted == nil { action("Name the voices…", model.nameVoices) }
             if s.unfinished > 0, s.notesStatus == nil {
                 action("Write notes for \(s.unfinished == 1 ? "an unfinished meeting" : "\(s.unfinished) unfinished meetings")…", model.unfinished)

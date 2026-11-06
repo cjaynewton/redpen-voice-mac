@@ -75,6 +75,22 @@ struct Config: Codable {
     /// The helpers the user has agreed to send a transcript to, after being told where it goes the first time; for
     /// their own command, "command:" and the command, so a new command asks again.
     var betterSummaryAgreed: [String]?
+    /// Notes written by the user's own Claude account after every meeting (D-1272): true once they said yes to the
+    /// one question after a meeting, false once they said no or turned it off; nil until asked. Only the meeting's
+    /// text goes to Claude; the audio stays on the Mac.
+    var claudeNotes: Bool?
+    /// "claude" was added to `betterSummaryAgreed` by saying yes to notes by Claude, so turning those off takes it out
+    /// again and Better summary with Claude asks its own question once more.
+    var claudeAgreedByNotes: Bool?
+
+    /// Notes by Claude on or off, with the agreement that goes with them (D-1272).
+    mutating func setClaudeNotes(_ on: Bool) {
+        claudeNotes = on
+        var agreed = betterSummaryAgreed ?? []
+        if on, !agreed.contains("claude") { agreed.append("claude"); claudeAgreedByNotes = true }
+        if !on, claudeAgreedByNotes == true { agreed.removeAll { $0 == "claude" }; claudeAgreedByNotes = nil }
+        betterSummaryAgreed = agreed.isEmpty ? nil : agreed
+    }
     var meetingsDir: URL {
         meetingsFolder.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true) }
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Redpen Meetings", isDirectory: true)

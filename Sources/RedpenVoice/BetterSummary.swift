@@ -117,7 +117,14 @@ enum BetterSummary {
     - Owners are Me, Others, a speaker as the transcript marks it (Person 2), or a name said in the transcript. Never \
     invent a name. A to-do belongs to a speaker only when a line marked with that speaker says they will do it.
     - Leave out small talk: greetings, health, weather, thanks and goodbyes.
-    - At most 10 key points, 6 decisions and 10 to-dos. Under a heading with nothing in it, write "None heard."
+    - A suggestion, an idea or one person's view is not a decision. Write a decision only when the others clearly \
+    agreed to it.
+    - Give a to-do an owner only when the transcript says who will do it; otherwise write Not clear. Never add a \
+    deadline, day or time that nobody said.
+    - Copy money, numbers and percentages exactly as they were said. Never round them, merge two of them, or finish a \
+    number that was cut off.
+    - Still open is a question asked or a problem raised that nobody settled by the end.
+    - At most 10 key points, 6 decisions, 10 to-dos and 6 still open. Under a heading with nothing in it, write "None heard."
     - Plain words. No preamble, no closing remarks, no other headings.
 
     Answer in exactly this form:
@@ -133,6 +140,9 @@ enum BetterSummary {
 
     ### To-dos
     - Owner: what they will do. [mm:ss]
+
+    ### Still open
+    - One question or problem nobody settled. [mm:ss]
     """
 
     // MARK: Running a tool

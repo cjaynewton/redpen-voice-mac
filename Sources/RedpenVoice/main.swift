@@ -127,6 +127,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.2) { exit(0) }
             return
         }
+        // `--after-call-shot notes.md out.png [--open] [--quote]` draws the After the call page for a notes file (D-1126).
+        if let i = CommandLine.arguments.firstIndex(of: "--after-call-shot"), i + 2 < CommandLine.arguments.count {
+            AfterCall.shot(CommandLine.arguments[i + 1], to: CommandLine.arguments[i + 2])
+            return
+        }
         // `--stats-shot out.png [dark]` draws the Stats window with made-up sample numbers, never the ones on this Mac.
         if let i = CommandLine.arguments.firstIndex(of: "--stats-shot"), i + 1 < CommandLine.arguments.count {
             Ink.registerFonts()
@@ -2187,6 +2192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.copyNotice = { [weak self] in self?.panel.close(); self?.copyNotice() }
         menu.unfinished = { [weak self] in self?.panel.close(); self?.offerUnfinishedMeetings(asked: true) }
         menu.nameVoices = { [weak self] in self?.panel.close(); self?.nameVoices() }
+        menu.openNotes = { [weak self] in self?.panel.close(); self?.openMeetingNotes() }
         menu.report = { [weak self] in self?.panel.close(); self?.openReport() }
         refreshMenu()
     }
@@ -2431,6 +2437,96 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Who writes this meeting's notes (D-1272). With Claude Code on this Mac and signed in, the first meeting after
+    /// asks once, and the answer stands until it's changed in Settings. Never a question over a meeting being
+    /// recorded or a dictation: that meeting gets Apple's notes, and the question waits for the next one.
+    private func notesWriter() async -> MeetingNotes.Writer {
+        if config.claudeNotes == false { return .apple }
+        guard BetterSummary.path("claude") != nil else { return .apple }
+        if config.claudeNotes == true { return .claude }
+        guard meeting == nil else { return .apple }
+        let signedIn = await Task.detached { BetterSummary.ready("claude") }.value
+        guard signedIn else { return .apple }
+        await whenNotDictating()
+        guard meeting == nil, config.claudeNotes == nil else { return config.claudeNotes == true ? .claude : .apple }
+        let a = NSAlert()
+        a.messageText = "Use your Claude account for better notes?"
+        a.informativeText = "Your meeting text goes to Claude. Audio stays on your Mac.\n\nFrom now on Claude writes the notes after every meeting. You can turn this off in Settings, under Meeting notes."
+        a.addButton(withTitle: "Use Claude")
+        a.addButton(withTitle: "No thanks")
+        NSApp.activate(ignoringOtherApps: true)
+        // Unanswered for two minutes (they went straight into another call): this meeting gets Apple's notes and the
+        // question waits for the next one, so it never holds the notes up for long.
+        let timer = Timer(timeInterval: 120, repeats: false) { _ in NSApp.abortModal() }
+        RunLoop.main.add(timer, forMode: .modalPanel)
+        let answer = a.runModal()
+        timer.invalidate()
+        guard answer != .abort else { Log.note("meeting: notes by Claude not answered, Apple this time"); return .apple }
+        let yes = answer == .alertFirstButtonReturn
+        var c = Config.load()
+        c.setClaudeNotes(yes)
+        c.save()
+        config.claudeNotes = c.claudeNotes; config.betterSummaryAgreed = c.betterSummaryAgreed; config.claudeAgreedByNotes = c.claudeAgreedByNotes
+        syncSettings()
+        Log.note("meeting: asked about notes by Claude, \(yes ? "yes" : "no")")
+        return yes ? .claude : .apple
+    }
+
+    /// Get better notes (D-1272), from the link on Apple's notes. Without Claude Code it says how to get it; with it,
+    /// one yes turns on notes by Claude, and Claude rewrites these notes now, with Apple's kept below.
+    private func getBetterNotes(_ file: URL) {
+        let a = NSAlert()
+        guard BetterSummary.path("claude") != nil else {
+            a.messageText = "Better notes come from your own Claude account"
+            a.informativeText = "On three real calls, notes written by Claude scored 8 out of 10, and these basic notes made on this Mac scored about 1.\n\nInstall Claude Code, Anthropic's app for Terminal, then sign in: \(BetterSummary.signIn("claude"))\n\nAfter that, Redpen asks after your next meeting. Only the meeting's text goes to Claude; the audio stays on this Mac."
+            a.addButton(withTitle: "OK")
+            NSApp.activate(ignoringOtherApps: true)
+            a.runModal()
+            return
+        }
+        a.messageText = "Use your Claude account for better notes?"
+        a.informativeText = "Your meeting text goes to Claude. Audio stays on your Mac.\n\nClaude rewrites these notes now and writes them after every meeting from now on. You can turn this off in Settings, under Meeting notes."
+        a.addButton(withTitle: "Use Claude")
+        a.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        var c = Config.load()
+        c.setClaudeNotes(true)
+        c.save()
+        config.claudeNotes = true; config.betterSummaryAgreed = c.betterSummaryAgreed; config.claudeAgreedByNotes = c.claudeAgreedByNotes
+        syncSettings()
+        hud.flash("Claude is writing the notes…", for: 2.5)
+        Task.detached { [weak self] in
+            let r = BetterSummary.write(file: file, helper: "claude")
+            await MainActor.run {
+                guard let self else { return }
+                self.hud.flash(r.ok ? "Notes written by Claude" : "Claude didn't write the notes. \(r.message)", ok: r.ok, for: 3.5)
+                if r.ok { self.afterCall.reload() }
+            }
+        }
+    }
+
+    /// After the call (D-1126): a meeting's notes, actions first, opened when they are ready and from the menu.
+    private lazy var afterCall: AfterCall = {
+        let a = AfterCall()
+        a.nameVoices = { [weak self] f in _ = self?.namer.show(f) }
+        a.betterNotes = { [weak self] f in self?.getBetterNotes(f) }
+        namer.saved = { [weak a] _ in a?.reload() }
+        return a
+    }()
+
+    /// The newest notes, or the ones the user picks when there are none yet or they want another.
+    private func openMeetingNotes() {
+        let p = NSOpenPanel()
+        p.directoryURL = config.meetingsDir
+        p.allowedContentTypes = [.init(filenameExtension: "md")!]
+        p.message = "Choose a meeting's notes."
+        if let f = lastNotes { p.directoryURL = f.deletingLastPathComponent(); p.nameFieldStringValue = f.lastPathComponent }
+        NSApp.activate(ignoringOtherApps: true)
+        guard p.runModal() == .OK, let f = p.url else { return }
+        if !afterCall.show(f) { hud.flash("These notes can't be opened", for: 3) }
+    }
+
     /// Name the voices (D-1034): the newest notes when they have voices to name, otherwise the notes the user picks.
     private let namer = NameVoices()
     private func nameVoices() {
@@ -2552,20 +2648,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             do {
                 guard self.engine.state == .ready else { throw NSError(domain: "RedpenVoice", code: 23, userInfo: [NSLocalizedDescriptionKey: "engine not ready"]) }
-                let r = try await MeetingNotes.write(work, engine: self.engine, config: self.config, names: names) { [weak self] pct, words in
+                // Claude or Apple (D-1272): asked once, after the transcript is saved and before the notes.
+                let r = try await MeetingNotes.write(work, engine: self.engine, config: self.config, names: names,
+                                                     writer: { [weak self] in await self?.notesWriter() ?? .apple }) { [weak self] pct, words in
                     self?.notesProgress(pct, words)
                 }
                 Log.note("meeting: notes saved, \(Log.int(r.seconds))s meeting, summary \(r.summary)")
                 await self.whenNotDictating()
                 if self.meeting == nil {
                     self.lastNotes = r.file
+                    if let why = r.claudeFailed {
+                        // Said on the bar, and in the notes' own label: these are Apple's, and why. When Apple wrote
+                        // nothing either, the bar says so, never "basic notes" that aren't there.
+                        self.meetingBar.finish(r.wrote ? "Claude didn't write the notes, so they're basic ones. \(why)"
+                                               : "Claude didn't write the notes, and Apple's model couldn't either. The transcript is saved. \(why)", ok: false)
+                    } else if r.byClaude {
+                        self.meetingBar.finish("Notes written by Claude", ok: true)
                     // A better summary is offered only when chosen in Settings and something was heard.
-                    if let h = self.config.betterSummaryWith, BetterSummary.canOffer(h, command: self.config.betterSummaryCommand),
+                    } else if let h = self.config.betterSummaryWith, BetterSummary.canOffer(h, command: self.config.betterSummaryCommand),
                        r.meLines + r.othersLines > 0, r.summary != "skipped" { self.meetingBar.offer(h) }
                     else { self.meetingBar.finish("Notes saved", ok: true) }
                 }
                 // Never over a meeting being recorded: the file waits in the folder.
-                if self.meeting == nil { NSWorkspace.shared.open(r.file) }
+                // Actions first (D-1126); the file itself if the window can't read it.
+                if self.meeting == nil, !self.afterCall.show(r.file) { NSWorkspace.shared.open(r.file) }
             } catch {
                 Log.note("meeting: notes failed, \(MeetingNotes.code(error))")
                 await self.whenNotDictating()
