@@ -2011,6 +2011,16 @@ do {
     }
 }
 
+do {
+    let transcript = "[00:01] Lena: The weather is nice.\n[00:10] Others: Good morning.\n[00:20] Me: Welcome everyone.\n[01:00] Me: Can you send the budget deck?"
+    let checked = Meeting.check(Meeting.Summary(todos: [Meeting.ToDo(who: "Lena", task: "Send the budget deck.", at: 60)]), transcript: transcript)
+    check("owner.distantLabel", checked.summary.todos.first?.who == "Not clear")
+    check("owner.addressed", Meeting.ownerSaid("Lena", around: 0, in: Meeting.said("[01:00] Me: Lena, can you send the deck?")) == "Lena")
+    check("owner.ownLabel", Meeting.ownerSaid("Lena", around: 0, in: Meeting.said("[01:00] Lena: Can you send the deck?")) == "Lena")
+    check("owner.others", Meeting.ownerSaid("Lena", around: 3, in: Meeting.said(transcript.replacingOccurrences(of: "[01:00] Me:", with: "[01:00] Others:"))) == "Others")
+    check("owner.adjacent", Meeting.ownerSaid("Lena", around: 1, in: Meeting.said("[00:59] Me: Lena, this one is for you.\n[01:00] Others: Can you send the deck?")) == "Lena")
+}
+
 // Recording failures stay latched for both tracks, including a later successful write.
 do {
     let saving = MeetingSaving(), first = Date(timeIntervalSince1970: 100)

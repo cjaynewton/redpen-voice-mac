@@ -139,7 +139,7 @@ extension Meeting {
     /// transcript only knows Me and Others (Nov 6 regrade): then Others when the line is the others', else Not clear.
     public static func ownerSaid(_ who: String, around i: Int, in lines: [Said]) -> String {
         guard lines.indices.contains(i), !isUnowned(who), who != Speaker.me.rawValue, who != Speaker.others.rawValue,
-              !lines.contains(where: { $0.speaker == who }) else { return who }
+              lines[i].speaker != who else { return who }
         let near = Set(keys((max(0, i - 1)...min(lines.count - 1, i + 1)).map { lines[$0].text }.joined(separator: " ")))
         let name = keys(who)
         if !name.isEmpty, name.allSatisfy(near.contains) { return who }
