@@ -241,7 +241,7 @@ extension Meeting {
         "we'll", "we will", "we're going to", "we are going to", "we're gonna", "we need to", "we have to", "we should",
         "you'll", "you will", "you're going to", "you are going to", "he'll", "she'll", "they'll", "he's going to",
         "she's going to", "they're going to", "will you", "can you", "could you", "would you", "can we", "could we",
-        "let's", "let us", "please", "make sure", "action item", "need you to", "want you to",
+        "let's", "let us", "maybe we", "please", "make sure", "action item", "need you to", "want you to",
     ].joined(separator: "|") + ")\\b", options: [.caseInsensitive])
 
     /// Words of thanks, goodbyes and small talk. A task made only of these (and common words) is never a to-do.
@@ -255,6 +255,28 @@ extension Meeting {
     public static func isCommitment(_ text: String) -> Bool {
         let t = text.replacingOccurrences(of: "’", with: "'")
         return commitment.firstMatch(in: t, range: NSRange(t.startIndex..., in: t)) != nil
+    }
+
+    static func isNegated(_ text: String) -> Bool {
+        let t = text.replacingOccurrences(of: "’", with: "'")
+        return t.range(of: #"\b(?:not|never|no longer|cannot|\w+n't)\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    /// Suggestions need a short, explicit acceptance beside the actual suggestion sentence.
+    static func agreedTask(_ task: String, around i: Int, in lines: [Said]) -> Bool {
+        let s = promiseSentence(for: task, in: lines[i].text) ?? sentence(for: task, in: lines[i].text)
+        let source = s.all[s.index]
+        if isNegated(source), !isNegated(task) { return false }
+        let suggestion = #"\b(?:we should|let's|can we|could we|maybe we)\b"#
+        guard source.replacingOccurrences(of: "’", with: "'").range(of: suggestion, options: [.regularExpression, .caseInsensitive]) != nil else { return true }
+        func accepts(_ text: String) -> Bool {
+            let t = text.replacingOccurrences(of: "’", with: "'")
+            return !isNegated(t) && t.range(of: #"(?:^|[.!?,;]\s*)\s*(?:yes|sure|ok|okay|agreed|sounds good|let's do it)\b"#,
+                                          options: [.regularExpression, .caseInsensitive]) != nil
+        }
+        if accepts(source) { return true }
+        let next = s.index + 1 < s.all.count ? s.all[s.index + 1] : (i + 1 < lines.count ? sentences(lines[i + 1].text).first : nil)
+        return next.map { $0.split(separator: " ").count <= 15 && accepts($0) } ?? false
     }
 
     /// Thanks or a goodbye and nothing else: "Have a lovely weekend" is, "Finish the report over the weekend" isn't.
@@ -331,7 +353,11 @@ extension Meeting {
             if let at = locate(p.text, p.at, task: false) { out.summary.points.append(Cited(p.text, at: at)) } else { out.dropped += 1 }
         }
         for d in s.decisions {
-            if let at = locate(d.text, d.at, task: false) { out.summary.decisions.append(Cited(d.text, at: at)) } else { out.dropped += 1 }
+            if let i = line(d.text, d.at, task: false) {
+                let source = sentence(for: d.text, in: lines[i].text)
+                if isNegated(source.all[source.index]), !isNegated(d.text) { out.dropped += 1 }
+                else { out.summary.decisions.append(Cited(d.text, at: lines[i].at)) }
+            } else { out.dropped += 1 }
         }
         for o in s.open {
             // A question is one line on the list: a writer that pasted a whole turn gives its question, or nothing.
@@ -341,6 +367,7 @@ extension Meeting {
         for t in s.todos {
             if isPleasantry(t.task) { out.notTasks += 1; continue }
             if let i = line(t.task, t.at, task: true) {
+                guard agreedTask(t.task, around: i, in: lines) else { out.notTasks += 1; continue }
                 // The date and whether it is critical come from the line found, whatever the writer said. Two lines
                 // can share a second (Me and Others), so it is that line, never the first one at that time.
                 let at = lines[i].at

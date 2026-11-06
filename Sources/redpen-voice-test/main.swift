@@ -1961,6 +1961,28 @@ do {
     check("notice.unasked", Meeting.notice(claudeNotes: nil, claudeInstalled: true) == Meeting.notice)
 }
 
+do {
+    func todo(_ source: String, _ task: String = "Send the budget deck.") -> Meeting.Checked {
+        Meeting.check(Meeting.Summary(todos: [Meeting.ToDo(who: "Me", task: task, at: 60)]), transcript: "[01:00] Me: " + source)
+    }
+    check("agreement.refusal", todo("I will not send the budget deck.").summary.todos.isEmpty && todo("I will not send the budget deck.").notTasks == 1)
+    let rejected = Meeting.check(Meeting.Summary(decisions: [Meeting.Cited("We approved the launch.", at: 60)]), transcript: "[01:00] Others: We have not approved the launch.")
+    check("agreement.rejected", rejected.summary.decisions.isEmpty && rejected.dropped == 1)
+    check("agreement.suggestion", todo("We should redesign the checkout.\n[01:01] Others: Perhaps someday.", "Redesign the checkout.").summary.todos.isEmpty)
+    check("agreement.promise", todo("I'll send the budget deck.").summary.todos.count == 1)
+    for phrase in ["I will never", "I won't", "I can't", "I cannot", "I will no longer"] {
+        check("agreement.negation.\(phrase)", todo(phrase + " send the budget deck.").summary.todos.isEmpty)
+    }
+    for phrase in ["We should", "Let's", "Can we", "Could we", "Maybe we"] {
+        check("agreement.unaccepted.\(phrase)", todo(phrase + " redesign the checkout.", "Redesign the checkout.").summary.todos.isEmpty)
+        check("agreement.accepted.\(phrase)", todo(phrase + " redesign the checkout.\n[01:01] Others: Yes, sounds good.", "Redesign the checkout.").summary.todos.count == 1)
+    }
+    let plan = Meeting.check(Meeting.Summary(decisions: [Meeting.Cited("We'll use the blue layout.", at: 60)]), transcript: "[01:00] Me: We'll use the blue layout.\n[01:01] Others: Okay, that's fine.")
+    check("agreement.acceptedPlan", plan.summary.decisions.count == 1)
+    check("agreement.sameLine", todo("We should redesign the checkout. Okay, let's do it.", "Redesign the checkout.").summary.todos.count == 1)
+    check("agreement.negativeDecision", Meeting.check(Meeting.Summary(decisions: [Meeting.Cited("We have not approved the launch.", at: 60)]), transcript: "[01:00] Others: We have not approved the launch.").summary.decisions.count == 1)
+}
+
 // Recording failures stay latched for both tracks, including a later successful write.
 do {
     let saving = MeetingSaving(), first = Date(timeIntervalSince1970: 100)
