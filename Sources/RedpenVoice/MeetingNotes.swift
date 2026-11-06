@@ -308,7 +308,10 @@ enum MeetingSummary {
     - Use only what was said. Infer nothing. If you are not sure, leave it out.
     - Keep numbers, dates, amounts and goals exactly as they were said.
     - Give every point, decision and to-do the time of the transcript line that says it.
-    - A decision is something the people on the call agreed on.
+    - A decision is a plan or choice someone states that the others accept or don't push back on ("Okay, that's \
+    fine", "Excellent"), or a plan the person responsible commits to for their own work ("we'll make some \
+    assumptions and caveat them"). Leave out only a suggestion or one person's view that nobody took up. An agreed \
+    date or plan that is also a to-do belongs in Decisions too.
     - A to-do is only a commitment or an ask: someone says they will do something ("I'll", "we'll", "I'm going to") \
     or asks someone to ("can you", "could you", "let's have Sam do"). Greetings, thanks and goodbyes are never to-dos.
     - Name a person, as an owner or as the one who said something, only when the transcript makes it unambiguous: \
@@ -316,8 +319,8 @@ enum MeetingSummary {
     exchange. Otherwise write Others for anyone on the Others lines and Me for the Me lines, or Not clear for a to-do \
     nobody took on. Never work out a name from the topic, a role, or who usually does what.
     - A to-do belongs to a speaker only when a line marked with that speaker says they will do it.
-    - A suggestion, an idea or one person's view is not a decision. Write a decision only when the others clearly \
-    agreed to it.
+    - "We can look into X" or "there are other options" with nobody taking it on is not a to-do: leave it out, or \
+    put it in Still open.
     - Give a to-do a deadline only when one was said for that task. Never add a deadline, day or time that nobody \
     said, or one that was said about something else.
     - Copy money, numbers and percentages exactly as they were said. Never round them, merge two of them, or finish a \
