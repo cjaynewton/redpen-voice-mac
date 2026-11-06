@@ -351,6 +351,12 @@ extension Meeting {
         return best.map { ($0.i, true) }
     }
 
+    /// Existing owner reconciliation, plus the actual leading action. An unresolved copy can still fold into its
+    /// owned copy, but different named owners and different actions never repeat.
+    static func sameJob(_ a: ToDo, _ b: ToDo) -> Bool {
+        (a.who == b.who || isUnowned(a.who) || isUnowned(b.who)) && keys(a.task).first == keys(b.task).first
+    }
+
     /// Every item checked against the transcript: kept at its time, moved to the line that says it, or left out.
     /// To-dos also need someone taking it on or asking for it, and are never thanks or goodbyes.
     public static func check(_ s: Summary, transcript: String) -> Checked {
@@ -412,7 +418,7 @@ extension Meeting {
         // To-dos only repeat when the same person has them: two people's jobs on the same thing are both kept.
         // "Not clear" matches anyone, and the copy with an owner is the one kept.
         let owned = out.summary.todos.filter { !isUnowned($0.who) } + out.summary.todos.filter { isUnowned($0.who) }
-        out.summary.todos = distinct(owned, text: \.task, same: { $0.who == $1.who || isUnowned($0.who) || isUnowned($1.who) })
+        out.summary.todos = distinct(owned, text: \.task, same: sameJob)
         out.summary.open = distinct(out.summary.open, text: \.text)
         return out
     }
@@ -420,14 +426,14 @@ extension Meeting {
     /// The pieces of a long meeting as one summary: items taken in turn from each piece, so the end of a meeting
     /// counts as much as its start, near-repeats left out, up to the caps, then in the order they were said.
     public static func merge(_ parts: [Summary], overview: String, points: Int = 10, decisions: Int = 6, todos: Int = 10, open: Int = 6) -> Summary {
-        func inTurn<T>(_ lists: [[T]], cap: Int, text: (T) -> String, at: (T) -> Double?) -> [T] {
+        func inTurn<T>(_ lists: [[T]], cap: Int, text: (T) -> String, at: (T) -> Double?, same: (T, T) -> Bool = { _, _ in true }) -> [T] {
             var out: [T] = [], seen: [Set<String>] = []
             for i in 0..<(lists.map(\.count).max() ?? 0) {
                 for l in lists where i < l.count && out.count < cap {
                     let c = content(text(l[i]))
-                    let repeated = seen.contains { s in
+                    let repeated = zip(out, seen).contains { kept, s in
                         let n = min(s.count, c.count)
-                        return n > 0 && Double(s.intersection(c).count) >= 0.6 * Double(n)
+                        return same(kept, l[i]) && n > 0 && Double(s.intersection(c).count) >= 0.6 * Double(n)
                     }
                     if !repeated { out.append(l[i]); seen.append(c) }
                 }
@@ -437,7 +443,7 @@ extension Meeting {
         return Summary(overview: overview,
                        points: inTurn(parts.map(\.points), cap: points, text: \.text, at: \.at),
                        decisions: inTurn(parts.map(\.decisions), cap: decisions, text: \.text, at: \.at),
-                       todos: inTurn(parts.map(\.todos), cap: todos, text: \.task, at: \.at),
+                       todos: inTurn(parts.map(\.todos), cap: todos, text: \.task, at: \.at, same: sameJob),
                        open: inTurn(parts.map(\.open), cap: open, text: \.text, at: \.at))
     }
 

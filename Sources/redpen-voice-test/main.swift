@@ -2021,6 +2021,20 @@ do {
     check("owner.adjacent", Meeting.ownerSaid("Lena", around: 1, in: Meeting.said("[00:59] Me: Lena, this one is for you.\n[01:00] Others: Can you send the deck?")) == "Lena")
 }
 
+do {
+    let send = Meeting.ToDo(who: "Me", task: "Send the contract to legal.", at: 60)
+    let review = Meeting.ToDo(who: "Me", task: "Review the contract with legal.", at: 180)
+    let tx = "[01:00] Me: I'll send the contract to legal.\n[03:00] Me: I'll review the contract with legal."
+    let result = Meeting.check(Meeting.Summary(todos: [send, review, send]), transcript: tx)
+    check("repeat.differentAction", result.summary.todos == [send, review])
+    let merged = Meeting.merge([Meeting.Summary(todos: [send]), Meeting.Summary(todos: [review, send])], overview: "")
+    check("repeat.mergeActions", merged.todos == [send, review])
+    var other = send; other.who = "Lena"
+    check("repeat.mergeOwners", Meeting.merge([Meeting.Summary(todos: [send, other])], overview: "").todos.count == 2)
+    let point = Meeting.Cited("Send the contract to legal.", at: 60)
+    check("repeat.pointsUnchanged", Meeting.merge([Meeting.Summary(points: [point, point])], overview: "").points.count == 1)
+}
+
 // Recording failures stay latched for both tracks, including a later successful write.
 do {
     let saving = MeetingSaving(), first = Date(timeIntervalSince1970: 100)
