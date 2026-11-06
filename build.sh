@@ -83,19 +83,25 @@ fi
 # Never replace or restart the app while Cedric is talking to it. Reads the log since the app last launched:
 # a dictation, test recording or meeting that started and hasn't ended yet means busy. A dictation only counts
 # while the log is still being written (hands-free writes every few seconds), so a missed end line can't block
-# installs for long. Meeting notes count until they stop, then while their summary is still being written.
+# installs for long. Recording and summary state are separate, so an older summary cannot clear a new recording.
+# A summary stays busy for six minutes of log silence, longer than the helper's five-minute limit.
 voice_busy() {
   local log=~/Library/Logs/RedpenVoice.log
   pgrep -x RedpenVoice >/dev/null && [[ -f $log ]] || return 0
   local age=$(( $(date +%s) - $(stat -f %m "$log") ))
   awk -v age="$age" '
-    / launched [0-9]/ { s = "" }
-    / recording from / || / test: recording to / { if (s != "meeting notes") s = "a dictation" }
-    / dictation [0-9]+s, / || / cancelled: / || / no words, / || / test: saved / || / test: cannot / { if (s == "a dictation") s = "" }
-    / meeting: recording, / { s = "meeting notes" }
-    / meeting: stopped, / { s = "a meeting summary" }
-    / meeting: (summary from|summary failed|could not start|mic failed)/ { s = "" }
-    END { if (s == "meeting notes" || (s != "" && age < 120)) print s }
+    / launched [0-9]/ { dictation = 0; recording = 0; summary = 0 }
+    / recording from / || / test: recording to / { dictation = 1 }
+    / dictation [0-9]+s, / || / cancelled: / || / no words, / || / test: saved / || / test: cannot / { dictation = 0 }
+    / meeting: recording, / { recording = 1 }
+    / meeting: stopped, / { recording = 0; summary = 1 }
+    / meeting: (summary from|summary failed|notes saved|notes failed|notes save failed)/ { summary = 0 }
+    / meeting: (could not start|mic failed)/ { recording = 0 }
+    END {
+      if (recording) print "meeting notes"
+      else if (summary && age < 360) print "a meeting summary"
+      else if (dictation && age < 120) print "a dictation"
+    }
   ' "$log"
 }
 busy=$(voice_busy)
@@ -129,6 +135,12 @@ if [[ -e "$INSTALLED_APP" ]]; then
   fi
 fi
 mkdir -p ~/Applications
+# Signing and the earlier wait take time. Re-check immediately before replacing the installed app.
+busy=$(voice_busy)
+if [[ -n "$busy" && "$REDPEN_INSTALL_WHILE_RECORDING" != "1" ]]; then
+  echo "Built but NOT installed: Redpen Voice started $busy before replacement. Run this again when it's done."
+  exit 0
+fi
 rm -rf ~/Applications/"Redpen Voice.app"
 cp -R "$APP" ~/Applications/"Redpen Voice.app"
 echo "Installed ~/Applications/Redpen Voice.app"
