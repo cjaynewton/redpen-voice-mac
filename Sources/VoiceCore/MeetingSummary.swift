@@ -348,7 +348,7 @@ extension Meeting {
                 let t = ToDo(who: t.who, task: withoutUnsaidDates(t.task, around: i, in: lines), at: t.at)
                 let when = deadline(around: i, in: lines, task: t.task)
                 // A promise in the first person belongs to whoever said it, whoever the writer named (D-1126).
-                let owner = promiser(around: i, in: lines, task: t.task) ?? who(t.who, transcript: transcript)
+                let owner = promiser(around: i, in: lines, task: t.task) ?? ownerSaid(who(t.who, transcript: transcript), around: i, in: lines)
                 out.summary.todos.append(ToDo(who: owner, task: t.task, at: at, when: when,
                                               critical: when.map(isSoon) == true || waitsOn(around: i, in: lines, task: t.task)))
             } else if find(t.task, near: real(t.at), in: lines, words: words, task: false) != nil {

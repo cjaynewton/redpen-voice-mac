@@ -121,6 +121,33 @@ extension Meeting {
         return out.isEmpty ? task : out
     }
 
+    /// The sentence of a line that promises or asks for the to-do, the one sharing the most words with it among those
+    /// that do; nil when no sentence of the line promises or asks anything.
+    static func promiseSentence(for task: String?, in text: String) -> (index: Int, all: [String])? {
+        let all = sentences(text).isEmpty ? [text] : sentences(text)
+        let promises = all.indices.filter { isCommitment(all[$0]) }
+        guard let first = promises.first else { return nil }
+        guard let task else { return (first, all) }
+        let want = content(task)
+        // A promise about something else ("I'll see you tomorrow") is no promise for this to-do: it must share a
+        // word with it, or the line has none for it.
+        let scored = promises.map { ($0, want.intersection(content(all[$0])).count) }.filter { $0.1 > 0 }
+        guard let best = scored.max(by: { $0.1 != $1.1 ? $0.1 < $1.1 : $0.0 > $1.0 }) else { return nil }
+        return (best.0, all)
+    }
+
+    /// A named owner only where the name is said: in the line the to-do comes from or the line on either side.
+    /// A name worked out from the topic or a role is a guess, and wrong as often as not on a call where the
+    /// transcript only knows Me and Others (Nov 6 regrade): then Others when the line is the others', else Not clear.
+    public static func ownerSaid(_ who: String, around i: Int, in lines: [Said]) -> String {
+        guard lines.indices.contains(i), !isUnowned(who), who != Speaker.me.rawValue, who != Speaker.others.rawValue,
+              !lines.contains(where: { $0.speaker == who }) else { return who }
+        let near = Set(keys((max(0, i - 1)...min(lines.count - 1, i + 1)).map { lines[$0].text }.joined(separator: " ")))
+        let name = keys(who)
+        if !name.isEmpty, name.allSatisfy(near.contains) { return who }
+        return lines[i].speaker == Speaker.others.rawValue ? Speaker.others.rawValue : "Not clear"
+    }
+
     /// A line's sentences.
     public static func sentences(_ text: String) -> [String] {
         text.replacingOccurrences(of: "([.!?])\\s+", with: "$1\n", options: .regularExpression)
@@ -146,7 +173,9 @@ extension Meeting {
     /// was said.
     public static func deadline(around i: Int, in lines: [Said], task: String? = nil) -> String? {
         guard lines.indices.contains(i) else { return nil }
-        let s = sentence(for: task, in: lines[i].text)
+        // Only the sentence that makes the promise or the ask gives a deadline: "I talked to Nancy this afternoon"
+        // beside "I'll talk to Julian" is no deadline for Julian (Nov 6 regrade).
+        guard let s = promiseSentence(for: task, in: lines[i].text) else { return nil }
         if let d = date(in: s.all[s.index]) { return d }
         // A reply only counts after the line's last sentence: what comes next answers that.
         guard s.index == s.all.count - 1 else { return nil }
@@ -188,7 +217,9 @@ extension Meeting {
     /// it"): that line's speaker, whoever a model named. Nil when it isn't a promise in the first person.
     public static func promiser(around i: Int, in lines: [Said], task: String) -> String? {
         guard lines.indices.contains(i) else { return nil }
-        let s = sentence(for: task, in: lines[i].text)
+        // The promise itself, not the sentence that shares the most words: "I talked to Nancy about Julian. I'll talk
+        // to Julian." is the second one's.
+        guard let s = promiseSentence(for: task, in: lines[i].text) else { return nil }
         let t = s.all[s.index].replacingOccurrences(of: "’", with: "'")
         guard firstPerson.firstMatch(in: t, range: NSRange(t.startIndex..., in: t)) != nil else { return nil }
         return lines[i].speaker

@@ -1867,6 +1867,18 @@ do {
     check("review2.datesKept", kept == keep, "\(zip(keep, kept).filter { $0 != $1 })")
     check("review2.deadlineStillOut", Meeting.withoutUnsaidDates("Send the deck by Friday.", around: 0, in: near) == "Send the deck."
           && Meeting.withoutUnsaidDates("Send the deck on Monday, then call Sam.", around: 0, in: near) == "Send the deck, then call Sam.")
+    // From the Nov 6 regrade: a deadline said about something else, and names guessed from the topic.
+    let julian = Meeting.said("[55:48] Others: I did talk to my friend Nancy. But I talked to Nancy this afternoon and she said her nephew is Julian, the ag director.\n\n[56:35] Others: His aunt feels exposed as it is. I'll talk to Julian and see.")
+    check("regrade.deadlineOtherTopic", Meeting.deadline(around: 0, in: julian, task: "Talk to Julian.") == nil && Meeting.deadline(around: 1, in: julian, task: "Talk to Julian.") == nil)
+    let jc = Meeting.check(Meeting.Summary(todos: [Meeting.ToDo(who: "Joe", task: "Talk to Julian, the ag director.", at: 3348),
+                                                   Meeting.ToDo(who: "Joe", task: "Raise the alcohol in the barns at the board meeting.", at: 3513)]),
+                           transcript: "[03:11] Others: So we've taken your feedback, Joe.\n\n[55:48] Others: I talked to Nancy this afternoon and she said her nephew is Julian, the ag director. I'll talk to Julian.\n\n[58:33] Others: The board meeting should hear about the alcohol in the barns, can someone raise it.\n")
+    check("regrade.noGuessedNames", jc.summary.todos.allSatisfy { $0.who != "Joe" } && jc.summary.todos.allSatisfy { $0.when != "this afternoon" }, "\(jc.summary.todos)")
+    let barns = Meeting.said("[58:33] Others: Okay. I'm just going to raise that at the board meeting. Joe told us to model it out we're gonna move please don't do that okay i'll see you guys tomorrow then")
+    check("regrade.otherPromise", Meeting.deadline(around: 0, in: barns, task: "Raise the alcohol in the barns at the board meeting.") == nil)
+    check("regrade.nameSaidKept", Meeting.ownerSaid("Sam", around: 0, in: Meeting.said("[00:01] Me: Sam, can you send the deck?")) == "Sam"
+          && Meeting.ownerSaid("Sam", around: 0, in: Meeting.said("[00:01] Me: Can you send the deck?")) == "Not clear"
+          && Meeting.ownerSaid("Lena", around: 0, in: Meeting.said("[00:01] Lena: I'll order it.")) == "Lena")
     check("review.byEmail", Meeting.todoMark("Send the file (by email)") == ("Send the file (by email)", nil, false) && Meeting.todoMark("Send it (by Friday)") == ("Send it", "Friday", false))
     check("steps.markPlain", Meeting.todoMark("Book the room (10:30)") == ("Book the room (10:30)", nil, false) && Meeting.todoMark("Ship it (critical)") == ("Ship it", nil, true))
     let renamed = Meeting.renaming([(Speaker(rawValue: "Marco"), "Marc")], in: "## Summary\n\n### To-dos\n\n- " + Meeting.todoLine(rc.summary.todos[0]) + " [16:00]\n\n## Transcript\n\n" + room)

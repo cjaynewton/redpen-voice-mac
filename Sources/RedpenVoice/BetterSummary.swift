@@ -114,13 +114,16 @@ enum BetterSummary {
     - A decision is something the people on the call agreed on.
     - A to-do is only a commitment or an ask: someone says they will do something ("I'll", "we'll", "I'm going to") \
     or asks someone to ("can you", "could you", "let's have Sam do"). Greetings, thanks and goodbyes are never to-dos.
-    - Owners are Me, Others, a speaker as the transcript marks it (Person 2), or a name said in the transcript. Never \
-    invent a name. A to-do belongs to a speaker only when a line marked with that speaker says they will do it.
+    - Name a person, as an owner or as the one who said something, only when the transcript makes it unambiguous: \
+    they say it about themselves on a line marked with their name, or someone speaks to them by name in that same \
+    exchange. Otherwise write Others for anyone on the Others lines and Me for the Me lines, or Not clear for a to-do \
+    nobody took on. Never work out a name from the topic, a role, or who usually does what.
+    - A to-do belongs to a speaker only when a line marked with that speaker says they will do it.
     - Leave out small talk: greetings, health, weather, thanks and goodbyes.
     - A suggestion, an idea or one person's view is not a decision. Write a decision only when the others clearly \
     agreed to it.
-    - Give a to-do an owner only when the transcript says who will do it; otherwise write Not clear. Never add a \
-    deadline, day or time that nobody said.
+    - Give a to-do a deadline only when one was said for that task. Never add a deadline, day or time that nobody \
+    said, or one that was said about something else.
     - Copy money, numbers and percentages exactly as they were said. Never round them, merge two of them, or finish a \
     number that was cut off.
     - Still open is a question asked or a problem raised that nobody settled by the end.
