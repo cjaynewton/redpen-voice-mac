@@ -1879,6 +1879,27 @@ do {
     check("regrade.nameSaidKept", Meeting.ownerSaid("Sam", around: 0, in: Meeting.said("[00:01] Me: Sam, can you send the deck?")) == "Sam"
           && Meeting.ownerSaid("Sam", around: 0, in: Meeting.said("[00:01] Me: Can you send the deck?")) == "Not clear"
           && Meeting.ownerSaid("Lena", around: 0, in: Meeting.said("[00:01] Lena: I'll order it.")) == "Lena")
+    // From the review of the Codex fixes: a "not" that doesn't govern the promise is no refusal, acceptances in
+    // ordinary words count, the person who answers an ask owns it, and a by-date in the next sentence counts.
+    let keepTodos = ["Don't worry, I'll send the budget deck.", "I'll send the budget deck, if not today then Friday.",
+                     "I'll send the budget deck so we don't miss the deadline.", "I can't make Monday, but I'll send the budget deck Friday.",
+                     "Not a problem, I'll send the budget deck."]
+    let keptTodos = keepTodos.map { line in Meeting.check(Meeting.Summary(todos: [Meeting.ToDo(who: "Me", task: "Send the budget deck.", at: 1)]), transcript: "[00:01] Me: " + line).summary.todos.count }
+    check("review3.notNotRefusal", keptTodos == [1, 1, 1, 1, 1], "\(keptTodos)")
+    check("review3.refusalStill", Meeting.check(Meeting.Summary(todos: [Meeting.ToDo(who: "Me", task: "Send the budget deck.", at: 1)]), transcript: "[00:01] Me: I will not send the budget deck.").summary.todos.isEmpty
+          && Meeting.check(Meeting.Summary(decisions: [Meeting.Cited("We approved the launch.", at: 1)]), transcript: "[00:01] Others: We have not approved the launch.").summary.decisions.isEmpty)
+    let accepted = ["Yeah.", "Yep, good idea.", "Sure, why not.", "Absolutely, I'll get them to you."].map { reply in
+        Meeting.check(Meeting.Summary(todos: [Meeting.ToDo(who: "Others", task: "Send the contract to legal.", at: 1)]),
+                      transcript: "[00:01] Me: Let's send the contract to legal.\n\n[00:04] Others: " + reply).summary.todos.count }
+    check("review3.acceptance", accepted == [1, 1, 1, 1], "\(accepted)")
+    let keepDecisions = [("We'll use the blue layout, not the red one.", "Use the blue layout."), ("We decided not to wait, we'll launch Monday.", "Launch Monday."),
+                         ("Okay, we won't wait any longer, we'll launch Monday.", "Launch Monday.")]
+    let keptDecisions = keepDecisions.map { l, d in Meeting.check(Meeting.Summary(decisions: [Meeting.Cited(d, at: 1)]), transcript: "[00:01] Others: " + l).summary.decisions.count }
+    check("review3.decisionsKept", keptDecisions == [1, 1, 1], "\(keptDecisions)")
+    check("review3.answerOwns", Meeting.ownerSaid("Lena", around: 0, in: Meeting.said("[00:01] Me: Can you send the budget deck?\n\n[00:04] Lena: Sure, will do.")) == "Lena")
+    let nextSentence = Meeting.said("[00:01] Me: I'll send the deck. I can get it to you by Friday.")
+    check("review3.nextSentenceDate", Meeting.deadline(around: 0, in: nextSentence, task: "Send the deck.") == "Friday"
+          && Meeting.withoutUnsaidDates("Send the deck by Friday.", around: 0, in: nextSentence) == "Send the deck by Friday.")
     check("review.byEmail", Meeting.todoMark("Send the file (by email)") == ("Send the file (by email)", nil, false) && Meeting.todoMark("Send it (by Friday)") == ("Send it", "Friday", false))
     check("steps.markPlain", Meeting.todoMark("Book the room (10:30)") == ("Book the room (10:30)", nil, false) && Meeting.todoMark("Ship it (critical)") == ("Ship it", nil, true))
     let renamed = Meeting.renaming([(Speaker(rawValue: "Marco"), "Marc")], in: "## Summary\n\n### To-dos\n\n- " + Meeting.todoLine(rc.summary.todos[0]) + " [16:00]\n\n## Transcript\n\n" + room)

@@ -2678,8 +2678,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } catch {
                 Log.note("meeting: notes failed, \(MeetingNotes.code(error))")
                 await self.whenNotDictating()
-                if self.meeting == nil { self.meetingBar.finish("Couldn't write the notes. The recording is kept.", ok: false) }
-                else { self.hud.flash("Couldn't write the notes. The recording is kept.", for: 3.5) }
+                // Notes moved away before their summary was saved (code 24): said as that, not as a failure to write.
+                let why = (error as NSError).code == 24 ? "The notes were moved before their summary was saved, so they're left as they are."
+                    : "Couldn't write the notes. The recording is kept."
+                if self.meeting == nil { self.meetingBar.finish(why, ok: false) }
+                else { self.hud.flash(why, for: 3.5) }
             }
             self.notesWorking = nil
             self.notesStatus = nil

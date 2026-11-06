@@ -281,16 +281,33 @@ extension Meeting {
         return t.range(of: #"\b(?:not|never|no longer|cannot|\w+n't)\b"#, options: [.regularExpression, .caseInsensitive]) != nil
     }
 
+    /// "I won't", "we have not", "I'll never": a negation that governs the speaker's own verb. A "not" anywhere else
+    /// ("Don't worry, I'll send it", "if not today then Friday", "the blue layout, not the red one") is no refusal.
+    static let refusal = try! NSRegularExpression(pattern: #"\b(?:(?:i|we|you|he|she|they|it)\s+(?:will\s+not|will\s+never|will\s+no\s+longer|would\s+never|won't|wouldn't|would\s+not|can't|cannot|can\s+not|couldn't|could\s+not|shouldn't|should\s+not|don't|do\s+not|didn't|did\s+not|haven't|have\s+not|hasn't|has\s+not|am\s+not|aren't|are\s+not|isn't|is\s+not|wasn't|was\s+not|weren't|were\s+not|never|no\s+longer)|(?:i'll|we'll|you'll|they'll|he'll|she'll)\s+(?:not|never)|(?:i'm|we're|they're|you're)\s+not\s+going\s+to|(?:decided|agreed)\s+not\s+to)\b"#, options: [.caseInsensitive])
+
+    /// The clause of `sentence` that says `text` (the most shared words) refuses it in its own subject and verb.
+    /// A clause sharing no word with it can't refuse it.
+    static func refuses(_ sentence: String, about text: String) -> Bool {
+        let t = sentence.replacingOccurrences(of: "’", with: "'")
+        let clauses = t.replacingOccurrences(of: #"\s*(?:[,;:]|\s(?:but|so|because|though|although|and then)\s)\s*"#, with: "\n", options: [.regularExpression, .caseInsensitive])
+            .components(separatedBy: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        let want = content(text)
+        let scored = clauses.map { ($0, want.intersection(content($0)).count) }
+        guard let best = scored.max(by: { $0.1 < $1.1 }), best.1 > 0 else { return false }
+        return refusal.firstMatch(in: best.0, range: NSRange(best.0.startIndex..., in: best.0)) != nil
+    }
+
     /// Suggestions need a short, explicit acceptance beside the actual suggestion sentence.
     static func agreedTask(_ task: String, around i: Int, in lines: [Said]) -> Bool {
         let s = promiseSentence(for: task, in: lines[i].text) ?? sentence(for: task, in: lines[i].text)
         let source = s.all[s.index]
-        if isNegated(source), !isNegated(task) { return false }
+        if refuses(source, about: task), !isNegated(task) { return false }
         let suggestion = #"\b(?:we should|let's|can we|could we|maybe we)\b"#
         guard source.replacingOccurrences(of: "’", with: "'").range(of: suggestion, options: [.regularExpression, .caseInsensitive]) != nil else { return true }
         func accepts(_ text: String) -> Bool {
             let t = text.replacingOccurrences(of: "’", with: "'")
-            return !isNegated(t) && t.range(of: #"(?:^|[.!?,;]\s*)\s*(?:yes|sure|ok|okay|agreed|sounds good|let's do it)\b"#,
+            // "Sure, why not" accepts; "No, I won't" doesn't. Taking it on yourself ("I'll draft the note") accepts too.
+            return refusal.firstMatch(in: t, range: NSRange(t.startIndex..., in: t)) == nil && t.range(of: #"(?:^|[.!?,;]\s*)\s*(?:yes|yeah|yep|yup|sure|ok|okay|agreed|absolutely|definitely|of course|good idea|sounds good|why not|will do|let's do it|i'll|i will|we'll|we will)\b"#,
                                           options: [.regularExpression, .caseInsensitive]) != nil
         }
         if accepts(source) { return true }
@@ -380,7 +397,7 @@ extension Meeting {
         for d in s.decisions {
             if let i = line(d.text, d.at, task: false) {
                 let source = sentence(for: d.text, in: lines[i].text)
-                if isNegated(source.all[source.index]), !isNegated(d.text) { out.dropped += 1 }
+                if refuses(source.all[source.index], about: d.text), !isNegated(d.text) { out.dropped += 1 }
                 else { out.summary.decisions.append(Cited(d.text, at: lines[i].at)) }
             } else { out.dropped += 1 }
         }

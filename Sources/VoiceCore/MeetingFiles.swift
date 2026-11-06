@@ -2,16 +2,28 @@ import Foundation
 
 /// Meeting-owned files are private before content is written and after replacement.
 public enum MeetingFiles {
+    /// Disks that keep owner-only permissions (APFS, Mac OS Extended). exFAT, FAT and network shares don't: there the
+    /// permission is best effort and a meeting is still saved, as before (Nov 6 review); a symlink is refused anywhere.
+    public static func keepsModes(_ url: URL) -> Bool {
+        var path = url.path
+        while !FileManager.default.fileExists(atPath: path), path != "/" { path = (path as NSString).deletingLastPathComponent }
+        var s = statfs()
+        guard statfs(path, &s) == 0 else { return true }
+        let name = withUnsafeBytes(of: s.f_fstypename) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
+        return ["apfs", "hfs"].contains(name)
+    }
+
     public static func requireMode(_ mode: Int, at file: URL) throws {
         let a = try FileManager.default.attributesOfItem(atPath: file.path)
-        guard a[.type] as? FileAttributeType != .typeSymbolicLink,
-              (a[.posixPermissions] as? NSNumber)?.intValue == mode else { throw CocoaError(.fileWriteNoPermission) }
+        guard a[.type] as? FileAttributeType != .typeSymbolicLink else { throw CocoaError(.fileWriteNoPermission) }
+        guard (a[.posixPermissions] as? NSNumber)?.intValue == mode || !keepsModes(file) else { throw CocoaError(.fileWriteNoPermission) }
     }
 
     public static func setMode(_ mode: Int, at file: URL) throws {
         let a = try FileManager.default.attributesOfItem(atPath: file.path)
         guard a[.type] as? FileAttributeType != .typeSymbolicLink else { throw CocoaError(.fileWriteNoPermission) }
-        try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: file.path)
+        do { try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: file.path) }
+        catch { if keepsModes(file) { throw error } }
         try requireMode(mode, at: file)
     }
 

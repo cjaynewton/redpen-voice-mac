@@ -98,7 +98,8 @@ enum MeetingNotes {
     static func unfinished(except: URL? = nil) -> [URL] {
         let dir = workDir
         let items = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
-        return items.filter { $0.standardizedFileURL != except?.standardizedFileURL && load($0) != nil }
+        // Notes that were written, then moved away before their summary: not offered again (no second copy).
+        return items.filter { $0.standardizedFileURL != except?.standardizedFileURL && load($0).map { m in m.notesFile.map { FileManager.default.fileExists(atPath: $0) } ?? true } == true }
             .sorted { (load($0)?.started ?? .distantPast) < (load($1)?.started ?? .distantPast) }
     }
 
@@ -214,6 +215,12 @@ enum MeetingNotes {
 
         // A notes file already saved by an earlier try is finished, never written twice.
         var file: URL, transcript: String, result: (me: Int, others: Int, echo: Int) = (0, 0, 0)
+        // Notes already written, then moved or deleted by the user before their summary was saved: never transcribed
+        // again into a second copy. The recording's folder stays, untouched, and isn't offered again.
+        if let saved = manifest.notesFile, !fm.fileExists(atPath: saved) {
+            Log.note("meeting: notes were moved before the summary was saved; not writing them again")
+            throw NSError(domain: "RedpenVoice", code: 24, userInfo: [NSLocalizedDescriptionKey: "The notes were moved before they were finished"])
+        }
         if let saved = manifest.notesFile, fm.fileExists(atPath: saved) {
             file = URL(fileURLWithPath: saved)
             transcript = (try? String(contentsOf: file, encoding: .utf8)) ?? ""

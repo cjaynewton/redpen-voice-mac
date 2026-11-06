@@ -97,7 +97,8 @@ extension Meeting {
     public static func withoutUnsaidDates(_ task: String, around i: Int, in lines: [Said]) -> String {
         guard lines.indices.contains(i) else { return task }
         let promise = promiseSentence(for: task, in: lines[i].text)
-        let source = promise.map { $0.all[$0.index] } ?? lines[i].text
+        // The promise and the same speaker's next sentence, where "by Friday" often follows.
+        let source = promise.map { p in p.all[p.index] + (p.index + 1 < p.all.count ? " " + p.all[p.index + 1] : "") } ?? lines[i].text
         let said = datePattern.matches(in: source, range: NSRange(source.startIndex..., in: source)).compactMap {
             date(in: (source as NSString).substring(with: $0.range))?.lowercased()
         }
@@ -140,10 +141,22 @@ extension Meeting {
     public static func ownerSaid(_ who: String, around i: Int, in lines: [Said]) -> String {
         guard lines.indices.contains(i), !isUnowned(who), who != Speaker.me.rawValue, who != Speaker.others.rawValue,
               lines[i].speaker != who else { return who }
+        // "Me: Can you send the deck?" then "Lena: Sure, will do.": the one who answers the ask right beside it.
+        if (max(0, i - 1)...min(lines.count - 1, i + 1)).contains(where: { lines[$0].speaker == who }) { return who }
         let near = Set(keys((max(0, i - 1)...min(lines.count - 1, i + 1)).map { lines[$0].text }.joined(separator: " ")))
         let name = keys(who)
         if !name.isEmpty, name.allSatisfy(near.contains) { return who }
         return lines[i].speaker == Speaker.others.rawValue ? Speaker.others.rawValue : "Not clear"
+    }
+
+    /// A date said with by, before or until in `text` ("I can get it to you by Friday"), or nil.
+    static func byDate(in text: String) -> String? {
+        let ns = text as NSString
+        for m in datePattern.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+            let phrase = ns.substring(with: m.range)
+            if phrase.range(of: "^(?:by|before|until)\\s+", options: [.regularExpression, .caseInsensitive]) != nil { return date(in: phrase) }
+        }
+        return nil
     }
 
     /// A line's sentences.
@@ -175,6 +188,8 @@ extension Meeting {
         // beside "I'll talk to Julian" is no deadline for Julian (Nov 6 regrade).
         guard let s = promiseSentence(for: task, in: lines[i].text) else { return nil }
         if let d = date(in: s.all[s.index]) { return d }
+        // The same speaker's very next sentence can give the date: "I'll send the deck. I can get it to you by Friday."
+        if s.index + 1 < s.all.count, let d = byDate(in: s.all[s.index + 1]) { return d }
         // A reply only counts after the line's last sentence: what comes next answers that.
         guard s.index == s.all.count - 1 else { return nil }
         let next = i + 1
