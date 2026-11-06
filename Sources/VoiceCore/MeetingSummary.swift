@@ -100,7 +100,14 @@ extension Meeting {
         let n = parts.compactMap { Int($0) }
         guard n.count == parts.count, n.allSatisfy({ $0 >= 0 }), n[n.count - 1] < 60, parts.last?.count == 2 else { return nil }
         if n.count == 3 { guard n[1] < 60, parts[1].count == 2 else { return nil } }
-        return Double(n.reduce(0) { $0 * 60 + $1 })
+        var total = 0
+        for value in n {
+            let product = total.multipliedReportingOverflow(by: 60)
+            let sum = product.partialValue.addingReportingOverflow(value)
+            guard !product.overflow, !sum.overflow else { return nil }
+            total = sum.partialValue
+        }
+        return Double(total)
     }
 
     private static let clockPattern = #"\d{1,2}:\d{2}(?::\d{2})?"#
@@ -188,7 +195,19 @@ extension Meeting {
         var out: [String] = [], total = 0, cur = 0, inNumber = false
         // What came last in the number: 1 a unit or teen, 2 a ten, 3 hundred, thousand or more.
         var last = 0
-        func flush() { if inNumber { out.append(String(total + cur)); total = 0; cur = 0; inNumber = false; last = 0 } }
+        var original: [String] = [], overflow = false
+        func flush() {
+            guard inNumber else { return }
+            let sum = total.addingReportingOverflow(cur)
+            if overflow || sum.overflow { out += original } else { out.append(String(sum.partialValue)) }
+            total = 0; cur = 0; inNumber = false; last = 0; original = []; overflow = false
+        }
+        func add(_ a: Int, _ b: Int) -> Int {
+            let r = a.addingReportingOverflow(b); overflow = overflow || r.overflow; return r.partialValue
+        }
+        func multiply(_ a: Int, _ b: Int) -> Int {
+            let r = a.multipliedReportingOverflow(by: b); overflow = overflow || r.overflow; return r.partialValue
+        }
         for (i, k) in w.enumerated() {
             let next = i + 1 < w.count ? w[i + 1] : ""
             let scale = next == "hundred" || bigNumbers[next] != nil
@@ -196,13 +215,13 @@ extension Meeting {
             if let v = smallNumbers[k] {
                 // "five six" is two numbers; "twenty five" and "two hundred fifty" are one.
                 if inNumber, last == 1 || (last == 2 && v >= 10) { flush() }
-                cur += v; inNumber = true; last = v >= 20 && v % 10 == 0 ? 2 : 1
+                original.append(k); cur = add(cur, v); inNumber = true; last = v >= 20 && v % 10 == 0 ? 2 : 1
             } else if k == "hundred" {
-                cur = max(cur, 1) * 100; inNumber = true; last = 3
+                original.append(k); cur = multiply(max(cur, 1), 100); inNumber = true; last = 3
             } else if let m = bigNumbers[k] {
-                total += max(cur, 1) * m; cur = 0; inNumber = true; last = 3
+                original.append(k); total = add(total, multiply(max(cur, 1), m)); cur = 0; inNumber = true; last = 3
             } else if let d = Int(k), scale, !inNumber {
-                cur = d; inNumber = true; last = 1
+                original.append(k); cur = d; inNumber = true; last = 1
             } else {
                 flush(); out.append(k)
             }

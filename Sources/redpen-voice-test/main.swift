@@ -1983,6 +1983,19 @@ do {
     check("agreement.negativeDecision", Meeting.check(Meeting.Summary(decisions: [Meeting.Cited("We have not approved the launch.", at: 60)]), transcript: "[01:00] Others: We have not approved the launch.").summary.decisions.count == 1)
 }
 
+do {
+    func point(_ value: String, _ source: String) -> Bool {
+        !Meeting.check(Meeting.Summary(points: [Meeting.Cited("Account code " + value, at: 60)]), transcript: "[01:00] Others: The account code is " + source).summary.points.isEmpty
+    }
+    check("overflow.number", point("10000000000 billion", "10000000000 billion"))
+    check("overflow.control", point("10000000000", "10 billion"))
+    check("overflow.hundred", point("9223372036854775807 hundred", "9223372036854775807 hundred"))
+    check("overflow.add", point("9223372036854775807 thousand one", "9223372036854775807 thousand one"))
+    check("overflow.flush", point("9223372036854775807 million 9223372036854775807 hundred", "9223372036854775807 million 9223372036854775807 hundred"))
+    check("overflow.time", Meeting.seconds("9223372036854775807:00") == nil && Meeting.seconds("9223372036854775807:59:59") == nil)
+    check("overflow.timeControl", Meeting.seconds("10:00") == 600 && Meeting.seconds("1:02:03") == 3723)
+}
+
 // Recording failures stay latched for both tracks, including a later successful write.
 do {
     let saving = MeetingSaving(), first = Date(timeIntervalSince1970: 100)
