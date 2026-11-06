@@ -8,14 +8,41 @@ repo = Path(__file__).resolve().parents[2]
 with tempfile.TemporaryDirectory(prefix='voice-after-call-io-') as tmp:
     folder = Path(tmp)
     capture = (repo / 'Sources/RedpenVoice/MeetingCapture.swift').read_text().split('/// Everything the Mac plays')[0]
-    notes = (repo / 'Sources/RedpenVoice/MeetingNotes.swift').read_text()
-    def method(marker):
-        start = notes.index('    static func ' + marker)
-        line = notes[start:notes.index('\n', start)]
-        end = start + len(line) if line.count('{') == line.count('}') and '{' in line else notes.index('\n    }', start) + len('\n    }')
-        return notes[start:end]
-    stubs = 'enum Log { static var messages: [String] = []; static func note(_ text: String) { messages.append(text) } }\nenum MeetingNotes {\n' + '\n'.join(method(name) for name in ['code(', 'savePrivately(', 'privateFolder(', 'read(', 'exportAudio(']) + '\n}\n'
-
+    notes = (repo / 'Sources/RedpenVoice/MeetingNotes.swift').read_text().split("/// The summary, from Apple's")[0]
+    stubs = r'''
+import FoundationModels
+struct Config {
+    static let dir = URL(fileURLWithPath: CommandLine.arguments[1]).appendingPathComponent("config")
+    var meetingsDir = URL(fileURLWithPath: CommandLine.arguments[1]).appendingPathComponent("meetings")
+    var keepMeetingAudio: Bool? = false
+    var engine = "dictation"
+    var roomVoices: Bool? = false
+    var knowMyVoice: Bool? = false
+}
+struct Names { func apply(_ text: String) -> String { text } }
+final class Transcriber { func meetingSegments(_ audio: [Float], config: Config) async throws -> [MeetingSegment] { [] } }
+enum RoomSpeakers {
+    static func label(track: URL, rate: Int, offset: Double, lines: [MeetingSegment], knowMe: Bool) async -> (voices: [Speaker], names: [Speaker])? { nil }
+}
+enum Log {
+    static var messages: [String] = []
+    static func note(_ text: String) { messages.append(text) }
+    static func int(_ n: Double) -> Int { Int(n) }
+}
+enum BetterSummary {
+    struct Outcome { var ok: Bool; var message: String }
+    static func write(file: URL, helper: String) -> Outcome { Outcome(ok: false, message: "Synthetic helper failure. Your notes are unchanged.") }
+}
+enum MeetingSummary {
+    static var after: (() -> Void)?
+    static var hasNotes = true
+    static func section(for transcript: String, label: String, progress: (Int) -> Void) async -> (text: String, note: String, checked: Meeting.Checked?) {
+        after?()
+        let checked = hasNotes ? Meeting.Checked(summary: Meeting.Summary(overview: "Synthetic notes.")) : nil
+        return ("## Summary\n\n" + label + "\n\nSynthetic notes.\n", "synthetic", checked)
+    }
+}
+''' + notes
     checks = r'''
 var passed = 0
 func check(_ ok: Bool, _ name: String) { precondition(ok, name); passed += 1 }
@@ -99,6 +126,47 @@ let gapped = try decoded(gap, "gapped")
 check(rms(gapped, at: 0.7) < 0.001 && rms(gapped, at: 1.1) > 0.1, "device gap stays on clock")
 let limited = try decoded(tone, "limited", offset: 1, limit: 0.25)
 check(abs(Double(limited.count) / 16000 - 1.25) < 0.08, "saving cutoff includes timeline padding")
+let summaryFile = root.appendingPathComponent("summary.md")
+let transcript = "# Synthetic meeting\n\n## Transcript\n\n[01:00] Me: I'll send the budget deck.\n"
+try MeetingNotes.savePrivately(transcript, to: summaryFile)
+let saved = await MeetingNotes.summarize(summaryFile, writer: .apple) { _, _ in }
+check(saved.wrote && !saved.saveFailed && (try? String(contentsOf: summaryFile, encoding: .utf8))?.contains("## Summary") == true, "successful summary persisted")
+let missing = await MeetingNotes.summarize(root.appendingPathComponent("absent.md"), writer: .apple) { _, _ in }
+check(!missing.wrote && missing.saveFailed, "initial reread failure")
+MeetingSummary.after = { try? FileManager.default.removeItem(at: summaryFile) }
+try MeetingNotes.savePrivately(transcript, to: summaryFile)
+let unreadable = await MeetingNotes.summarize(summaryFile, writer: .apple) { _, _ in }
+check(!unreadable.wrote && unreadable.saveFailed, "final reread failure")
+// Swap in a readable symlink after generation. The real private saver refuses it deterministically, even as owner.
+let target = root.appendingPathComponent("target.md")
+try MeetingNotes.savePrivately(transcript, to: target)
+MeetingSummary.after = {
+    try? FileManager.default.removeItem(at: summaryFile)
+    try? FileManager.default.createSymbolicLink(at: summaryFile, withDestinationURL: target)
+}
+try MeetingNotes.savePrivately(transcript, to: summaryFile)
+let failed = await MeetingNotes.summarize(summaryFile, writer: .apple) { _, _ in }
+check(!failed.wrote && failed.saveFailed && (try? String(contentsOf: target, encoding: .utf8)) == transcript, "failed save never wrote")
+try FileManager.default.removeItem(at: summaryFile)
+try MeetingNotes.savePrivately(transcript, to: summaryFile)
+let work = MeetingNotes.workDir.appendingPathComponent("synthetic-work")
+try MeetingFiles.createFolder(work)
+var manifest = MeetingManifest(started: Date()); manifest.notesFile = summaryFile.path
+try MeetingNotes.save(manifest, in: work)
+let result = try await MeetingNotes.write(work, engine: Transcriber(), config: Config(), names: Names()) { _, _ in }
+check(result.saveFailed && !result.wrote && FileManager.default.fileExists(atPath: work.path), "failed save retains actual work checkpoint")
+check(MeetingNotes.unfinished().contains { $0.standardizedFileURL.path == work.standardizedFileURL.path }, "retained checkpoint discoverable")
+MeetingSummary.after = nil
+try FileManager.default.removeItem(at: summaryFile)
+try MeetingNotes.savePrivately(transcript, to: summaryFile)
+let retry = try await MeetingNotes.write(work, engine: Transcriber(), config: Config(), names: Names()) { _, _ in }
+check(retry.wrote && !retry.saveFailed && !FileManager.default.fileExists(atPath: work.path), "successful retry removes checkpoint")
+try MeetingNotes.savePrivately(transcript, to: summaryFile)
+let fallback = await MeetingNotes.summarize(summaryFile, writer: .claude) { _, _ in }
+check(fallback.wrote && !fallback.saveFailed && fallback.claudeFailed != nil && (try? String(contentsOf: summaryFile, encoding: .utf8))?.contains("because Claude didn't write") == true, "labelled Apple fallback retained")
+MeetingSummary.hasNotes = false
+let noNotes = await MeetingNotes.summarize(summaryFile, writer: .apple) { _, _ in }
+check(!noNotes.wrote && !noNotes.saveFailed, "model without notes differs from save failure")
 print("\(passed) I/O checks passed")
 '''
     main = folder / 'main.swift'

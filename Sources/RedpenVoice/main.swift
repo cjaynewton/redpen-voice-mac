@@ -2653,11 +2653,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                                      writer: { [weak self] in await self?.notesWriter() ?? .apple }) { [weak self] pct, words in
                     self?.notesProgress(pct, words)
                 }
-                Log.note("meeting: notes saved, \(Log.int(r.seconds))s meeting, summary \(r.summary)")
+                if r.saveFailed { Log.note("meeting: notes save failed; recording kept for retry") }
+                else { Log.note("meeting: notes saved, \(Log.int(r.seconds))s meeting, summary \(r.summary)") }
                 await self.whenNotDictating()
                 if self.meeting == nil {
                     self.lastNotes = r.file
-                    if let why = r.claudeFailed {
+                    if r.saveFailed {
+                        self.meetingBar.finish("The notes couldn't be saved. The recording is kept for retry.", ok: false)
+                    } else if let why = r.claudeFailed {
                         // Said on the bar, and in the notes' own label: these are Apple's, and why. When Apple wrote
                         // nothing either, the bar says so, never "basic notes" that aren't there.
                         self.meetingBar.finish(r.wrote ? "Claude didn't write the notes, so they're basic ones. \(why)"

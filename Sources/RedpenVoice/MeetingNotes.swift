@@ -28,6 +28,8 @@ enum MeetingNotes {
         var byClaude = false
         /// Notes of some kind were written (Claude's or Apple's), not only a line saying why there are none.
         var wrote = false
+        /// The transcript may exist, but writing its notes failed. Keep the retry checkpoint.
+        var saveFailed = false
     }
 
     /// Who writes the notes after a meeting (D-1272): the user's own Claude account once they said yes, else Apple's
@@ -37,27 +39,33 @@ enum MeetingNotes {
     /// Puts notes above the transcript of a saved notes file: Claude's when chosen, with Apple's as the labelled
     /// backup when Claude fails or times out, never notes that look real but aren't (D-1272). Returns a word for the
     /// log and the test, and Claude's reason when it was chosen and didn't write them.
-    static func summarize(_ file: URL, writer: Writer, progress: @escaping (Int, String) -> Void) async -> (note: String, claudeFailed: String?, wrote: Bool) {
+    static func summarize(_ file: URL, writer: Writer, progress: @escaping (Int, String) -> Void) async -> (note: String, claudeFailed: String?, wrote: Bool, saveFailed: Bool) {
         var label = Meeting.summaryLabel, claudeFailed: String?
         if writer == .claude {
             progress(85, "Writing the notes with Claude…")
             let r = await Task.detached { BetterSummary.write(file: file, helper: "claude") }.value
-            if r.ok { return ("claude", nil, true) }
+            if r.ok { return ("claude", nil, true, false) }
             // Better summary's own "Your notes are unchanged" isn't true here: basic notes are being written now.
             claudeFailed = r.message.replacingOccurrences(of: " Your notes are unchanged.", with: "")
             label = Meeting.fallbackLabel(claudeFailed ?? "")
             Log.note("meeting: Claude didn't write the notes, Apple's basic notes instead")
         }
-        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return ("unreadable", claudeFailed, false) }
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else {
+            Log.note("meeting: summary file unreadable")
+            return ("unreadable", claudeFailed, false, true)
+        }
         progress(85, "Writing basic notes…")
         let said = Meeting.transcript(inFile: text).components(separatedBy: "\n").filter { $0.hasPrefix("[") }.joined(separator: "\n")
         let section = await MeetingSummary.section(for: said, label: label) { p in progress(85 + p * 14 / 100, "Writing basic notes…") }
-        // Read again: the file may have changed while the model worked.
-        if let now = try? String(contentsOf: file, encoding: .utf8) {
-            do { try savePrivately(Meeting.placing(section.text, in: now), to: file) }
-            catch { Log.note("meeting: summary not saved, \(code(error))") }
+        // A failed reread or save is a failed summary, even when the model produced valid notes.
+        do {
+            let now = try String(contentsOf: file, encoding: .utf8)
+            try savePrivately(Meeting.placing(section.text, in: now), to: file)
+        } catch {
+            Log.note("meeting: summary not saved, \(code(error))")
+            return ("save failed", claudeFailed, false, true)
         }
-        return (section.note, claudeFailed, section.checked != nil)
+        return (section.note, claudeFailed, section.checked != nil, false)
     }
 
     /// An error for the log: its kind and number only. macOS's own wording can name the meeting's file or folder.
@@ -270,18 +278,18 @@ enum MeetingNotes {
                 throw error
             }
         }
-        var summaryNote = "skipped", claudeFailed: String?, wrote = false
+        var summaryNote = "skipped", claudeFailed: String?, wrote = false, saveFailed = false
         if summarize, !transcript.contains("\n## Summary\n") {
             // Above the transcript, where it's read first (D-956); the transcript was saved on its own already.
             let who = await writer()
             let r = await Self.summarize(file, writer: who) { p, w in Task { @MainActor in progress(p, w) } }
-            summaryNote = r.note; claudeFailed = r.claudeFailed; wrote = r.wrote
+            summaryNote = r.note; claudeFailed = r.claudeFailed; wrote = r.wrote; saveFailed = r.saveFailed
         }
         // Only now does the recording's own folder go: a quit before this finishes the same notes next launch.
-        try? fm.removeItem(at: work)
-        await progress(100, "Notes saved")
+        if !saveFailed { try? fm.removeItem(at: work) }
+        await progress(100, saveFailed ? "The notes couldn't be saved. The recording is kept." : "Notes saved")
         return Result(file: file, seconds: length, meLines: result.me, othersLines: result.others, echoDropped: result.echo, summary: summaryNote,
-                      claudeFailed: claudeFailed, byClaude: summaryNote == "claude", wrote: wrote)
+                      claudeFailed: claudeFailed, byClaude: summaryNote == "claude", wrote: wrote, saveFailed: saveFailed)
     }
 }
 
