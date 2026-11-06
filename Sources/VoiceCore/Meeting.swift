@@ -392,6 +392,11 @@ public enum Meeting {
     /// For the meeting chat, from the menu or the first meeting's tip.
     public static let notice = "Heads up: I'm taking notes on this call with Redpen. It runs on my Mac and nothing is sent anywhere."
 
+    public static let savingWarning = "Recording stopped saving. The disk may be full."
+    public static func savingNote(at seconds: Double) -> String {
+        "Recording stopped saving at \(clock(seconds)) from the start. Nothing after it was kept. The disk may be full."
+    }
+
     /// Under the header when the Mac's sound was silent the whole meeting: most likely the permission is off.
     public static let silentMacNote = "The Mac's sound was silent for the whole meeting, so only your microphone is here. If others were talking, allow Redpen Voice under System Audio Recording in Privacy & Security, then try again."
 
@@ -528,6 +533,8 @@ public struct MeetingManifest: Codable, Equatable, Sendable {
     public var meOffset: Double?
     public var othersOffset: Double?
     public var stopped: Date?
+    /// First failed audio save, shared by both tracks. Nothing at or after this time is kept.
+    public var savingStopped: Date?
     /// Set once the transcript is saved, so a second try finishes the same file instead of writing another.
     public var notesFile: String?
     /// Pauses, with the one in progress if the app stopped while paused.
@@ -539,4 +546,19 @@ public struct MeetingManifest: Codable, Equatable, Sendable {
     public static let rate = 16_000
 
     public static func samples(bytes: Int) -> Int { bytes / 2 }
+}
+
+/// Both tracks stop accepting audio on the first failed write or flush.
+public final class MeetingSaving: @unchecked Sendable {
+    private let lock = NSLock()
+    private var failure: Date?
+    public init() {}
+    public var stopped: Date? { lock.withLock { failure } }
+    @discardableResult public func fail(at time: Date) -> Bool {
+        lock.withLock {
+            guard failure == nil else { return false }
+            failure = time
+            return true
+        }
+    }
 }

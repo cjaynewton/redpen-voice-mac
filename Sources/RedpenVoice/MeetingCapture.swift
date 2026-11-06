@@ -9,6 +9,7 @@ import VoiceCore
 final class TrackWriter: @unchecked Sendable {
     let url: URL
     private let handle: FileHandle
+    let saving: MeetingSaving
     private let queue: DispatchQueue
     private let lock = NSLock()
     private let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(MeetingManifest.rate), channels: 1, interleaved: false)!
@@ -27,14 +28,15 @@ final class TrackWriter: @unchecked Sendable {
     private var heardSeconds = 0.0
     private var lead = -Double.infinity
 
-    init(url: URL, fillGaps: Bool = false) throws {
+    init(url: URL, fillGaps: Bool = false, saving: MeetingSaving = MeetingSaving(), fileHandle: FileHandle? = nil) throws {
         self.url = url
+        self.saving = saving
         self.fillGaps = fillGaps
         queue = DispatchQueue(label: "redpen.meeting.\(url.deletingPathExtension().lastPathComponent)")
         guard FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
             throw NSError(domain: "RedpenVoice", code: 20, userInfo: [NSLocalizedDescriptionKey: "Cannot create \(url.lastPathComponent)"])
         }
-        handle = try FileHandle(forWritingTo: url)
+        handle = try fileHandle ?? FileHandle(forWritingTo: url)
     }
 
     /// Samples on disk so far, and the loudest of them (0 to 1).
@@ -66,7 +68,7 @@ final class TrackWriter: @unchecked Sendable {
     }
 
     private func append(_ buffer: AVAudioPCMBuffer, arrived: Date, mute: Bool) {
-        guard !lock.withLock({ closed }), buffer.frameLength > 0 else { return }
+        guard saving.stopped == nil, !lock.withLock({ closed }), buffer.frameLength > 0 else { return }
         if !started { started = true; onFirst?(arrived.addingTimeInterval(-Double(buffer.frameLength) / buffer.format.sampleRate)) }
         if fillGaps {
             let first = firstArrival ?? arrived
@@ -94,8 +96,9 @@ final class TrackWriter: @unchecked Sendable {
                 ints[i] = Int16(v * 32767).littleEndian
             }
         }
+        guard saving.stopped == nil else { return }
         let data = ints.withUnsafeBufferPointer { Data(buffer: $0) }
-        do { try handle.write(contentsOf: data) } catch { Log.note("meeting: write failed on \(url.lastPathComponent), \(MeetingNotes.code(error))"); return }
+        do { try handle.write(contentsOf: data) } catch { failed(error, at: arrived); return }
         // Loudness for the bar: about -50 dB to 0 dB as 0 to 1, as the talking bar reads it.
         let db = 20 * log10(max((sum / Float(samples.count)).squareRoot(), 1e-6))
         let shown: Float = mute ? 0 : min(1, max(0, (db + 50) / 50))
@@ -104,11 +107,12 @@ final class TrackWriter: @unchecked Sendable {
 
     /// Silence straight to disk, a second at a time, however long the stretch.
     func appendSilence(_ seconds: Double) {
+        guard saving.stopped == nil else { return }
         var left = Int(seconds * target.sampleRate)
         let second = Data(count: Int(target.sampleRate) * 2)
         while left > 0 {
             let n = min(left, Int(target.sampleRate))
-            do { try handle.write(contentsOf: n == Int(target.sampleRate) ? second : Data(count: n * 2)) } catch { return }
+            do { try handle.write(contentsOf: n == Int(target.sampleRate) ? second : Data(count: n * 2)) } catch { failed(error, at: Date()); return }
             lock.withLock { written += n }
             left -= n
         }
@@ -138,13 +142,18 @@ final class TrackWriter: @unchecked Sendable {
         return Array(UnsafeBufferPointer(start: d, count: Int(out.frameLength)))
     }
 
+    private func failed(_ error: Error, at time: Date) {
+        if saving.fail(at: time) { Log.note("meeting: recording stopped saving, \(MeetingNotes.code(error))") }
+        lock.withLock { recent = 0 }
+    }
+
     /// Waits for what is queued, then closes the file. Safe to call twice.
     func close() {
         queue.sync {
             guard !lock.withLock({ closed }) else { return }
             lock.withLock { closed = true }
-            try? handle.synchronize()
-            try? handle.close()
+            do { try handle.synchronize() } catch { failed(error, at: Date()) }
+            do { try handle.close() } catch { failed(error, at: Date()) }
         }
     }
 }
@@ -278,6 +287,7 @@ final class MeetingRecording {
     let folder: URL
     let started: Date
     private(set) var manifest: MeetingManifest
+    private let saving = MeetingSaving()
     private let me: TrackWriter
     private let others: TrackWriter
     private let tap = SystemTap()
@@ -292,8 +302,8 @@ final class MeetingRecording {
         folder = MeetingNotes.workDir.appendingPathComponent(name, isDirectory: true)
         try fm.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         manifest = MeetingManifest(started: started)
-        me = try TrackWriter(url: folder.appendingPathComponent(MeetingManifest.meFile), fillGaps: true)
-        others = try TrackWriter(url: folder.appendingPathComponent(MeetingManifest.othersFile))
+        me = try TrackWriter(url: folder.appendingPathComponent(MeetingManifest.meFile), fillGaps: true, saving: saving)
+        others = try TrackWriter(url: folder.appendingPathComponent(MeetingManifest.othersFile), saving: saving)
         try MeetingNotes.save(manifest, in: folder)
     }
 
@@ -323,6 +333,18 @@ final class MeetingRecording {
         recorder.end()
         tap.stop()
         me.close(); others.close()
+        manifest.savingStopped = saving.stopped
+        if let failed = saving.stopped {
+            // Discard a partial failed write and any already queued audio beyond the common cutoff.
+            for (track, offset) in [(me, manifest.meOffset ?? 0), (others, manifest.othersOffset ?? 0)] {
+                let frames = min(track.frames, max(0, Int((failed.timeIntervalSince(started) - offset) * Double(MeetingManifest.rate))))
+                do {
+                    let h = try FileHandle(forWritingTo: track.url)
+                    defer { try? h.close() }
+                    try h.truncate(atOffset: UInt64(frames * 2))
+                } catch { Log.note("meeting: failed audio tail not removed, \(MeetingNotes.code(error))") }
+            }
+        }
         manifest.stopped = Date()
         if var p = manifest.pauses, p.isPaused { p.resume(at: seconds); manifest.pauses = p }
         saveManifest()
@@ -330,6 +352,8 @@ final class MeetingRecording {
         Log.note("meeting: stopped, me \(String(format: "%.0f", Double(me.frames) / rate))s peak \(String(format: "%.3f", me.peak)), others \(String(format: "%.0f", Double(others.frames) / rate))s peak \(String(format: "%.3f", others.peak))")
         return folder
     }
+
+    var savingStopped: Date? { saving.stopped }
 
     var seconds: Double { Date().timeIntervalSince(started) }
     /// The time the bar shows: recorded time, standing still while paused.

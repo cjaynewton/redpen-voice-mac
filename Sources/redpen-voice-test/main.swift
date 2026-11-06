@@ -1953,6 +1953,17 @@ do {
     check("meeting.manifest", back == mf && MeetingManifest.samples(bytes: 32_000) == 16_000)
 }
 
+// Recording failures stay latched for both tracks, including a later successful write.
+do {
+    let saving = MeetingSaving(), first = Date(timeIntervalSince1970: 100)
+    check("saving.control", saving.stopped == nil)
+    check("saving.first", saving.fail(at: first) && saving.stopped == first)
+    check("saving.latched", !saving.fail(at: first.addingTimeInterval(10)) && saving.stopped == first)
+    check("saving.header", Meeting.savingNote(at: 62).contains("01:02") && Meeting.savingNote(at: 62).contains("Nothing after it was kept."))
+    var manifest = MeetingManifest(started: first); manifest.savingStopped = first
+    check("saving.recovery", (try? JSONDecoder().decode(MeetingManifest.self, from: JSONEncoder().encode(manifest))) == manifest)
+}
+
 // Better summary on this Mac (D-1010): which writer each Mac gets, the pinned download, the hash check, and its
 // summary's place in the notes.
 do {

@@ -2387,7 +2387,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let l = m.levels
             // A refused permission doesn't fail the tap, it hears silence: said on the bar after 20 s, not after the meeting.
             return MeetingBar.Now(recorded: m.recorded, paused: m.isPaused, me: l.me, others: l.others,
-                                  noSound: m.seconds >= 20 && m.macSilent && !m.isPaused)
+                                  noSound: m.seconds >= 20 && m.macSilent && !m.isPaused, savingFailed: m.savingStopped != nil)
         }
         meetingBar.dictating = { [weak self] in guard let self else { return false }; return self.session != nil || self.writing > 0 }
         meetingBar.onStop = { [weak self] in if self?.meeting != nil { self?.toggleMeeting() } }

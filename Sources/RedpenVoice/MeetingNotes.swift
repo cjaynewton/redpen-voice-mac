@@ -117,11 +117,12 @@ enum MeetingNotes {
     }
 
     /// One track as timed lines, in seconds from the meeting's start. `done` hears seconds finished.
-    static func transcribe(_ track: URL, offset: Double, engine: Transcriber, config: Config, done: (Double) -> Void) async throws -> (lines: [MeetingSegment], peak: Float) {
+    static func transcribe(_ track: URL, offset: Double, engine: Transcriber, config: Config, limit: Double? = nil, done: (Double) -> Void) async throws -> (lines: [MeetingSegment], peak: Float) {
         guard let h = try? FileHandle(forReadingFrom: track) else { return ([], 0) }
         defer { try? h.close() }
         let rate = MeetingManifest.rate
-        let total = MeetingManifest.samples(bytes: Int((try? h.seekToEnd()) ?? 0))
+        let saved = MeetingManifest.samples(bytes: Int((try? h.seekToEnd()) ?? 0))
+        let total = limit.map { min(saved, max(0, Int($0 * Double(rate)))) } ?? saved
         let piece = Int(pieceSeconds * Double(rate)), search = Int(searchSeconds * Double(rate))
         var at = 0, out: [MeetingSegment] = [], loudest: Float = 0
         while at < total {
@@ -145,7 +146,7 @@ enum MeetingNotes {
     }
 
     /// A raw track to a small .m4a beside the notes (AAC, 32 kbit/s, about 14 MB an hour).
-    static func exportAudio(_ track: URL, to out: URL) throws {
+    static func exportAudio(_ track: URL, to out: URL, limit: Double? = nil) throws {
         let rate = Double(MeetingManifest.rate)
         let settings: [String: Any] = [AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: rate, AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: 32_000]
         let fmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: 1, interleaved: false)!
@@ -156,8 +157,9 @@ enum MeetingNotes {
             defer { try? h.close() }
             let step = Int(rate) * 30
             var at = 0
-            while true {
-                let s = try read(h, from: at, count: step)
+            let total = limit.map { max(0, Int($0 * rate)) } ?? Int.max
+            while at < total {
+                let s = try read(h, from: at, count: min(step, total - at))
                 if s.isEmpty { break }
                 let b = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(s.count))!
                 b.frameLength = AVAudioFrameCount(s.count)
@@ -179,7 +181,10 @@ enum MeetingNotes {
         let folder = config.meetingsDir
         try fm.createDirectory(at: folder, withIntermediateDirectories: true)
         let meTrack = work.appendingPathComponent(MeetingManifest.meFile), othersTrack = work.appendingPathComponent(MeetingManifest.othersFile)
-        let meSecs = seconds(meTrack), othersSecs = seconds(othersTrack)
+        let cutoff = manifest.savingStopped.map { max(0, $0.timeIntervalSince(manifest.started)) }
+        let meLimit = cutoff.map { max(0, $0 - (manifest.meOffset ?? 0)) }
+        let othersLimit = cutoff.map { max(0, $0 - (manifest.othersOffset ?? 0)) }
+        let meSecs = min(seconds(meTrack), meLimit ?? .infinity), othersSecs = min(seconds(othersTrack), othersLimit ?? .infinity)
         let length = max(meSecs + (manifest.meOffset ?? 0), othersSecs + (manifest.othersOffset ?? 0), 0)
         let keepAudio = config.keepMeetingAudio ?? true
 
@@ -201,8 +206,8 @@ enum MeetingNotes {
             let t0 = Date()
             // The tap delivers nothing at all while the Mac is quiet, so a silent meeting can leave no Others audio:
             // the note goes by the meeting's length, not the track's.
-            let (others, othersPeak) = try await transcribe(othersTrack, offset: manifest.othersOffset ?? 0, engine: engine, config: config, done: tick)
-            let mine = try await transcribe(meTrack, offset: manifest.meOffset ?? 0, engine: engine, config: config, done: tick).lines
+            let (others, othersPeak) = try await transcribe(othersTrack, offset: manifest.othersOffset ?? 0, engine: engine, config: config, limit: othersLimit, done: tick)
+            let mine = try await transcribe(meTrack, offset: manifest.meOffset ?? 0, engine: engine, config: config, limit: meLimit, done: tick).lines
             let echo = Meeting.dropEcho(me: mine, others: others)
             // Voices in the room (D-1034): the microphone's lines told apart by voice, on this Mac, when chosen, the
             // models are here, and the Mac played nothing, so it was a meeting in one room. On a call through the
@@ -229,7 +234,8 @@ enum MeetingNotes {
             transcript = Meeting.markdown(start: manifest.started, seconds: length, lines: lines, audio: audio, echoDropped: echo.dropped,
                                           // In one room the Mac playing nothing is expected, so the warning is softer then.
                                           engine: engineName(config.engine),
-                                          notes: othersPeak == 0 && length > 15 ? [(room?.names.count ?? 0) >= 2 ? Meeting.roomSilentNote : Meeting.silentMacNote] : [],
+                                          notes: (manifest.savingStopped.map { [Meeting.savingNote(at: max(0, $0.timeIntervalSince(manifest.started)))] } ?? [])
+                                            + (othersPeak == 0 && length > 15 ? [(room?.names.count ?? 0) >= 2 ? Meeting.roomSilentNote : Meeting.silentMacNote] : []),
                                           paused: pauses.reduce(0) { $0 + $1.seconds }, room: room?.names ?? [])
             try transcript.write(to: file, atomically: true, encoding: .utf8)
             try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
@@ -242,8 +248,8 @@ enum MeetingNotes {
         let base = file.deletingPathExtension().lastPathComponent, beside = file.deletingLastPathComponent()
         if keepAudio {
             do {
-                try exportAudio(othersTrack, to: beside.appendingPathComponent(base + " Others.m4a"))
-                try exportAudio(meTrack, to: beside.appendingPathComponent(base + " Me.m4a"))
+                try exportAudio(othersTrack, to: beside.appendingPathComponent(base + " Others.m4a"), limit: othersLimit)
+                try exportAudio(meTrack, to: beside.appendingPathComponent(base + " Me.m4a"), limit: meLimit)
             } catch {
                 Log.note("meeting: audio not saved, \(code(error)); the raw tracks stay in the recording folder")
                 throw error

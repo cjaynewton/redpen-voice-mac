@@ -8,7 +8,7 @@ import VoiceCore
 @MainActor
 final class MeetingBar: NSObject {
     /// What the bar shows while recording, read ten times a second.
-    struct Now { var recorded: Double; var paused: Bool; var me: Float; var others: Float; var noSound: Bool }
+    struct Now { var recorded: Double; var paused: Bool; var me: Float; var others: Float; var noSound: Bool; var savingFailed = false }
 
     /// `offer`: notes saved, with a button for a better summary from this helper ("claude", "chatgpt", "gemini",
     /// "cursor", "command" or "mac"; D-956, D-1010, D-1012). `busy`: waiting on it.
@@ -209,6 +209,7 @@ final class MeetingBar: NSObject {
         func small(_ l: NSTextField, gap: CGFloat) { label(l, gap: gap); l.frame.origin.y = 10 }
         func button(_ b: NSButton, padding: CGFloat = 20, gap: CGFloat = 8) { b.sizeToFit(); put(b, ceil(b.frame.width) + padding, 26, gap: gap) }
 
+        message.textColor = Self.text
         switch mode {
         case .recording:
             guard let now else { break }
@@ -216,6 +217,7 @@ final class MeetingBar: NSObject {
             rec.layer?.backgroundColor = now.paused ? NSColor.clear.cgColor : Self.red.cgColor
             rec.layer?.borderColor = Self.dim.cgColor
             rec.layer?.borderWidth = now.paused ? 2 : 0
+            if now.savingFailed { folded = false }
             if folded {
                 rec.frame = NSRect(x: 15.5, y: 22, width: 9, height: 9); visible.append(rec)
                 time.font = NSFont.monospacedDigitSystemFont(ofSize: 9.5, weight: .medium)
@@ -224,6 +226,14 @@ final class MeetingBar: NSObject {
                 time.toolTip = "Open the bar"
                 break
             }
+            if now.savingFailed {
+                message.stringValue = Meeting.savingWarning
+                message.textColor = Self.red
+                label(message, gap: 14)
+                button(stop, gap: 8)
+                break
+            }
+            message.textColor = Self.text
             time.font = NSFont.monospacedDigitSystemFont(ofSize: 12.5, weight: .medium)
             time.toolTip = "Fold the bar into a small square"
             put(rec, 9, 9, gap: 10)
