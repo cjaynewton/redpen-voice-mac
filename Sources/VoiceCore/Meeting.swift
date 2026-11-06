@@ -397,6 +397,12 @@ public enum Meeting {
         "Recording stopped saving at \(clock(seconds)) from the start. Nothing after it was kept. The disk may be full."
     }
 
+    /// The effective automatic writer, without invoking a helper or asking the after-transcript question.
+    public static func notice(claudeNotes: Bool?, claudeInstalled: Bool) -> String {
+        guard claudeNotes == true, claudeInstalled else { return notice }
+        return "Heads up: I'm taking notes on this call with Redpen. The audio stays on my Mac. The meeting's text goes to Claude under my own account to write the notes."
+    }
+
     /// Under the header when the Mac's sound was silent the whole meeting: most likely the permission is off.
     public static let silentMacNote = "The Mac's sound was silent for the whole meeting, so only your microphone is here. If others were talking, allow Redpen Voice under System Audio Recording in Privacy & Security, then try again."
 

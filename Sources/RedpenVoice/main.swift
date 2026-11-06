@@ -2626,7 +2626,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func copyNotice() {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(Meeting.notice, forType: .string)
+        NSPasteboard.general.setString(Meeting.notice(claudeNotes: config.claudeNotes, claudeInstalled: BetterSummary.path("claude") != nil), forType: .string)
         hud.flash("Notice copied. Paste it in the meeting chat.", ok: true, for: 2.5)
     }
 

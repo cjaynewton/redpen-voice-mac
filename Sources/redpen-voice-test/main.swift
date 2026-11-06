@@ -1953,6 +1953,14 @@ do {
     check("meeting.manifest", back == mf && MeetingManifest.samples(bytes: 32_000) == 16_000)
 }
 
+do {
+    let cloud = Meeting.notice(claudeNotes: true, claudeInstalled: true)
+    check("notice.claude", cloud.contains("audio stays on my Mac") && cloud.contains("text goes to Claude under my own account") && !cloud.contains("nothing is sent"))
+    check("notice.apple", Meeting.notice(claudeNotes: false, claudeInstalled: true) == Meeting.notice)
+    check("notice.absent", Meeting.notice(claudeNotes: true, claudeInstalled: false) == Meeting.notice)
+    check("notice.unasked", Meeting.notice(claudeNotes: nil, claudeInstalled: true) == Meeting.notice)
+}
+
 // Recording failures stay latched for both tracks, including a later successful write.
 do {
     let saving = MeetingSaving(), first = Date(timeIntervalSince1970: 100)
