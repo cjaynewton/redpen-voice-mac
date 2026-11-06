@@ -1864,7 +1864,7 @@ do {
     let keep = ["Grow repeat sales by the 3rd quarter.", "Prep the deck for Friday's board meeting.", "Review this week's numbers with Sam.",
                 "Brief the morning shift on the new layout.", "Book the Sunday Times ad.", "Send it by tomorrow morning.", "Send Priya the notes from the May 12 workshop."]
     let kept = keep.map { Meeting.withoutUnsaidDates($0, around: 0, in: near) }
-    check("review2.datesKept", kept == keep, "\(zip(keep, kept).filter { $0 != $1 })")
+    check("review2.datesKept", kept == keep.map { $0 == "Send it by tomorrow morning." ? "Send it." : $0 }, "\(zip(keep, kept).filter { $0 != $1 })")
     check("review2.deadlineStillOut", Meeting.withoutUnsaidDates("Send the deck by Friday.", around: 0, in: near) == "Send the deck."
           && Meeting.withoutUnsaidDates("Send the deck on Monday, then call Sam.", around: 0, in: near) == "Send the deck, then call Sam.")
     // From the Nov 6 regrade: a deadline said about something else, and names guessed from the topic.
@@ -1994,6 +1994,21 @@ do {
     check("overflow.flush", point("9223372036854775807 million 9223372036854775807 hundred", "9223372036854775807 million 9223372036854775807 hundred"))
     check("overflow.time", Meeting.seconds("9223372036854775807:00") == nil && Meeting.seconds("9223372036854775807:59:59") == nil)
     check("overflow.timeControl", Meeting.seconds("10:00") == 600 && Meeting.seconds("1:02:03") == 3723)
+}
+
+do {
+    let lines = Meeting.said("[00:50] Others: The holiday is Friday.\n[01:00] Me: I'll send the budget deck.\n[01:05] Others: Okay, Friday is my day off.")
+    check("dates.neighbour", Meeting.withoutUnsaidDates("Send the budget deck by Friday.", around: 1, in: lines) == "Send the budget deck.")
+    check("dates.bare", Meeting.withoutUnsaidDates("Send the budget deck tomorrow.", around: 1, in: lines) == "Send the budget deck.")
+    check("dates.replyTopic", Meeting.deadline(around: 1, in: lines, task: "Send the budget deck.") == nil)
+    let multi = Meeting.said("[01:00] Me: The holiday is Friday. I'll send the budget deck.")
+    check("dates.otherSentence", Meeting.withoutUnsaidDates("Send the budget deck by Friday.", around: 0, in: multi) == "Send the budget deck.")
+    check("dates.partial", Meeting.withoutUnsaidDates("Send the deck tomorrow morning.", around: 0, in: Meeting.said("[01:00] Me: I'll send the deck tomorrow.")) == "Send the deck.")
+    check("dates.supported", Meeting.withoutUnsaidDates("Send the deck tomorrow morning.", around: 0, in: Meeting.said("[01:00] Me: I'll send the deck tomorrow morning.")) == "Send the deck tomorrow morning.")
+    check("dates.attributive", Meeting.withoutUnsaidDates("Send the deck for Friday's board meeting.", around: 1, in: lines) == "Send the deck for Friday's board meeting.")
+    for reply in ["Sure, by Friday", "Okay, before Monday", "Yes, until tomorrow"] {
+        check("dates.explicitReply.\(reply)", Meeting.deadline(around: 0, in: Meeting.said("[01:00] Me: I'll send the deck.\n[01:01] Others: " + reply)) != nil)
+    }
 }
 
 // Recording failures stay latched for both tracks, including a later successful write.

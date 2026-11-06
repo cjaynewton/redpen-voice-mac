@@ -93,24 +93,22 @@ extension Meeting {
 
     private static let replyStart = try! NSRegularExpression(pattern: "^\\W*(?:sure|yes|yeah|yep|ok|okay|will do|no problem|absolutely|definitely|done|got it|sounds good|fine|by)\\b", options: [.caseInsensitive])
 
-    /// A to-do's words without any date that the line saying it, or the line on either side, doesn't say. A writer
-    /// adding "by this afternoon" to a job nobody gave a time is the commonest made-up detail (D-1272).
+    /// Remove unsupported deadline wording at a clause end, using only the actual promise sentence.
     public static func withoutUnsaidDates(_ task: String, around i: Int, in lines: [Said]) -> String {
         guard lines.indices.contains(i) else { return task }
-        let near = (max(0, i - 1)...min(lines.count - 1, i + 1)).map { lines[$0].text }.joined(separator: " ")
-        let said = Set(keys(near))
+        let promise = promiseSentence(for: task, in: lines[i].text)
+        let source = promise.map { $0.all[$0.index] } ?? lines[i].text
+        let said = datePattern.matches(in: source, range: NSRange(source.startIndex..., in: source)).compactMap {
+            date(in: (source as NSString).substring(with: $0.range))?.lowercased()
+        }
         let ns = task as NSString
         var out = task
-        // Only a deadline is taken out, never a date that names something ("Friday's board meeting", "the May 12
-        // workshop", "the Sunday Times", "the 3rd quarter"): it starts with by, before, until or on, ends its clause,
-        // and none of its words is said near the line. Anything less certain stays as written.
         for m in datePattern.matches(in: task, range: NSRange(location: 0, length: ns.length)).reversed() {
             let phrase = ns.substring(with: m.range)
-            guard phrase.range(of: "^(?:by|before|until|on)\\s", options: [.regularExpression, .caseInsensitive]) != nil else { continue }
             let after = ns.substring(from: m.range.location + m.range.length)
+            // Attributive dates, such as Friday's meeting or the Sunday Times, stay intact.
             guard after.range(of: "^\\s*(?:[,.;!?]|$)", options: .regularExpression) != nil else { continue }
-            let words = keys(phrase).filter { !["by", "before", "on", "until", "for", "over", "in", "the", "this", "of"].contains($0) }
-            guard !words.isEmpty, !words.contains(where: said.contains) else { continue }
+            guard let normalized = date(in: phrase)?.lowercased(), !said.contains(normalized) else { continue }
             out = (out as NSString).replacingCharacters(in: m.range, with: "")
         }
         guard out != task else { return task }
@@ -183,7 +181,14 @@ extension Meeting {
         guard lines.indices.contains(next) else { return nil }
         let t = lines[next].text
         guard t.split(separator: " ").count <= 10, replyStart.firstMatch(in: t, range: NSRange(t.startIndex..., in: t)) != nil else { return nil }
-        return date(in: t)
+        let ns = t as NSString
+        for m in datePattern.matches(in: t, range: NSRange(t.startIndex..., in: t)) {
+            let phrase = ns.substring(with: m.range)
+            if phrase.range(of: "^(?:by|before|until)\\s+", options: [.regularExpression, .caseInsensitive]) != nil {
+                return date(in: phrase)
+            }
+        }
+        return nil
     }
 
     private static let waitsPattern = try! NSRegularExpression(pattern: "\\b(?:" + [
