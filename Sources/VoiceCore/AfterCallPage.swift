@@ -41,7 +41,7 @@ public enum AfterCallPage {
             byline = block.components(separatedBy: "\n").first { $0.hasPrefix("*") && $0.hasSuffix("*") && $0.count > 2 }
                 .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "*")).replacingOccurrences(of: " Check them against the transcript.", with: "")
                     .replacingOccurrences(of: " Check it against the transcript.", with: "") }
-            if summary == nil, let n = block.range(of: "No summary was written.") {
+            if summary == nil, let n = block.range(of: Meeting.noSummaryPrefix) {
                 why = block[n.lowerBound...].trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }
@@ -106,7 +106,8 @@ public enum AfterCallPage {
     }
 
     /// The whole page. `fonts` is the @font-face CSS for Newsreader (data URLs), or empty for the system serif.
-    public static func html(_ n: Notes, sender: String, audio: Bool, fonts: String = "") -> String {
+    public static func html(_ n: Notes, sender: String, audio: Bool, fonts: String = "",
+                            retry: MeetingNotesRetry.Presentation = .init()) -> String {
         var quoteID = 0
         func src(_ at: Double?, speaker: String? = nil) -> String {
             quoteID += 1
@@ -130,6 +131,12 @@ public enum AfterCallPage {
 
         guard let s = n.summary else {
             body += "<p class=\"settled\">\(escape(n.noSummary ?? "No summary was written for this meeting."))</p>"
+            if n.noSummary != nil {
+                body += "<div class=\"notes-retry\"><button class=\"btn\" data-act=\"retry\"\(retry.progress == nil ? "" : " disabled")>Write notes again</button>"
+                body += "<p id=\"notes-retry-status\" role=\"status\">\(escape(retry.message))</p>"
+                body += "<progress id=\"notes-retry-progress\" max=\"100\" value=\"\(retry.progress ?? 0)\"\(retry.progress == nil ? " hidden" : "")></progress>"
+                body += "<button class=\"link\" id=\"notes-retry-claude\" data-act=\"retry-claude\"\(retry.offerClaude && retry.progress == nil ? "" : " hidden")>Use Claude for notes</button></div>"
+            }
             body += whole(n, cited: [], audio: audio, open: true)
             return page(body + "</main>", fonts: fonts)
         }
@@ -262,6 +269,11 @@ public enum AfterCallPage {
     .mail-note { color: var(--dim); font-size: .8rem; margin-left: 6px; }
     .btn { border: 1px solid var(--edge); border-radius: 3px; padding: 7px 14px; font-size: .88rem; }
     .btn:hover { background: rgba(255,255,255,.06); }
+    .btn:disabled { opacity: .55; cursor: default; }
+    .notes-retry { margin: 16px 0 24px; }
+    .notes-retry p { font-size: .92rem; color: var(--mid); line-height: 1.45; margin: 10px 0; }
+    .notes-retry progress { width: 120px; height: 4px; accent-color: var(--red); }
+    .notes-retry .link { margin: 8px 0 0; font-size: .9rem; }
     .deep { border-top: 1px solid var(--line); }
     .deep-row { display: flex; width: 100%; align-items: baseline; gap: 10px; padding: 14px 0; border-bottom: 1px solid var(--line); text-align: left; font-size: .98rem; }
     .deep-row .n { color: var(--dim); font-size: .86rem; }
@@ -287,6 +299,16 @@ public enum AfterCallPage {
     /// Clicks go to the app by message; the app plays the sound and calls `heard` with how far along it is.
     static let script = """
     const app = (m) => window.webkit && window.webkit.messageHandlers.redpen && window.webkit.messageHandlers.redpen.postMessage(m);
+    window.notesRetry = (state) => {
+      const status = document.getElementById('notes-retry-status');
+      if (!status) return;
+      status.textContent = state.message;
+      const busy = state.progress !== null;
+      document.querySelector('[data-act="retry"]').disabled = busy;
+      const progress = document.getElementById('notes-retry-progress');
+      progress.hidden = !busy; progress.value = state.progress || 0;
+      document.getElementById('notes-retry-claude').hidden = busy || !state.offerClaude;
+    };
     let playing = null;
     function stopShown() {
       if (!playing) return;

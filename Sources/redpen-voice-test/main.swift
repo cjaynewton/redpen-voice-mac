@@ -2625,5 +2625,98 @@ do {
     check("live.pageApprovedGroundAndFont", page.contains("background: #1c1c1c") && page.contains("font-family: Newsreader"))
 }
 
+// Saved-meeting recovery (D-1334), with synthetic files and injected writers. No provider, microphone or settings.
+do {
+    let transcript = "\n[00:01] Others: I'll send the outline tomorrow.\n"
+    let failed = "# Meeting notes, synthetic\n\n" + Meeting.noSummary("Apple's model couldn't summarise this meeting.") + "\n## Transcript\n" + transcript
+    let section = Meeting.summaryMarkdown(Meeting.Checked(summary: Meeting.Summary(overview: "An outline was discussed.")), transcript: transcript)
+    let finished = Meeting.placing(section, in: failed)
+    check("retry.needsHonestMarker", Meeting.needsNotes(inFile: failed))
+    check("retry.noGuessFromMissingSummary", !Meeting.needsNotes(inFile: "# Notes\n\n## Transcript\n" + transcript))
+    check("retry.noGuessFromBrokenSummary", !Meeting.needsNotes(inFile: "## Summary\n\nCould not write notes.\n"))
+    check("retry.markerInTranscriptIgnored", !Meeting.needsNotes(inFile: "## Transcript\n\n[00:01] Others: No summary was written.\n"))
+    check("retry.finishedDoesNotNeedNotes", !Meeting.needsNotes(inFile: finished))
+    let better = Meeting.placingBetter(Meeting.summaryMarkdown(Meeting.Checked(summary: Meeting.Summary(overview: "Notes are ready.")), transcript: transcript, label: Meeting.betterLabel("Claude")), in: failed)
+    check("retry.oldFailureUnderClaudeIgnored", !Meeting.needsNotes(inFile: better) && better.contains(Meeting.noSummaryPrefix))
+    let page = AfterCallPage.html(AfterCallPage.read(failed), sender: "", audio: false)
+    check("retry.pageOneAction", page.components(separatedBy: ">Write notes again</button>").count == 2 && page.contains("data-act=\"retry\""))
+    check("retry.pageSquareButton", page.contains(".btn { border: 1px solid var(--edge); border-radius: 3px;"))
+    check("retry.pageFailurePreserved", page.contains("No summary was written. Apple&#39;s model couldn&#39;t summarise this meeting."))
+    check("retry.pageNoActionWhenWritten", !AfterCallPage.html(AfterCallPage.read(finished), sender: "", audio: false).contains(">Write notes again</button>"))
+    check("retry.pageNoActionWithoutMarker", !AfterCallPage.html(AfterCallPage.read("## Transcript\n" + transcript), sender: "", audio: false).contains(">Write notes again</button>"))
+    let busy = AfterCallPage.html(AfterCallPage.read(failed), sender: "", audio: false, retry: .init(message: "Writing <notes>…", progress: 90, offerClaude: true))
+    check("retry.pageBusyDisabled", busy.contains("data-act=\"retry\" disabled") && busy.contains("max=\"100\" value=\"90\">"))
+    check("retry.pageProgressEscaped", busy.contains("Writing &lt;notes&gt;…") && busy.contains("role=\"status\""))
+    check("retry.pageNoClaudeWhileBusy", busy.contains("data-act=\"retry-claude\" hidden"))
+    let unavailable = AfterCallPage.html(AfterCallPage.read(failed), sender: "", audio: false,
+                                         retry: .init(message: MeetingNotesRetry.Outcome.appleUnavailable.message, offerClaude: true))
+    check("retry.pageOffersClaudeOnFailure", unavailable.contains("data-act=\"retry-claude\">Use Claude for notes") && unavailable.contains("Apple&#39;s model isn&#39;t available on this Mac right now."))
+    check("retry.pageOffline", page.contains("default-src 'none'") && !page.contains("fetch(") && !page.contains("localStorage"))
+
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("redpen-notes-retry-" + UUID().uuidString)
+    try MeetingFiles.createFolder(root)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let file = root.appendingPathComponent("notes.md"), moved = root.appendingPathComponent("moved.md")
+    // Stored true/false skip the question. Nil asks; no or dismissal cannot invoke Claude.
+    for (name, setting, answer, expected) in [
+        ("savedYes", true as Bool?, nil as Bool?, MeetingNotesRetry.Writer.claude as MeetingNotesRetry.Writer?),
+        ("savedNo", false, true, .apple), ("newYes", nil, true, .claude),
+        ("newNo", nil, false, .apple), ("dismissed", nil, nil, nil)
+    ] {
+        try MeetingFiles.save(Data(failed.utf8), to: file)
+        var asked = 0, calls: [MeetingNotesRetry.Writer] = []
+        let outcome = await MeetingNotesRetry.run(file, claudeNotes: setting, ask: { asked += 1; return answer }, summarize: { f, writer in
+            calls.append(writer)
+            try! MeetingFiles.save(Data(finished.utf8), to: f)
+            return ("synthetic", nil, true, false)
+        })
+        check("retry.writer.\(name)", calls == (expected.map { [$0] } ?? []) && asked == (setting == nil ? 1 : 0))
+        check("retry.result.\(name)", outcome == (expected == nil ? .cancelled : .written))
+        check("retry.transcript.\(name)", Meeting.transcript(inFile: try String(contentsOf: file, encoding: .utf8)) == transcript)
+    }
+    try MeetingFiles.save(Data(failed.utf8), to: file)
+    let bytes = try Data(contentsOf: file)
+    var calls = 0
+    let appleFailed = await MeetingNotesRetry.run(file, claudeNotes: false, ask: { fatalError("Must not ask") }, summarize: { _, writer in
+        calls += 1; check("retry.failureAppleOnly", writer == .apple)
+        return ("unavailable", nil, false, false)
+    })
+    check("retry.appleUnavailable", appleFailed == .appleUnavailable && calls == 1)
+    check("retry.failureKeepsOriginalBytes", try Data(contentsOf: file) == bytes && Meeting.needsNotes(inFile: String(decoding: bytes, as: UTF8.self)))
+    let secondFailure = await MeetingNotesRetry.run(file, claudeNotes: true, ask: { fatalError("Must not ask") }, summarize: { _, writer in
+        check("retry.approvedClaudeWithBackup", writer == .claude)
+        return ("failed", "synthetic helper failure", false, false)
+    })
+    let afterBackupFailure = try Data(contentsOf: file)
+    check("retry.backupFailureStaysRecoverable", secondFailure == .appleUnavailable && afterBackupFailure == bytes)
+    let saveFailed = await MeetingNotesRetry.run(file, claudeNotes: false, ask: { nil }, summarize: { _, _ in ("save failed", nil, false, true) })
+    check("retry.saveFailureHonest", saveFailed == .saveFailed)
+    let empty = await MeetingNotesRetry.run(file, claudeNotes: false, ask: { nil }, summarize: { _, _ in ("empty", nil, false, false) })
+    check("retry.emptyHonest", empty == .empty)
+    let missing = root.appendingPathComponent("missing.md")
+    calls = 0
+    let notFound = await MeetingNotesRetry.run(missing, claudeNotes: nil, ask: { calls += 1; return true }, summarize: { _, _ in calls += 1; return ("", nil, true, false) })
+    check("retry.missingFileNoQuestionOrWriter", notFound == .fileUnavailable && calls == 0 && !FileManager.default.fileExists(atPath: missing.path))
+    let duringQuestion = await MeetingNotesRetry.run(file, claudeNotes: nil, ask: {
+        try! FileManager.default.moveItem(at: file, to: moved); return true
+    }, summarize: { _, _ in calls += 1; return ("", nil, true, false) })
+    check("retry.movedDuringQuestionNoSend", duringQuestion == .fileUnavailable && calls == 0 && !FileManager.default.fileExists(atPath: file.path))
+    check("retry.movedContentKept", (try Data(contentsOf: moved)) == bytes)
+    let oldLocation = await MeetingNotesRetry.run(file, claudeNotes: true, ask: { nil }, summarize: { _, _ in calls += 1; return ("", nil, true, false) })
+    check("retry.oldLocationNoWriter", oldLocation == .fileUnavailable && calls == 0)
+    let duringWriter = await MeetingNotesRetry.run(moved, claudeNotes: false, ask: { nil }, summarize: { f, _ in
+        try! FileManager.default.moveItem(at: f, to: file)
+        return ("save failed", nil, false, true)
+    })
+    check("retry.movedDuringWriterPlainMessage", duringWriter == .fileUnavailable && !FileManager.default.fileExists(atPath: moved.path))
+    let changed = await MeetingNotesRetry.run(file, claudeNotes: nil, ask: {
+        try! MeetingFiles.save(Data(finished.utf8), to: file); return true
+    }, summarize: { _, _ in calls += 1; return ("", nil, true, false) })
+    check("retry.finishedDuringQuestionNoDuplicate", changed == .alreadyWritten && calls == 0)
+    let already = await MeetingNotesRetry.run(file, claudeNotes: nil, ask: { calls += 1; return true }, summarize: { _, _ in calls += 1; return ("", nil, true, false) })
+    check("retry.alreadyWrittenNoQuestionOrWriter", already == .alreadyWritten && calls == 0)
+    check("retry.fileStillPrivate", (try? MeetingFiles.requireMode(0o600, at: file)) != nil)
+} catch { check("retry.syntheticFiles", false, "\(type(of: error))") }
+
 print("\(pass) passed, \(fail) failed")
 exit(fail == 0 ? 0 : 1)

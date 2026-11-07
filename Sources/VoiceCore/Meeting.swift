@@ -479,7 +479,11 @@ public enum Meeting {
     }
 
     /// The summary left out, with one plain line saying why.
-    public static func noSummary(_ why: String) -> String { "## Summary\n\nNo summary was written. \(why)\n" }
+    public static let noSummaryPrefix = "No summary was written."
+    public static func noSummary(_ why: String) -> String { "## Summary\n\n\(noSummaryPrefix) \(why)\n" }
+
+    /// Only our honest failure marker in the displayed summary, never words in the transcript or an older backup.
+    public static func needsNotes(inFile file: String) -> Bool { AfterCallPage.read(file).noSummary != nil }
 
     // MARK: Long audio
 
