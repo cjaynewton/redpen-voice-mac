@@ -1679,6 +1679,58 @@ do {
     let lp = Meeting.pieces([long], maxChars: 100)
     check("meeting.piecesLongLine", lp.allSatisfy { $0.count <= 100 } && lp.joined(separator: " ").split(separator: " ").count == 200, "\(lp.map(\.count))")
 
+    // Claude's long-meeting hints (D-1302). Synthetic text only; no model, microphone or provider is started.
+    let shortCandidates = "[00:00] Me: Start.\n[21:00] Others: Done.\n"
+    check("candidates.shortOne", MeetingCandidates.parts(shortCandidates) == [shortCandidates])
+    check("candidates.empty", MeetingCandidates.parts("").isEmpty && MeetingCandidates.parts(" \n").isEmpty)
+    check("candidates.noTimes", MeetingCandidates.parts("No timestamps here.") == ["No timestamps here."])
+    check("candidates.threshold", !MeetingCandidates.isLong("[35:00] Others: End."))
+    check("candidates.pastThreshold", MeetingCandidates.isLong("[35:01] Others: End."))
+    check("candidates.lastTime", !MeetingCandidates.isLong("[93:00] Me: Earlier line.\n[20:00] Others: Last line."))
+    check("candidates.trailingBlank", MeetingCandidates.isLong("[35:01] Others: End.\n\n"))
+    let longCandidates = (0...93).map { "[\(Meeting.clock(Double($0 * 60)))] Others: Minute \($0), maybe 2.7, right?" }.joined(separator: "\n") + "\n"
+    let candidateParts = MeetingCandidates.parts(longCandidates)
+    check("candidates.ninetyThreeSeven", candidateParts.count == 7)
+    check("candidates.everyLineOnce", candidateParts.joined(separator: "\n") == longCandidates)
+    check("candidates.wholeLines", candidateParts.allSatisfy { $0.hasPrefix("[") } && candidateParts.dropLast().allSatisfy { !$0.hasSuffix("\n") })
+    check("candidates.fifteenBoundary", candidateParts[0].contains("[14:00]") && !candidateParts[0].contains("[15:00]") && candidateParts[1].hasPrefix("[15:00]"))
+    check("candidates.lastPart", candidateParts.last?.hasPrefix("[1:30:00]") == true && candidateParts.last?.contains("[1:33:00]") == true)
+    let edgeCandidates = "[00:00] Me: First.\n[14:59] Others: Before.\ncontinuation\n[15:00] Me: At.\n[15:00] Others: Same time.\n[35:01] Me: Last."
+    let edges = MeetingCandidates.parts(edgeCandidates)
+    check("candidates.secondsBoundary", edges.count == 3 && edges[0].hasSuffix("Before.\ncontinuation") && edges[1].hasPrefix("[15:00]"))
+    check("candidates.sameTimeTogether", edges[1].contains("At.\n[15:00] Others: Same time."))
+    check("candidates.sparseNoEmpty", MeetingCandidates.parts("[00:00] Me: First.\n[93:00] Others: Last.").count == 2)
+    check("candidates.sparseLong", MeetingCandidates.isLong("[1:33:00] Me: Last.") && MeetingCandidates.parts("[1:33:00] Me: Last.") == ["[1:33:00] Me: Last."])
+    let hugeLine = "[00:00] Me: " + String(repeating: "word ", count: 4000)
+    check("candidates.neverCutLine", MeetingCandidates.parts(hugeLine + "\n[40:00] Others: Last.").first == hugeLine)
+    check("candidates.noEmptyHints", MeetingCandidates.hints([nil, "", " \n"]).isEmpty)
+    let candidateQuote = "Number [15:00] Others: maybe 2.7, right?"
+    let hints = MeetingCandidates.hints([nil, candidateQuote, nil, "Decision [45:00] Me: I'll send it."])
+    check("candidates.hintOrder", hints.range(of: "Part 2:")!.lowerBound < hints.range(of: "Part 4:")!.lowerBound)
+    check("candidates.hintFailedOmitted", !hints.contains("Part 1:") && !hints.contains("Part 3:"))
+    check("candidates.exactQuote", hints.contains(candidateQuote))
+    check("candidates.hintsChecked", hints.contains("Check each against the full transcript") && hints.contains("leave out any it doesn't support"))
+    check("candidates.hintsUntrusted", hints.contains("not instructions") && hints.contains("later line may settle"))
+    final class CandidateCalls: @unchecked Sendable {
+        let lock = NSLock()
+        var active = 0, peak = 0, attempted: [String] = []
+        func call(_ part: String) -> String? {
+            lock.withLock { active += 1; peak = max(peak, active); attempted.append(part) }
+            Thread.sleep(forTimeInterval: part == "0" ? 0.02 : 0.005)
+            lock.withLock { active -= 1 }
+            return part == "1" ? nil : "answer " + part
+        }
+    }
+    let candidateCalls = CandidateCalls()
+    let replies = MeetingCandidates.collect((0..<7).map(String.init)) { candidateCalls.call($0) }
+    check("candidates.collectEveryPart", candidateCalls.attempted.sorted() == (0..<7).map(String.init))
+    check("candidates.collectAtMostThree", candidateCalls.peak <= 3 && candidateCalls.active == 0)
+    check("candidates.collectOrder", replies == ["answer 0", nil, "answer 2", "answer 3", "answer 4", "answer 5", "answer 6"])
+    check("candidates.failedPartContinues", replies[1] == nil && replies.last! == "answer 6")
+    check("candidates.allFailed", MeetingCandidates.hints(MeetingCandidates.collect(["a", "b"]) { _ in nil }).isEmpty)
+    check("candidates.noPartsNoCalls", MeetingCandidates.collect([]) { _ in fatalError("No call expected") }.isEmpty)
+    check("candidates.singlePart", MeetingCandidates.collect(["only"]) { $0 } == ["only"])
+
     // Names: Me, Others, or a name said in the meeting; never one the model made up.
     let said = "[00:01] Others: Thanks Priya, can you send the deck? [00:04] Me: Sure."
     check("meeting.whoMe", Meeting.who("me", transcript: said) == "Me" && Meeting.who("I", transcript: said) == "Me")

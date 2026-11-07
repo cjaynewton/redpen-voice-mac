@@ -350,7 +350,8 @@ enum MeetingSummary {
     date or plan that is also a to-do belongs in Decisions too.
     - A to-do is only a commitment or an ask: someone says they will do something ("I'll", "we'll", "I'm going to") \
     or asks someone to ("can you", "could you", "let's have Sam do"). Greetings, thanks and goodbyes are never to-dos.
-    - Name a person, as an owner or as the one who said something, only when the transcript makes it unambiguous: \
+    - In every section, including Overview, Key points, Decisions and Still open as well as to-do owners, name a \
+    person only when the transcript makes it unambiguous: \
     they say it about themselves on a line marked with their name, or someone speaks to them by name in that same \
     exchange. Otherwise write Others for anyone on the Others lines and Me for the Me lines, or Not clear for a to-do \
     nobody took on. Never work out a name from the topic, a role, or who usually does what.
@@ -361,6 +362,9 @@ enum MeetingSummary {
     said, or one that was said about something else.
     - Copy money, numbers and percentages exactly as they were said. Never round them, merge two of them, or finish a \
     number that was cut off.
+    - Copy each figure with its hedge: "about", "maybe" and "2.7, right?" stay uncertain or a question, never a fact. \
+    Never add a unit, currency, "million" or a year nobody said. Never build a series, sum or total from separate \
+    figures. A figure used as an example ("say a $5M company...") stays an example, never a plan or result.
     - Still open is a question asked or a problem raised that nobody settled by the end.
     - Leave out small talk: greetings, health, weather, thanks and goodbyes.
     - Empty lists are fine. Do not add advice or opinions.
@@ -369,6 +373,9 @@ enum MeetingSummary {
     static let overviewInstructions = """
     You write the overview of one meeting from the overviews of its parts, in order. Two or three plain sentences on \
     what the meeting was about and where it ended up. Use only what the parts say. Keep numbers and dates exactly.
+    Keep each figure's hedge, question or example wording. Never add a unit, currency, "million" or a year, or build \
+    a series, sum or total from separate figures. Never infer a person's name from a topic or role; use only an \
+    unambiguous attribution already in the parts, otherwise use Me or Others as given, or leave the name out.
     """
 
     /// Why there is no summary, in plain words, or nil when the model can run.
