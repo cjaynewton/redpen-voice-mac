@@ -78,6 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var notesQueue: [URL] = []
     private var notesWorking: URL?
     private var notesStatus: String?
+    private var notesRetryFile: URL?
     /// The meeting control on screen (D-957), and its two shortcuts, held only while a meeting records.
     private let meetingBar = MeetingBar()
     private let liveWords = LiveWords()
@@ -2257,6 +2258,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.unfinished = { [weak self] in self?.panel.close(); self?.offerUnfinishedMeetings(asked: true) }
         menu.nameVoices = { [weak self] in self?.panel.close(); self?.nameVoices() }
         menu.openNotes = { [weak self] in self?.panel.close(); self?.openMeetingNotes() }
+        menu.writeNotesAgain = { [weak self] in
+            guard let self, let file = self.lastNotes else { return }
+            self.panel.close()
+            if self.afterCall.show(file) { self.writeNotesAgain(file) }
+            else { self.hud.flash(MeetingNotesRetry.Outcome.fileUnavailable.message, for: 3.5) }
+        }
         menu.report = { [weak self] in self?.panel.close(); self?.openReport() }
         refreshMenu()
     }
@@ -2314,6 +2321,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.meetingStarted = meeting?.started
         m.meetingPaused = meeting?.isPaused ?? false
         m.notesStatus = notesStatus
+        m.needsNotes = lastNotes.flatMap { try? String(contentsOf: $0, encoding: .utf8) }.map { Meeting.needsNotes(inFile: $0) } ?? false
         m.nameVoices = config.roomVoices == true
         m.unfinished = notesWorking == nil ? MeetingNotes.unfinished(except: meeting?.folder).filter { !notesQueue.contains($0) }.count : 0
         return m
@@ -2516,6 +2524,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard signedIn else { return .apple }
         await whenNotDictating()
         guard meeting == nil, config.claudeNotes == nil else { return config.claudeNotes == true ? .claude : .apple }
+        return askClaudeNotes(timeout: true) == true ? .claude : .apple
+    }
+
+    /// The existing one-time question. A clicked retry waits for an answer, without the automatic path's timeout.
+    private func askClaudeNotes(timeout: Bool) -> Bool? {
         let a = NSAlert()
         a.messageText = "Use your Claude account for better notes?"
         a.informativeText = "Your meeting text goes to Claude. Audio stays on your Mac.\n\nFrom now on Claude writes the notes after every meeting. You can turn this off in Settings, under Meeting notes."
@@ -2524,11 +2537,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         // Unanswered for two minutes (they went straight into another call): this meeting gets Apple's notes and the
         // question waits for the next one, so it never holds the notes up for long.
-        let timer = Timer(timeInterval: 120, repeats: false) { _ in NSApp.abortModal() }
-        RunLoop.main.add(timer, forMode: .modalPanel)
+        let timer = timeout ? Timer(timeInterval: 120, repeats: false) { _ in NSApp.abortModal() } : nil
+        if let timer { RunLoop.main.add(timer, forMode: .modalPanel) }
         let answer = a.runModal()
-        timer.invalidate()
-        guard answer != .abort else { Log.note("meeting: notes by Claude not answered, Apple this time"); return .apple }
+        timer?.invalidate()
+        guard answer != .abort else { Log.note("meeting: notes by Claude not answered"); return nil }
         let yes = answer == .alertFirstButtonReturn
         var c = Config.load()
         c.setClaudeNotes(yes)
@@ -2536,7 +2549,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         config.claudeNotes = c.claudeNotes; config.betterSummaryAgreed = c.betterSummaryAgreed; config.claudeAgreedByNotes = c.claudeAgreedByNotes
         syncSettings()
         Log.note("meeting: asked about notes by Claude, \(yes ? "yes" : "no")")
-        return yes ? .claude : .apple
+        return yes
+    }
+
+    /// Recover only the summary of a saved meeting, after a deliberate click (D-1334). Never transcribes again.
+    private func writeNotesAgain(_ file: URL, offerClaude: Bool = false) {
+        guard notesRetryFile == nil else { return }
+        guard meeting == nil, notesWorking == nil, notesQueue.isEmpty else {
+            afterCall.retryStatus(.init(message: "Finish the current meeting's notes, then press Write notes again."), for: file)
+            return
+        }
+        notesRetryFile = file
+        afterCall.retryStatus(.init(message: "Getting ready to write notes…", progress: 0), for: file)
+        Task { [weak self] in
+            guard let self else { return }
+            let outcome = await MeetingNotesRetry.run(file, claudeNotes: offerClaude ? nil : self.config.claudeNotes, ask: {
+                await self.whenNotDictating()
+                guard self.meeting == nil, self.afterCall.isShowing(file) else { return nil }
+                // A setting changed while waiting is respected unless the user explicitly chose the Claude link.
+                if !offerClaude, let choice = self.config.claudeNotes { return choice }
+                return self.askClaudeNotes(timeout: false)
+            }, summarize: { file, writer in
+                guard self.meeting == nil, writer != .claude || self.config.claudeNotes == true else {
+                    return ("cancelled", nil, false, false)
+                }
+                return await MeetingNotes.summarize(file, writer: writer, preserveOnFailure: true) { pct, words in
+                    Task { @MainActor in
+                        guard self.notesRetryFile == file else { return }
+                        self.notesProgress(pct, words, showBar: self.afterCall.isShowing(file))
+                        self.afterCall.retryStatus(.init(message: "\(words) \(pct)%", progress: pct), for: file)
+                    }
+                }
+            })
+            self.notesRetryFile = nil
+            self.notesStatus = nil
+            self.afterCall.retryStatus(.init(message: outcome.message,
+                                           offerClaude: outcome == .appleUnavailable && self.config.claudeNotes != true),
+                                       for: file, refresh: outcome == .written || outcome == .alreadyWritten)
+            // Keep another meeting's recording bar. A closed page stays closed, including after a failure.
+            if self.meeting == nil, case .writing = self.meetingBar.mode { self.meetingBar.hide() }
+            self.refreshMenu()
+            Log.note("meeting: notes retry \(outcome)")
+            self.writeNextNotes()
+        }
     }
 
     /// Get better notes (D-1272), from the link on Apple's notes. Without Claude Code it says how to get it; with it,
@@ -2578,6 +2633,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let a = AfterCall()
         a.nameVoices = { [weak self] f in _ = self?.namer.show(f) }
         a.betterNotes = { [weak self] f in self?.getBetterNotes(f) }
+        a.writeNotesAgain = { [weak self] f, claude in self?.writeNotesAgain(f, offerClaude: claude) }
+        a.onClose = { [weak self] in
+            guard let self, self.notesRetryFile != nil, self.meeting == nil else { return }
+            self.meetingBar.hide()
+        }
         namer.saved = { [weak a] _ in a?.reload() }
         return a
     }()
@@ -2591,7 +2651,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let f = lastNotes { p.directoryURL = f.deletingLastPathComponent(); p.nameFieldStringValue = f.lastPathComponent }
         NSApp.activate(ignoringOtherApps: true)
         guard p.runModal() == .OK, let f = p.url else { return }
-        if !afterCall.show(f) { hud.flash("These notes can't be opened", for: 3) }
+        if afterCall.show(f) { lastNotes = f; refreshMenu() }
+        else { hud.flash("These notes can't be opened", for: 3) }
     }
 
     /// Name the voices (D-1034): the newest notes when they have voices to name, otherwise the notes the user picks.
@@ -2709,7 +2770,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Writes the notes for each recording in turn. The bar shows how far along, unless you are dictating.
     private func writeNextNotes() {
-        guard notesWorking == nil, !notesQueue.isEmpty else { refreshMenu(); return }
+        guard notesRetryFile == nil, notesWorking == nil, !notesQueue.isEmpty else { refreshMenu(); return }
         let work = notesQueue.removeFirst()
         notesWorking = work
         let names = Names(text: Config.loadNames())
@@ -2767,10 +2828,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func notesProgress(_ pct: Int, _ words: String) {
+    private func notesProgress(_ pct: Int, _ words: String, showBar: Bool = true) {
         notesStatus = pct >= 100 ? nil : "\(words.replacingOccurrences(of: "…", with: "")) \(pct)%"
         // The bar shows how far along, unless a newer meeting is recording; it steps aside by itself during a dictation.
-        if meeting == nil, pct < 100 { setUpMeetingBar(); meetingBar.showWriting(pct, words) }
+        if showBar, meeting == nil, pct < 100 { setUpMeetingBar(); meetingBar.showWriting(pct, words) }
         if panel.isShown { refreshMenu() }
     }
 

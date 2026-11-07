@@ -19,6 +19,9 @@ final class AfterCall: NSObject, WKScriptMessageHandler, WKNavigationDelegate, N
     var nameVoices: ((URL) -> Void)?
     /// Get better notes, from the page's link on Apple's notes (D-1272).
     var betterNotes: ((URL) -> Void)?
+    var writeNotesAgain: ((URL, Bool) -> Void)?
+    var onClose: (() -> Void)?
+    private var retries: [URL: MeetingNotesRetry.Presentation] = [:]
 
     /// The page's fonts, read once from the app's Resources: Newsreader as data, so the page needs no file access.
     static let fonts: String = {
@@ -37,11 +40,11 @@ final class AfterCall: NSObject, WKScriptMessageHandler, WKNavigationDelegate, N
         return (dir.appendingPathComponent(base + " Me.m4a"), dir.appendingPathComponent(base + " Others.m4a"))
     }
 
-    static func page(for file: URL) -> String? {
+    static func page(for file: URL, retry: MeetingNotesRetry.Presentation = .init()) -> String? {
         guard let text = try? String(contentsOf: file, encoding: .utf8) else { return nil }
         let a = audio(for: file), fm = FileManager.default
         return AfterCallPage.html(AfterCallPage.read(text), sender: sender,
-                                  audio: fm.fileExists(atPath: a.me.path) || fm.fileExists(atPath: a.others.path), fonts: fonts)
+                                  audio: fm.fileExists(atPath: a.me.path) || fm.fileExists(atPath: a.others.path), fonts: fonts, retry: retry)
     }
 
     static func webView(_ handler: (WKScriptMessageHandler & WKNavigationDelegate)?, frame: NSRect) -> WKWebView {
@@ -59,7 +62,7 @@ final class AfterCall: NSObject, WKScriptMessageHandler, WKNavigationDelegate, N
     /// Opens (or brings back) the window for `file`. False when the file can't be read.
     @discardableResult
     func show(_ file: URL) -> Bool {
-        guard let html = Self.page(for: file) else { return false }
+        guard let html = Self.page(for: file, retry: retries[file] ?? .init()) else { return false }
         stop()
         self.file = file
         if window == nil {
@@ -88,9 +91,30 @@ final class AfterCall: NSObject, WKScriptMessageHandler, WKNavigationDelegate, N
     /// The same notes again, after the voices were named.
     func reload() { if let f = file, window?.isVisible == true { show(f) } }
 
-    func windowWillClose(_ notification: Notification) { stop() }
+    /// Update only the page the user left open. Never reopen a dismissed window or replace another meeting's page.
+    func retryStatus(_ state: MeetingNotesRetry.Presentation, for file: URL, refresh: Bool = false) {
+        retries[file] = state
+        guard self.file == file, window?.isVisible == true else { return }
+        if refresh, let html = Self.page(for: file, retry: state) {
+            stop(); web?.loadHTMLString(html, baseURL: nil)
+        } else {
+            let values: [String: Any] = ["message": state.message, "progress": state.progress.map { $0 as Any } ?? NSNull(), "offerClaude": state.offerClaude]
+            if let data = try? JSONSerialization.data(withJSONObject: values), let json = String(data: data, encoding: .utf8) {
+                web?.evaluateJavaScript("window.notesRetry(\(json))")
+            }
+        }
+    }
+
+    func isShowing(_ file: URL) -> Bool { self.file == file && window?.isVisible == true }
+
+    func windowWillClose(_ notification: Notification) { stop(); onClose?() }
 
     // MARK: The page's clicks
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        // An unavailable model can finish before WebKit finishes loading the page. Apply the latest state then too.
+        if let file, let state = retries[file] { retryStatus(state, for: file) }
+    }
 
     func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
         guard let m = message.body as? [String: Any], let act = m["act"] as? String, let file else { return }
@@ -111,6 +135,8 @@ final class AfterCall: NSObject, WKScriptMessageHandler, WKNavigationDelegate, N
             if let url = q.url { NSWorkspace.shared.open(url) }
         case "names": nameVoices?(file)
         case "better": betterNotes?(file)
+        case "retry": writeNotesAgain?(file, false)
+        case "retry-claude": writeNotesAgain?(file, true)
         case "file": NSWorkspace.shared.open(file)
         default: break
         }

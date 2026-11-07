@@ -21,6 +21,7 @@ struct MenuState {
     var meetingStarted: Date?
     var meetingPaused = false
     var notesStatus: String?
+    var needsNotes = false
     var unfinished = 0
     /// Tell people apart in person is on (D-1034), so the menu offers to name them.
     var nameVoices = false
@@ -51,6 +52,7 @@ final class MenuModel: ObservableObject {
     var nameVoices: () -> Void = {}
     /// After the call (D-1126): a meeting's notes, actions first.
     var openNotes: () -> Void = {}
+    var writeNotesAgain: () -> Void = {}
     /// Send a report (D-1034).
     var report: () -> Void = {}
 }
@@ -135,6 +137,7 @@ struct MenuPanel: View {
             }
             action("Copy notice for the meeting chat", model.copyNotice)
             if s.meetingStarted == nil { action("Open meeting notes…", model.openNotes) }
+            if s.needsNotes, s.meetingStarted == nil { action("Write notes again", model.writeNotesAgain).disabled(s.notesStatus != nil) }
             if s.nameVoices, s.meetingStarted == nil { action("Name the voices…", model.nameVoices) }
             if s.unfinished > 0, s.notesStatus == nil {
                 action("Write notes for \(s.unfinished == 1 ? "an unfinished meeting" : "\(s.unfinished) unfinished meetings")…", model.unfinished)

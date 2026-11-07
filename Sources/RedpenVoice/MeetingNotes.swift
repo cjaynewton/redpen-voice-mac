@@ -34,12 +34,13 @@ enum MeetingNotes {
 
     /// Who writes the notes after a meeting (D-1272): the user's own Claude account once they said yes, else Apple's
     /// model on this Mac.
-    enum Writer: String { case apple, claude }
+    typealias Writer = MeetingNotesRetry.Writer
 
     /// Puts notes above the transcript of a saved notes file: Claude's when chosen, with Apple's as the labelled
     /// backup when Claude fails or times out, never notes that look real but aren't (D-1272). Returns a word for the
     /// log and the test, and Claude's reason when it was chosen and didn't write them.
-    static func summarize(_ file: URL, writer: Writer, progress: @escaping (Int, String) -> Void) async -> (note: String, claudeFailed: String?, wrote: Bool, saveFailed: Bool) {
+    static func summarize(_ file: URL, writer: Writer, preserveOnFailure: Bool = false,
+                          progress: @escaping (Int, String) -> Void) async -> MeetingNotesRetry.SummaryResult {
         var label = Meeting.summaryLabel, claudeFailed: String?
         if writer == .claude {
             progress(85, "Writing the notes with Claude…")
@@ -57,6 +58,8 @@ enum MeetingNotes {
         progress(85, "Writing basic notes…")
         let said = Meeting.transcript(inFile: text).components(separatedBy: "\n").filter { $0.hasPrefix("[") }.joined(separator: "\n")
         let section = await MeetingSummary.section(for: said, label: label) { p in progress(85 + p * 14 / 100, "Writing basic notes…") }
+        // A user-requested retry adds notes only when there are some. Keep the original honest line on failure.
+        if preserveOnFailure, section.checked == nil { return (section.note, claudeFailed, false, false) }
         // A failed reread or save is a failed summary, even when the model produced valid notes.
         do {
             let now = try String(contentsOf: file, encoding: .utf8)
