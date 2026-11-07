@@ -1,7 +1,7 @@
 import Foundation
 
 /// Where a finished dictation's words go (D-965, Oct 30 2026). The text box the cursor is in when it finishes takes
-/// them, whichever app, unless some of them already went into a box you then sent or changed (D-998). Not in a text
+/// them, whichever app (D-1297), unless some already went into a box you sent (D-998). Not in a text
 /// box (a web page, a video, a control): nothing is typed there, and the words wait for the next click into one. This
 /// replaced sending the words back to the box you started in.
 public enum DictationEnding {
@@ -12,11 +12,11 @@ public enum DictationEnding {
         /// Moved away, and the first box reads exactly as Voice left it: Voice's words come back out of it, and the
         /// whole checked dictation goes where you are.
         case takeBackThenDeliver
-        /// Nothing of this dictation's typed into the first box yet: the whole checked dictation goes where you are.
+        /// The whole checked dictation goes where you are. Any early words in a changed or unconfirmed first box
+        /// stay there, because taking them back is unsafe (D-1297).
         case deliver
-        /// Words of this dictation are in the first box and it no longer reads as Voice left it: you sent it, edited
-        /// it, or switched conversation (D-998, Oct 31 2026). Those words can't be taken back, so typing the whole
-        /// dictation anywhere would repeat them. Nothing more is typed; Paste last has the checked text.
+        /// Words of this dictation were sent, including a conversation switch read as a send (D-998). Nothing more
+        /// is typed anywhere, so a sent message never repeats in the next chat. Paste last has the checked text.
         case keep
     }
 
@@ -24,11 +24,20 @@ public enum DictationEnding {
     /// `startBoxAsLeft`: that box still reads exactly as Voice left it (same window and conversation, the text Voice
     /// expects, no key of yours typed in it). A key or click elsewhere doesn't change it; an edit or a send does.
     /// `inStartBox`: it is the focused box in the app in front now.
-    public static func plan(typedInStartBox: Bool, startBoxAsLeft: Bool, inStartBox: Bool) -> Plan {
+    public static func plan(typedInStartBox: Bool, startBoxAsLeft: Bool, inStartBox: Bool, sent: Bool = false) -> Plan {
         guard typedInStartBox else { return .deliver }
-        guard startBoxAsLeft else { return .keep }
+        guard !sent else { return .keep }
+        guard startBoxAsLeft else { return .deliver }
         return inStartBox ? .inPlace : .takeBackThenDeliver
     }
+
+    /// Keep D-998's send protection separate from an ordinary edit or unconfirmed Voice fix. A reused composer in
+    /// another conversation is treated as sent too. With a URL, a window-title change alone is not a chat switch.
+    public static func wasSent(start: BoxPrint, now: BoxPrint, value: String?, observedSend: Bool = false) -> Bool {
+        observedSend || start.url != now.url || (start.url == nil && start.title != now.title) || looksSent(value)
+    }
+
+    public static let earlyWordsNote = "A few early words stayed on the other screen."
 
     /// The first box reads as sent: empty, or the one stray character some apps leave.
     public static func looksSent(_ value: String?) -> Bool {
