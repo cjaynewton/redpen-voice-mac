@@ -33,8 +33,11 @@ public enum DictationEnding {
 
     /// Keep D-998's send protection separate from an ordinary edit or unconfirmed Voice fix. A reused composer in
     /// another conversation is treated as sent too. With a URL, a window-title change alone is not a chat switch.
-    public static func wasSent(start: BoxPrint, now: BoxPrint, value: String?, observedSend: Bool = false) -> Bool {
-        observedSend || start.url != now.url || (start.url == nil && start.title != now.title) || looksSent(value)
+    /// `boxGone`: the first box no longer exists (a chat composer unmounted after Send). Its text can't be read, and
+    /// it counts as sent, so the message is never typed again in the next chat (D-998; review of D-1297). A box that
+    /// is still there but unreadable (Voice's own fix unconfirmed) is not a send.
+    public static func wasSent(start: BoxPrint, now: BoxPrint, value: String?, observedSend: Bool = false, boxGone: Bool = false) -> Bool {
+        observedSend || start.url != now.url || (start.url == nil && start.title != now.title) || (value == nil && boxGone) || looksSent(value)
     }
 
     public static let earlyWordsNote = "A few early words stayed on the other screen."

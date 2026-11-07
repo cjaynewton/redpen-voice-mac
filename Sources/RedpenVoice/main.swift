@@ -850,6 +850,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func begin() {
+        // No dictation while a meeting records: the meeting holds the microphone, and a dictation's media pause would
+        // silence the others' side of the recording. Live words never needed this lifted (review, Nov 6 2026).
+        if meeting != nil { hud.flash("Meeting notes are on", for: 1.5); return }
         guard !busy, session == nil, testFile == nil else { return }
         if firstRun?.isOpen == true { firstRun?.keySeen() }
         guard engine.state == .ready, let format = engine.audioFormat else { hud.flash(engineWord == "ready" ? "Not ready" : "Engine " + engineWord); return }
@@ -1646,8 +1649,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func wasSent(_ start: StartBox) -> Bool {
-        DictationEnding.wasSent(start: start.print, now: Self.boxPrint(start.element, withText: false),
-                              value: Insert.value(start.element), observedSend: start.sent)
+        var role: CFTypeRef?
+        let gone = AXUIElementCopyAttributeValue(start.element, kAXRoleAttribute as CFString, &role) != .success
+        return DictationEnding.wasSent(start: start.print, now: Self.boxPrint(start.element, withText: false),
+                                       value: Insert.value(start.element), observedSend: start.sent, boxGone: gone)
     }
 
     /// Some of this dictation went into a box you then sent, edited or left for another conversation (D-998, Oct 31
@@ -1785,6 +1790,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         b.lastDiagnostic = diagnostic
         return failure == nil
+    }
+
+    /// The box you started in, even when the app has rebuilt it (web and Electron composers do after a key): the same
+    /// window, place and kind, whatever its text now. An exact element match alone missed those (review of D-1297).
+    private func sameBoxIgnoringText(_ b: StartBox, _ element: AXUIElement) -> Bool {
+        if CFEqual(element, b.element) { return true }
+        let now = Self.boxPrint(element, withText: false)
+        let sameWindow = b.window.flatMap { old in Self.boxWindow(element).map { CFEqual(old, $0) } } ?? false
+        return BoxMatch.failure(start: b.print, now: now, nowText: b.print.text, sameElement: false, sameWindow: sameWindow, userEdited: false) == nil
     }
 
     private func isAt(_ b: StartBox) -> Bool {
@@ -2116,13 +2130,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 } else if movedAwayNewer {
                     Log.note("insert: away from the box you started in and a new press began, kept for paste")
                 } else if let b = typedBox, NSWorkspace.shared.frontmostApplication?.processIdentifier == b.pid,
-                          let (now, _) = Insert.focusedElement(), CFEqual(now, b.element) {
+                          let (now, _) = Insert.focusedElement(), self.sameBoxIgnoringText(b, now) {
                     // Back in the box you started in before its words came out: the whole dictation there would repeat
                     // them, and a send in between already took them (D-998). Paste last has the checked text.
                     if !newer { self.keptAfterChange(b, typed: typedText.isEmpty ? (myDrafting?.runs.map(\.text).joined() ?? "") : typedText, checked: text) }
                     else { Log.note("insert: back in the box you started in and a new press began, kept for paste") }
                 } else if !DictationEnding.typesNow(kind: focus.kind, ownWindow: Insert.ownWindowInFront) {
                     if newer { Log.note("insert: cursor not in a text box (\(focus.role)) and a new press began, kept for paste") }
+                    else if let b = typedBox, takeBack == nil {
+                        // Early words stayed in the first box and nothing can take them back: waiting for a click would
+                        // type the whole dictation after them if that click is back in the first box. Paste last has it.
+                        self.keptAfterChange(b, typed: typedText.isEmpty ? (myDrafting?.runs.map(\.text).joined() ?? "") : typedText, checked: text)
+                        Log.note("insert: cursor not in a text box and early words stayed in the first box, kept for paste")
+                    }
                     else if !rest.isEmpty {
                         Log.note("insert: cursor not in a text box (\(focus.role)), waiting for a click"); self.holdForClick(rest, long: long)
                         if let takeBack { _ = takeBack() }
@@ -2630,7 +2650,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             meetingBar.showWriting(0, "Writing notes…")
             // The mic again as dictation wants it: any change made during the meeting (the mic, the Mac's input, the
             // engine's format) waited for it to end.
-            if session == nil, writing == 0 { warmMic() }
+            warmMic()
             notesQueue.append(work)
             writeNextNotes()
             return

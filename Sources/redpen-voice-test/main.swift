@@ -1955,6 +1955,10 @@ do {
           && Meeting.withoutUnsaidDates("Send the deck by Friday.", around: 0, in: nextSentence) == "Send the deck by Friday.")
     check("lockin.namesJoined", Meeting.unknownNames("Donations go through CanadaHelps. The CI pipeline runs.", transcript: "[00:01] Others: on CanadaHelps.org and our CI/CD") == []
           && Meeting.unknownNames("Tickets go through Ticketmaster.", transcript: "[00:01] Others: tickets online") == ["Ticketmaster"])
+    let sentPrint = BoxPrint(role: "AXTextArea", identifier: nil, frame: nil, text: "hi", title: "Chat", url: "https://chat.example/1")
+    check("d1297.goneIsSent", DictationEnding.wasSent(start: sentPrint, now: sentPrint, value: nil, boxGone: true)
+          && !DictationEnding.wasSent(start: sentPrint, now: sentPrint, value: nil)
+          && !DictationEnding.wasSent(start: sentPrint, now: sentPrint, value: "hi there, edited"))
     check("review.byEmail", Meeting.todoMark("Send the file (by email)") == ("Send the file (by email)", nil, false) && Meeting.todoMark("Send it (by Friday)") == ("Send it", "Friday", false))
     check("steps.markPlain", Meeting.todoMark("Book the room (10:30)") == ("Book the room (10:30)", nil, false) && Meeting.todoMark("Ship it (critical)") == ("Ship it", nil, true))
     let renamed = Meeting.renaming([(Speaker(rawValue: "Marco"), "Marc")], in: "## Summary\n\n### To-dos\n\n- " + Meeting.todoLine(rc.summary.todos[0]) + " [16:00]\n\n## Transcript\n\n" + room)
