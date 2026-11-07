@@ -149,24 +149,10 @@ enum LiveWordsTest {
         }
     }
 
-    /// The real mic handoff, with synthetic PCM and no AVCaptureSession. Dictation stop must leave the meeting on.
+    /// The setting and the priority lease. (The separate meeting mic feed was taken back out: no dictation during a meeting.)
     private static func captureChecks() -> Bool {
-        let recorder = Recorder()
-        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
-        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 480)!
-        buffer.frameLength = 480
-        buffer.floatChannelData![0].initialize(repeating: 0.1, count: 480)
-        var meeting = 0, dictation = 0, checks = 0, failures = 0
+        var checks = 0, failures = 0
         func check(_ ok: Bool) { checks += 1; if !ok { failures += 1 } }
-        recorder.beginMeeting { meeting += Int($0.frameLength) }
-        recorder.receive(buffer); check(meeting == 480 && dictation == 0)
-        recorder.begin(onBuffer: { dictation += Int($0.frameLength) }, onLevel: { _ in })
-        recorder.receive(buffer); check(meeting == 960 && dictation == 480)
-        recorder.end(); recorder.receive(buffer); check(meeting == 1_440 && dictation == 480)
-        recorder.begin(onBuffer: { dictation += Int($0.frameLength) }, onLevel: { _ in })
-        recorder.endMeeting(); recorder.receive(buffer); check(meeting == 1_440 && dictation == 960)
-        recorder.end(); recorder.receive(buffer); check(meeting == 1_440 && dictation == 960)
-        check(!recorder.isRunning)
         var config = Config(); config.liveWords = true
         check(config.meetingLiveWords != true && config.whileTalking == .box)
         config.meetingLiveWords = false

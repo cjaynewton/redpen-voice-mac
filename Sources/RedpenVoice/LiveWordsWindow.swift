@@ -110,7 +110,8 @@ final class LiveWordsWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
         window?.contentView = nil
         window?.delegate = nil; window?.close(); window = nil
     }
-    func windowWillClose(_ notification: Notification) { onClose() }
+    /// Closed by the user: let go of the window first, so clearing up never closes it a second time from inside here.
+    func windowWillClose(_ notification: Notification) { window?.delegate = nil; window = nil; onClose() }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard web === webView else { return }
         loaded = true; send(); onReady?()

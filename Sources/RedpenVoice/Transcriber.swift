@@ -222,13 +222,14 @@ final class Transcriber {
         } catch { Log.note("engine: draft engine failed \(error.localizedDescription), Whisper alone") }
     }
 
-    static func parakeetText(_ p: AsrManager, _ audio: [Float]) async throws -> String {
+    /// `log: false` for live words, which run every second or two and would fill the 1 MB log in a few meetings.
+    static func parakeetText(_ p: AsrManager, _ audio: [Float], log: Bool = true) async throws -> String {
         guard audio.count > 1600 else { return "" }
         let peak = audio.map { abs($0) }.max() ?? 0
         var state = TdtDecoderState.make(decoderLayers: await p.decoderLayerCount)
         let t = Date()
         let r = try await p.transcribe(audio, decoderState: &state)
-        Log.note("engine job: \(String(format: "%.1f", Double(audio.count) / 16000))s audio, parakeet \(Log.ms(Date().timeIntervalSince(t)))ms")
+        if log { Log.note("engine job: \(String(format: "%.1f", Double(audio.count) / 16000))s audio, parakeet \(Log.ms(Date().timeIntervalSince(t)))ms") }
         return Silence.clean(r.text, peak: peak)
     }
 

@@ -18,8 +18,6 @@ final class Recorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     private var ringFrames: AVAudioFrameCount = 0
     private var preRollFrames: AVAudioFrameCount = 0
     private var live: ((AVAudioPCMBuffer) -> Void)?
-    /// The meeting has its own feed. Starting or ending a dictation never detaches the recording.
-    private var meetingFeed: ((AVAudioPCMBuffer) -> Void)?
     /// The level while nobody is talking, for the first window's microphone check. Called on the mic queue.
     private var watcher: ((Float) -> Void)?
     func watchLevel(_ f: ((Float) -> Void)?) { lock.lock(); watcher = f; lock.unlock() }
@@ -70,24 +68,18 @@ final class Recorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput, didOutput sb: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard let target, let (buf, ch) = Recorder.pcm(sb, format: target, channels: channels) else { return }
         if firstBuffer { firstBuffer = false; Log.note("mic: first buffer \(buf.frameLength) frames, reading channel \(ch + 1) of \(channels)") }
-        receive(buf)
-    }
-
-    /// Already formatted PCM. The passive test calls this same handoff without opening capture.
-    func receive(_ buf: AVAudioPCMBuffer) {
+        if let level { level(Recorder.loudness(buf)) }
+        lock.lock(); let watching = watcher; lock.unlock()
+        watching?(Recorder.loudness(buf))
         lock.lock()
-        let talking = live, meeting = meetingFeed, watching = watcher, meter = level
-        if talking != nil {
+        if let live {
             pushedFrames += buf.frameLength
             peak = max(peak, Recorder.peak(buf))
-        } else {
-            ring.append(buf); ringFrames += buf.frameLength
-            while ringFrames > preRollFrames, let first = ring.first { ring.removeFirst(); ringFrames -= first.frameLength }
+            lock.unlock(); live(buf); return
         }
+        ring.append(buf); ringFrames += buf.frameLength
+        while ringFrames > preRollFrames, let first = ring.first { ring.removeFirst(); ringFrames -= first.frameLength }
         lock.unlock()
-        meeting?(buf)
-        talking?(buf)
-        if meter != nil || watching != nil { let v = Recorder.loudness(buf); meter?(v); watching?(v) }
     }
 
     /// The key went down: hand over the pre-roll, then everything live. Returns the pre-roll's length in frames.
@@ -98,32 +90,22 @@ final class Recorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
         live = onBuffer
         let preFrames = pre.reduce(0) { $0 + $1.frameLength }
         pushedFrames = preFrames; peak = pre.reduce(0) { max($0, Recorder.peak($1)) }
+        lock.unlock()
         level = onLevel
         for b in pre { onBuffer(b) }
-        lock.unlock()
         return preFrames
     }
 
-    /// A separate meeting feed, sharing the same warm microphone and its pre-roll.
-    @discardableResult
-    func beginMeeting(onBuffer: @escaping (AVAudioPCMBuffer) -> Void) -> AVAudioFrameCount {
-        lock.withLock {
-            meetingFeed = onBuffer
-            for buffer in ring { onBuffer(buffer) }
-            return ringFrames
-        }
-    }
-    func endMeeting() { lock.withLock { meetingFeed = nil } }
-
     /// The key came up: stop handing audio over. Capture keeps running for next time.
     func end() {
-        lock.withLock { live = nil; level = nil }
+        lock.lock(); live = nil; lock.unlock()
+        level = nil
     }
 
     func stopEngine() {
         session?.stopRunning()
         session = nil
-        lock.withLock { ring.removeAll(); ringFrames = 0; live = nil; level = nil; meetingFeed = nil }
+        lock.lock(); ring.removeAll(); ringFrames = 0; live = nil; lock.unlock()
     }
 
     /// Copies the louder of the first two captured channels into a PCM buffer of the engine's format.

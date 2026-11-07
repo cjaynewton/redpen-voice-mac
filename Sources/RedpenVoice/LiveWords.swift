@@ -25,18 +25,19 @@ actor LiveWordsEngine {
         catch { loading = nil; throw error }
     }
 
+    /// Lets the live model go after a meeting, so its memory isn't held until Voice quits. Loaded again next time.
+    func unload() { loading = nil }
+
     func text(_ audio: [Float], control: LiveWordsControl) async throws -> String {
         let manager = try await load()
         try await gate.acquire()
         do {
             while true {
                 let epoch = try await control.wait()
-                let start = Date()
-                let result = try await Transcriber.parakeetText(manager, audio)
+                let result = try await Transcriber.parakeetText(manager, audio, log: false)
                 try Task.checkCancellation()
                 // If a dictation arrived during prediction, let it finish and then reread this same piece.
                 if LiveWordsPriority.shared.isCurrent(epoch), !control.paused {
-                    Log.note("live words: job \(Log.ms(Date().timeIntervalSince(start)))ms, \(audio.count) samples")
                     await gate.release()
                     return result
                 }
@@ -80,13 +81,17 @@ enum LiveWordsRunner {
         var segmenters = Dictionary(uniqueKeysWithValues: LiveWordsTrack.allCases.map {
             ($0, LiveWordsSegmenter(startSample: starts[$0] ?? 0))
         })
-        var ended: Set<LiveWordsTrack> = []
+        var ended: Set<LiveWordsTrack> = [], failures = 0
         while ended.count < LiveWordsTrack.allCases.count {
             _ = try await control.wait()
             var received = false
             for track in LiveWordsTrack.allCases where !ended.contains(track) {
                 _ = try await control.wait()
-                let input = try await next(track, 1_600)
+                // A read that fails (the file mid-write) is tried again next turn, not the end of live words.
+                let input: LiveWordsAudio
+                do { input = try await next(track, 1_600) }
+                catch is CancellationError { throw CancellationError() }
+                catch { failures += 1; if failures == 1 || failures % 20 == 0 { Log.note("live words: \(failures) pieces skipped") }; continue }
                 received = received || !input.samples.isEmpty
                 var pieces = segmenters[track]!.push(input.samples)
                 if input.ended {
@@ -95,7 +100,11 @@ enum LiveWordsRunner {
                 } else if let preview = segmenters[track]!.preview() { pieces.append(preview) }
                 onBuffer(segmenters.values.reduce(0) { $0 + $1.bufferedSamples } + pieces.reduce(0) { $0 + $1.audio.count })
                 for piece in pieces {
-                    let text = try await LiveWordsEngine.shared.text(piece.audio, control: control)
+                    // One piece the engine can't read is skipped, not the rest of the meeting (review, Nov 6 2026).
+                    let text: String
+                    do { text = try await LiveWordsEngine.shared.text(piece.audio, control: control) }
+                    catch is CancellationError { throw CancellationError() }
+                    catch { failures += 1; if failures == 1 || failures % 20 == 0 { Log.note("live words: \(failures) pieces skipped") }; continue }
                     _ = try await control.wait()
                     await onLine(LiveWordsLine(track: track, id: piece.id, start: input.offset + piece.start,
                                               end: input.offset + piece.speechEnd, text: text, final: piece.final))
@@ -185,6 +194,15 @@ final class LiveWords {
 
     func stop() {
         generation += 1
+        // The live model goes a minute after the last meeting with live words, unless another one starts.
+        if work != nil {
+            let after = generation
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(60))
+                guard let self, self.generation == after, self.work == nil else { return }
+                await LiveWordsEngine.shared.unload()
+            }
+        }
         control?.cancel(); control = nil
         work?.cancel(); work = nil
         clock?.invalidate(); clock = nil
