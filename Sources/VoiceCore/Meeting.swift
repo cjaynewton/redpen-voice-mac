@@ -460,7 +460,9 @@ public enum Meeting {
     public static func unknownNames(_ summary: String, transcript: String) -> [String] {
         // "Hogan's" and "IDs" in either text are Hogan and ID.
         let plain = { (k: String) in k.count > 2 && k.hasSuffix("s") ? String(k.dropLast()) : k }
-        let said = Set(keys(transcript).flatMap { [$0, plain($0)] })
+        // Word parts too, split at . / - and the like: "CanadaHelps.org" says CanadaHelps, "CI/CD" says CI.
+        let parts = transcript.lowercased().split { !($0.isLetter || $0.isNumber) }.map(String.init)
+        let said = Set((keys(transcript) + parts).flatMap { [$0, plain($0)] })
         let known: Set<String> = ["me", "others", "i", "not", "clear", "am", "pm"]
         var seen = Set<String>(), out: [String] = []
         for sentence in summary.components(separatedBy: CharacterSet(charactersIn: ".!?:\n")) {

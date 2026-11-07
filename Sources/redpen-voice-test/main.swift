@@ -1900,6 +1900,8 @@ do {
     let nextSentence = Meeting.said("[00:01] Me: I'll send the deck. I can get it to you by Friday.")
     check("review3.nextSentenceDate", Meeting.deadline(around: 0, in: nextSentence, task: "Send the deck.") == "Friday"
           && Meeting.withoutUnsaidDates("Send the deck by Friday.", around: 0, in: nextSentence) == "Send the deck by Friday.")
+    check("lockin.namesJoined", Meeting.unknownNames("Donations go through CanadaHelps. The CI pipeline runs.", transcript: "[00:01] Others: on CanadaHelps.org and our CI/CD") == []
+          && Meeting.unknownNames("Tickets go through Ticketmaster.", transcript: "[00:01] Others: tickets online") == ["Ticketmaster"])
     check("review.byEmail", Meeting.todoMark("Send the file (by email)") == ("Send the file (by email)", nil, false) && Meeting.todoMark("Send it (by Friday)") == ("Send it", "Friday", false))
     check("steps.markPlain", Meeting.todoMark("Book the room (10:30)") == ("Book the room (10:30)", nil, false) && Meeting.todoMark("Ship it (critical)") == ("Ship it", nil, true))
     let renamed = Meeting.renaming([(Speaker(rawValue: "Marco"), "Marc")], in: "## Summary\n\n### To-dos\n\n- " + Meeting.todoLine(rc.summary.todos[0]) + " [16:00]\n\n## Transcript\n\n" + room)
