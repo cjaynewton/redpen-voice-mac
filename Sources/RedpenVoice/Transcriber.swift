@@ -611,6 +611,9 @@ final class Transcriber {
             feed = c
         }
 
+        /// Live meeting work yields from the first audio through the ending, including overlapping dictations.
+        private let liveWordsLease = LiveWordsPriority.shared.begin()
+
         /// Starts the Instant engine for this dictation. It waits for a dictation still finishing (about 0.03 s), then
         /// catches up from this one's saved audio, so nothing is lost. Like Whisper's pieces, it waits while Voice
         /// decides whether a video was playing, so the video's words are never written.
@@ -759,6 +762,7 @@ final class Transcriber {
         /// Ends the audio and waits for the last words. Never longer than ten seconds: a stuck engine is cancelled
         /// and whatever it had is returned, so the app never hangs on "Writing".
         func finish() async throws -> String {
+            defer { liveWordsLease.end() }
             feed.finish()
             if let parakeet {
                 while !settledForLoops { try? await Task.sleep(for: .milliseconds(20)) }
@@ -842,6 +846,7 @@ final class Transcriber {
         }
 
         func cancel() {
+            liveWordsLease.end()
             onPiece = nil; onDraft = nil; onCheck = nil; onPartial = nil
             lock.withLock { cancelled = true; liveNap?.cancel() }
             draftLoop?.cancel()
@@ -914,6 +919,37 @@ final class Transcriber {
         let text = try await s.finish()
         finished = true
         return (Log.ms(Date().timeIntervalSince(t)), text)
+    }
+
+    /// Passive dictation timing, using the normal session and release wait without touching another app's text.
+    func liveWordsDictationProbe(_ audio: [Float], config: Config) async throws -> (engine: Int, done: Int, words: Int) {
+        let (s, module) = session(config)
+        defer { s.cancel() }
+        s.start(module: module, vocabulary: [])
+        if config.engine == "whisper" {
+            if config.draftMode == true { s.streamDrafts() }
+            s.stream(Chunker())
+        }
+        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
+        let input = audio + [Float](repeating: 0, count: 12_800)
+        var i = 0
+        while i < input.count {
+            try Task.checkCancellation()
+            let n = min(1_600, input.count - i)
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(n))!
+            buffer.frameLength = AVAudioFrameCount(n)
+            input.withUnsafeBufferPointer { buffer.floatChannelData![0].update(from: $0.baseAddress! + i, count: n) }
+            s.push(buffer); i += n
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        let released = Date()
+        try await Task.sleep(for: .milliseconds(s.endedQuiet ? 100 : 500))
+        let begin = Date()
+        let text = try await s.finish()
+        let engine = Log.ms(Date().timeIntervalSince(begin)), done = Log.ms(Date().timeIntervalSince(released))
+        let words = text.split(whereSeparator: \.isWhitespace).count
+        Log.note("live words dictation probe: engine \(engine)ms, key up to done \(done)ms, \(words) words")
+        return (engine, done, words)
     }
 
     /// Speed test: one clip, five times warm, then again after `idle` seconds doing nothing. Timings go to the log.

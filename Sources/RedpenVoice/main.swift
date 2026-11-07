@@ -39,6 +39,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastSaid: Entry?
     private var settings: SettingsWindow?
     private var session: Transcriber.Session?
+    /// Keep live meeting work waiting through insertion too, after the engine's own lease has ended.
+    private var liveWordsDictation: LiveWordsPriority.Lease?
     private var startedAt = Date()
     /// The engine the dictation in progress started with, for its day's numbers (D-837).
     private var sessionEngine = "dictation"
@@ -78,6 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var notesStatus: String?
     /// The meeting control on screen (D-957), and its two shortcuts, held only while a meeting records.
     private let meetingBar = MeetingBar()
+    private let liveWords = LiveWords()
     private var meetingBarReady = false
     /// The newest notes written, for the bar's Better summary button (D-956).
     private var lastNotes: URL?
@@ -85,6 +88,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pauseMeetingKey: Shortcut?
 
     func applicationDidFinishLaunching(_ n: Notification) {
+        // Test modes return before settings, microphone, menus, updates, recovery, or any provider can start.
+        if let i = CommandLine.arguments.firstIndex(of: "--live-words-shot"), i + 1 < CommandLine.arguments.count {
+            let width = CommandLine.arguments.firstIndex(of: "--width").flatMap { $0 + 1 < CommandLine.arguments.count ? Double(CommandLine.arguments[$0 + 1]) : nil } ?? 700
+            LiveWordsWindow.shot(to: CommandLine.arguments[i + 1], width: width, paused: CommandLine.arguments.contains("--paused"), downloading: CommandLine.arguments.contains("--downloading"))
+            return
+        }
+        if let i = CommandLine.arguments.firstIndex(of: "--live-words-test") {
+            let args = Array(CommandLine.arguments[(i + 1)...].prefix { !$0.hasPrefix("--") })
+            Task { exit(await LiveWordsTest.run(args)) }
+            return
+        }
         mediaPauseMonitor.onPlaybackResumed = { [weak self] peak in
             guard let self, self.mediaPause.relinquishIfPlaying(peak: peak) else { return }
             self.mediaPauseMonitor.stop()
@@ -739,6 +753,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Quit asked while you are talking: finish the dictation and write the words first, then go.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         // A meeting being recorded is closed off on disk; the next launch offers to write its notes.
+        liveWords.stop()
         if let m = meeting { _ = m.stop(); meeting = nil; Log.note("meeting: quit mid-meeting, the recording is kept for the next launch") }
         guard session != nil else {
             // Words still being written are dropped on quit; the video they paused is put back.
@@ -833,11 +848,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func begin() {
-        if meeting != nil { hud.flash("Meeting notes are on", for: 1.5); return }
         guard !busy, session == nil, testFile == nil else { return }
         if firstRun?.isOpen == true { firstRun?.keySeen() }
         guard engine.state == .ready, let format = engine.audioFormat else { hud.flash(engineWord == "ready" ? "Not ready" : "Engine " + engineWord); return }
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { hud.flash("Allow the microphone"); return }
+        liveWordsDictation = LiveWordsPriority.shared.begin()
         remicIfDefaultMoved(reason: "input moved before this press")
         suggestionWork?.cancel(); hud.hideSuggestion()
         if waitingText != nil { stopWaiting(); hud.hide(); Log.note("insert: new press, the waiting words stay for paste") }
@@ -963,7 +978,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if config.sounds { NSSound(named: "Pop")?.play() }
         if recorder.inputName.isEmpty {
             do { try recorder.start(format: format) } catch {
-                Log.note("mic failed: \(error.localizedDescription)"); hud.flash("No microphone"); session = nil; deliveries.cancel(); busy = false; return
+                Log.note("mic failed: \(error.localizedDescription)"); hud.flash("No microphone"); session = nil; liveWordsDictation?.end(); liveWordsDictation = nil; deliveries.cancel(); busy = false; return
             }
         }
         // The engine is listening before the pre-roll arrives, so nothing waits in a queue.
@@ -1027,6 +1042,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settleWork?.cancel()
         recorder.end()
         s.cancel()
+        liveWordsDictation?.end(); liveWordsDictation = nil
         let ignoredTap = deliveries.cancel()
         if ignoredTap, let (d, checks, drafts) = interruptedDrafting, finishingDrafting === d {
             d.checksStopped = checks; d.draftsStopped = drafts
@@ -1119,6 +1135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settleWork?.cancel()
         recorder.end()
         s.cancel()
+        liveWordsDictation?.end(); liveWordsDictation = nil
         _ = deliveries.cancel()
         interruptedDrafting = nil
         var left = false
@@ -1955,11 +1972,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lastEndingLong = (long, seconds)
         refreshEnterArm()
         let releasedAt = Date()
+        let liveWordsLease = liveWordsDictation
+        liveWordsDictation = nil
         let handsFree = wasHandsFree
         wasHandsFree = false
         // The engine this dictation started with, for its day's numbers, even if Settings changes it before it's written.
         let engineName = sessionEngine
         Task { [weak self] in
+            defer { liveWordsLease?.end() }
             guard let self else { return }
             // More audio after the key comes up, for a last syllable still in the air: half a second, or a tenth
             // when you had already gone quiet (Whisper), which saves most of that wait on every dictation.
@@ -2392,6 +2412,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         meetingBar.dictating = { [weak self] in guard let self else { return false }; return self.session != nil || self.writing > 0 }
         meetingBar.onStop = { [weak self] in if self?.meeting != nil { self?.toggleMeeting() } }
         meetingBar.onPause = { [weak self] in self?.togglePause() }
+        meetingBar.liveWordsOn = { [weak self] in self?.config.meetingLiveWords == true }
+        meetingBar.onLiveWords = { [weak self] in self?.toggleLiveWords() }
+        liveWords.onClose = { [weak self] in self?.setLiveWords(false) }
         meetingBar.onAllow = { SystemSettingsLink.systemAudio.open { NSWorkspace.shared.open($0) } }
         meetingBar.onBetter = { [weak self] h in self?.betterSummary(with: h) }
     }
@@ -2561,12 +2584,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func togglePause() {
         guard let m = meeting else { return }
         if m.isPaused { m.resume() } else { m.pause() }
+        liveWords.pause(m.isPaused)
         refreshMenu()
+    }
+
+    private func toggleLiveWords() { setLiveWords(config.meetingLiveWords != true) }
+    private func setLiveWords(_ on: Bool) {
+        var c = Config.load(); c.meetingLiveWords = on; c.save()
+        config.meetingLiveWords = on; syncSettings()
+        if on, let meeting { liveWords.start(meeting) } else { liveWords.stop() }
     }
 
     private func toggleMeeting() {
         setUpMeetingBar()
         if let m = meeting {
+            liveWords.stop()
             let work = m.stop()
             meeting = nil
             stopMeetingKey = nil; pauseMeetingKey = nil
@@ -2574,7 +2606,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             meetingBar.showWriting(0, "Writing notes…")
             // The mic again as dictation wants it: any change made during the meeting (the mic, the Mac's input, the
             // engine's format) waited for it to end.
-            warmMic()
+            if session == nil, writing == 0 { warmMic() }
             notesQueue.append(work)
             writeNextNotes()
             return
@@ -2593,6 +2625,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             meeting = m
             setIcon()
             meetingBar.showRecording()
+            if config.meetingLiveWords == true { liveWords.start(m) }
             // Held only while a meeting records, so the rest of the time these keys belong to other apps.
             stopMeetingKey = Shortcut(id: 10, keyCode: kVK_ANSI_M, name: "Control-Option-M") { [weak self] in if self?.meeting != nil { self?.toggleMeeting() } }
             pauseMeetingKey = Shortcut(id: 11, keyCode: kVK_ANSI_P, name: "Control-Option-P") { [weak self] in self?.togglePause() }

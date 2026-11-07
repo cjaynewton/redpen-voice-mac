@@ -19,6 +19,8 @@ final class MeetingBar: NSObject {
     var dictating: () -> Bool = { false }
     var onStop: () -> Void = {}
     var onPause: () -> Void = {}
+    var onLiveWords: () -> Void = {}
+    var liveWordsOn: () -> Bool = { false }
     var onAllow: () -> Void = {}
     /// Better summary clicked, with the helper the button named.
     var onBetter: (String) -> Void = { _ in }
@@ -34,6 +36,7 @@ final class MeetingBar: NSObject {
     private let warn = NSTextField(labelWithString: "No sound from the Mac")
     private let allow = NSButton(title: "Allow it", target: nil, action: nil)
     private let pause = NSButton(title: "Pause", target: nil, action: nil)
+    private let liveWords = NSButton(title: "Live words", target: nil, action: nil)
     private let stop = NSButton(title: "Stop", target: nil, action: nil)
     private let better = NSButton(title: "Better summary", target: nil, action: nil)
     private let notNow = NSButton(title: "Not now", target: nil, action: nil)
@@ -104,6 +107,11 @@ final class MeetingBar: NSObject {
         pause.layer?.borderColor = NSColor(white: 1, alpha: 0.30).cgColor
         pause.layer?.borderWidth = 1
         pause.toolTip = "Pause: nothing is recorded until you resume (⌃⌥P)"
+        liveWords.isBordered = false
+        liveWords.font = NSFont.systemFont(ofSize: 12.5, weight: .medium)
+        liveWords.target = self; liveWords.action = #selector(liveWordsTapped)
+        liveWords.toolTip = "Show this meeting's words. Hidden from screen sharing."
+        liveWords.setAccessibilityLabel("Live words")
         better.layer?.backgroundColor = NSColor(white: 1, alpha: 0.10).cgColor
         better.layer?.borderColor = NSColor(white: 1, alpha: 0.30).cgColor
         better.layer?.borderWidth = 1
@@ -120,7 +128,7 @@ final class MeetingBar: NSObject {
         progress.addSubview(progressFill)
         tick.font = NSFont.systemFont(ofSize: 14, weight: .semibold)
         tick.textColor = NSColor(srgbRed: 0.3, green: 0.77, blue: 0.43, alpha: 1)
-        for v in [rec, time, pausedLabel, sep1, meBars, meLabel, othersBars, othersLabel, warn, allow, sep2, pause, stop, message, progress, tick, better, notNow] as [NSView] {
+        for v in [rec, time, pausedLabel, sep1, meBars, meLabel, othersBars, othersLabel, warn, allow, sep2, liveWords, pause, stop, message, progress, tick, better, notNow] as [NSView] {
             box.addSubview(v)
         }
         NotificationCenter.default.addObserver(self, selector: #selector(moved), name: NSWindow.didMoveNotification, object: panel)
@@ -199,7 +207,7 @@ final class MeetingBar: NSObject {
     private func layout(_ now: Now?) {
         let h: CGFloat = 40
         var x: CGFloat = 14
-        let all: [NSView] = [rec, time, pausedLabel, sep1, meBars, meLabel, othersBars, othersLabel, warn, allow, sep2, pause, stop, message, progress, tick, better, notNow]
+        let all: [NSView] = [rec, time, pausedLabel, sep1, meBars, meLabel, othersBars, othersLabel, warn, allow, sep2, liveWords, pause, stop, message, progress, tick, better, notNow]
         var visible: [NSView] = []
         func put(_ v: NSView, _ w: CGFloat, _ vh: CGFloat, gap: CGFloat = 10) {
             v.frame = NSRect(x: x, y: ((h - vh) / 2).rounded(), width: w, height: vh); x += w + gap; visible.append(v)
@@ -252,6 +260,10 @@ final class MeetingBar: NSObject {
             pause.attributedTitle = NSAttributedString(string: now.paused ? "Resume" : "Pause",
                                                        attributes: [.foregroundColor: Self.text, .font: NSFont.systemFont(ofSize: 12.5, weight: .medium)])
             pause.toolTip = now.paused ? "Resume recording (⌃⌥P)" : "Pause: nothing is recorded until you resume (⌃⌥P)"
+            liveWords.contentTintColor = liveWordsOn() ? Self.red : Self.text
+            liveWords.state = liveWordsOn() ? .on : .off
+            liveWords.setAccessibilityValue(liveWordsOn() ? "On" : "Off")
+            button(liveWords, padding: 10)
             button(pause)
             button(stop, gap: 8)
         case .writing(let pct, let words):
@@ -316,6 +328,7 @@ final class MeetingBar: NSObject {
     @objc private func toggleFold() { guard mode == .recording else { return }; folded.toggle(); refresh() }
     @objc private func stopTapped() { onStop() }
     @objc private func pauseTapped() { onPause() }
+    @objc private func liveWordsTapped() { onLiveWords() }
     @objc private func allowTapped() { onAllow() }
     @objc private func betterTapped() { if case .offer(let h) = mode { onBetter(h) } }
     @objc private func notNowTapped() { hide() }

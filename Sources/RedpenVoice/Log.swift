@@ -7,7 +7,8 @@ enum Log {
     static func int(_ x: Double) -> Int { x.isFinite ? Int(max(-1e12, min(1e12, x))) : -1 }
     static func ms(_ seconds: Double) -> Int { int(seconds * 1000) }
 
-    static let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/RedpenVoice.log")
+    static let url = ProcessInfo.processInfo.environment["REDPEN_VOICE_TEST_LOG"].map { URL(fileURLWithPath: $0) }
+        ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/RedpenVoice.log")
     static let cap = 1_000_000
     nonisolated(unsafe) static var written = 0
 

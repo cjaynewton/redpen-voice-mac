@@ -319,7 +319,7 @@ final class MeetingRecording {
         // its length, after however long the tap took to start.
         let rate = recorder.format?.sampleRate ?? Double(MeetingManifest.rate)
         let handed = Date()
-        let pre = Double(recorder.begin(onBuffer: { [me] in me.write($0) }, onLevel: { _ in })) / rate
+        let pre = Double(recorder.beginMeeting(onBuffer: { [me] in me.write($0) })) / rate
         manifest.meOffset = handed.timeIntervalSince(started) - pre
         saveManifest()
         Log.note("meeting: recording, mic \(recorder.inputName), pre-roll \(String(format: "%.2f", pre))s, Mac sound \(tapOK ? "on" : "off")")
@@ -330,7 +330,7 @@ final class MeetingRecording {
 
     /// Stops both tracks, flushes them to disk and marks the meeting stopped. Returns the folder to write notes from.
     func stop() -> URL {
-        recorder.end()
+        recorder.endMeeting()
         tap.stop()
         me.close(); others.close()
         manifest.savingStopped = saving.stopped
@@ -380,4 +380,10 @@ final class MeetingRecording {
     }
     /// Nothing at all heard from the Mac so far: most likely the system audio permission is off.
     var macSilent: Bool { others.peak == 0 }
+
+    /// Successful frames only. Live words reads these existing files, without making any new audio or text file.
+    var liveWordsTracks: [LiveWordsTrack: LiveWordsPCMSource.Track] {
+        [.me: .init(url: me.url, frames: me.frames, offset: manifest.meOffset),
+         .others: .init(url: others.url, frames: others.frames, offset: manifest.othersOffset)]
+    }
 }

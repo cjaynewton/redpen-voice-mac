@@ -60,6 +60,8 @@ struct Config: Codable {
     var meetingsFolder: String?
     /// Keep each meeting's audio beside its notes, one file for you and one for the others. On when missing.
     var keepMeetingAudio: Bool?
+    /// Live words for meetings (D-1290), off when missing. `liveWords` above is the legacy dictation choice.
+    var meetingLiveWords: Bool?
     /// The first meeting's tip about telling people has been shown.
     var meetingTipShown: Bool?
     /// Better summary (D-956, D-1012): "claude", "chatgpt", "gemini" or "cursor" through the user's own plan,
