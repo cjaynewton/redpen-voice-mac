@@ -130,11 +130,11 @@ final class Calls: @unchecked Sendable {
             check("known opening remains deliverable", !s.echoFailed)
             if speakers {
                 check("real speaker pre-roll trimmed", s.recorded.prefix(7200).allSatisfy { $0 == 0 })
-                check("last 150 ms of pre-roll retained", Array(s.recorded[7200..<9600]) == Array(original[7200..<9600]))
+                check("all pre-key video removed", s.recorded.prefix(9600).allSatisfy { $0 == 0 })
             } else { check("real headphone pre-roll untouched", s.recorded == original) }
             var expectedAudio = original
             if speakers {
-                for i in 0..<7200 { expectedAudio[i] = 0 }
+                for i in 0..<9600 { expectedAudio[i] = 0 }
                 for i in video.indices { expectedAudio[i + 9600] -= video[i] * 0.7 }
             }
             let error = zip(s.recorded, expectedAudio).reduce(Float(0)) { $0 + ($1.0 - $1.1) * ($1.0 - $1.1) } / Float(original.count)
@@ -165,7 +165,7 @@ final class Calls: @unchecked Sendable {
         check("real first check cleaned", calls.lock.withLock { calls.checks.first == "My first words stay" })
         s.cancel()
 
-        // Only the unreferenced acoustic gap after key-down still abstains and preserves all possible user words.
+        // A measured 25 ms post-key startup gap is blanked; it no longer makes the whole dictation abstain.
         for i in 9600..<10000 { mic[i] = user[i] }
         for i in 0..<16_000 { mic[i + 10000] = user[i + 10000] + video[i] }
         let uncertain = Transcriber.Session(whisper: WhisperKit())
@@ -173,12 +173,14 @@ final class Calls: @unchecked Sendable {
         uncertain.mediaEcho(video, unreferencedPrefix: 9600)
         let early = "Yesterday was sunny please tell me what send report"
         check("uncovered prefix kept", await uncertain.echoStripped(early) == early)
-        check("uncovered prefix blocks typing", uncertain.echoFailed)
+        check("startup gap permits typing", !uncertain.echoFailed)
+        check("only measured startup gap blanked", uncertain.recorded.prefix(10000).allSatisfy { $0 == 0 }
+              && uncertain.recorded[10000..<10480].contains { $0 != 0 })
         uncertain.cancel()
         let oneWord = Transcriber.Session(whisper: WhisperKit())
         push(mic, to: oneWord); oneWord.mediaEcho(video, unreferencedPrefix: 9600)
         check("one-word uncertain prefix keeps every word", await oneWord.echoStripped("Wait please tell me what happened") == "Wait please tell me what happened")
-        check("one-word uncertain prefix blocks typing", oneWord.echoFailed)
+        check("matching user words still permit typing", !oneWord.echoFailed)
         oneWord.cancel()
         let failed = Transcriber.Session(whisper: WhisperKit())
         push(mic, to: failed)

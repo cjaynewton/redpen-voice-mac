@@ -1399,23 +1399,88 @@ do {
     let realPreRoll = MediaAudio.removing(mic: playingBeforeKey, played: video, preRoll: preRoll)
     check("media.speakers.realPreRollCertain", realPreRoll.certain, "\(realPreRoll.match)")
     check("media.speakers.onlyEarlyPreRollBlanked", realPreRoll.samples.prefix(trim).allSatisfy { $0 == 0 })
-    check("media.speakers.last150msPreRollKept", Array(realPreRoll.samples[trim..<preRoll]) == Array(playingBeforeKey[trim..<preRoll]))
+    check("media.speakers.preKeyVideoFullyRemoved", realPreRoll.samples.prefix(preRoll).allSatisfy { $0 == 0 })
     let keyedError = zip(realPreRoll.samples.dropFirst(preRoll), keyedUser.dropFirst(preRoll))
         .reduce(Float(0)) { $0 + ($1.0 - $1.1) * ($1.0 - $1.1) } / Float(user.count - preRoll)
     check("media.speakers.realPreRollOpeningAndVideo", keyedError < 0.00001, "\(keyedError)")
     check("media.speakers.noPostKeyBlanking", realPreRoll.samples[preRoll..<preRoll + 480].allSatisfy { $0 != 0 })
-    let headphonePreRoll = MediaAudio.removing(mic: headphones, played: video, preRoll: preRoll)
-    check("media.headphones.realPreRollUnchanged", headphonePreRoll.certain && headphonePreRoll.samples == headphones)
+    var quietHeadphones = headphones
+    for i in 0..<preRoll { quietHeadphones[i] *= 0.01 }
+    let headphonePreRoll = MediaAudio.removing(mic: quietHeadphones, played: video, preRoll: preRoll)
+    check("media.headphones.realPreRollUnchanged", headphonePreRoll.certain && headphonePreRoll.samples == quietHeadphones)
+    let unidentified = MediaAudio.removing(mic: headphones, played: video, preRoll: preRoll)
+    check("media.audibleUnmatchedPreRoll.noAutomaticLeak", !unidentified.certain && unidentified.samples == headphones
+          && unidentified.diagnostics.reason == "audiblePreRollWithoutEchoMatch")
     check("media.middleBand.realPreRollUntouched", !middlePreRoll.certain && middlePreRoll.samples == middle)
+    check("media.middleBand.reasonLogged", middlePreRoll.diagnostics.reason == "middleBand"
+          && middlePreRoll.diagnostics.logLine.contains("gain unmeasured"))
     let uneven = MediaAudio.removing(mic: Array(video.prefix(8000)), played: Array(video.prefix(8007)))
     check("media.partialBuffer.rangeSafe", uneven.samples.count == 8000)
     var changing = user
     for i in video.indices { changing[i + 10_000] += video[i] * (i < 12_000 ? 0.7 : 0.35) }
     let changingResult = MediaAudio.removing(mic: changing, played: video)
-    check("media.volumeChange.heldWithOriginal", !changingResult.certain && changingResult.samples == changing)
+    let changingError = zip(changingResult.samples, user).reduce(Float(0)) { $0 + ($1.0 - $1.1) * ($1.0 - $1.1) } / Float(user.count)
+    check("media.volumeChange.cleaned", changingResult.certain && changingError < 0.00001, "\(changingResult.diagnostics.logLine) error \(changingError)")
     var reflection = speakers
     for i in 12_000..<16_000 { reflection[i + 10_320] += video[i] * 0.7 }
-    check("media.lateReflection.held", !MediaAudio.removing(mic: reflection, played: video).certain)
+    let reflected = MediaAudio.removing(mic: reflection, played: video)
+    let reflectedError = zip(reflected.samples, user).reduce(Float(0)) { $0 + ($1.0 - $1.1) * ($1.0 - $1.1) } / Float(user.count)
+    check("media.lateReflection.cleaned", reflected.certain && reflectedError < 0.00001, "\(reflected.diagnostics.logLine) error \(reflectedError)")
+
+    // Video and user speech both occupy the post-key startup gap. A real room adds decaying delayed copies.
+    for gap in [320, 640, 1280] { // 20, 40 and 80 ms
+        var room = keyedUser
+        let preceding = noise(333, count: preRoll + gap)
+        for i in preceding.indices { room[i] += preceding[i] * 0.8 }
+        for (delay, gain): (Int, Float) in [(0, 0.8), (320, 0.45), (880, 0.25)] {
+            for i in video.indices { room[preRoll + gap + delay + i] += video[i] * gain }
+        }
+        let result = MediaAudio.removing(mic: room, played: video, preRoll: preRoll)
+        let kept = (preRoll + gap)..<room.count
+        let error = zip(result.samples[kept], keyedUser[kept]).reduce(Float(0)) { $0 + ($1.0 - $1.1) * ($1.0 - $1.1) } / Float(kept.count)
+        check("media.roomGap.automatic.\(gap)", result.certain, result.diagnostics.logLine)
+        check("media.roomGap.measuredLoss.\(gap)", result.diagnostics.lostUserSamples == gap && result.diagnostics.gapSamples == gap, result.diagnostics.logLine)
+        check("media.roomGap.onlyGapBlanked.\(gap)", result.samples.prefix(preRoll + gap).allSatisfy { $0 == 0 })
+        check("media.roomGap.userAndVideoSeparated.\(gap)", error < 0.00001, "\(error)")
+        check("media.roomGap.reflectionsMeasured.\(gap)", result.diagnostics.taps >= 3 && (result.diagnostics.firstResidual ?? 0) >= 0.14, result.diagnostics.logLine)
+        check("media.roomGap.completeDiagnostics.\(gap)", result.diagnostics.gain != nil && result.diagnostics.windowScore != nil
+              && result.diagnostics.windowOffset != nil && result.diagnostics.lagMinusPreRoll == gap && (result.diagnostics.gapRMS ?? 0) > 0.003)
+    }
+    var longGap = keyedUser
+    for i in video.indices { longGap[preRoll + 4800 + i] += video[i] }
+    let tooLong = MediaAudio.removing(mic: longGap, played: video, preRoll: preRoll)
+    check("media.roomGap.longLagAbstains", !tooLong.certain && tooLong.samples == longGap && tooLong.diagnostics.reason == "earlierSpeechGapTooLong")
+    var loudReflection = keyedUser
+    for (delay, gain): (Int, Float) in [(320, 0.3), (1200, 0.8)] {
+        for i in video.indices { loudReflection[preRoll + delay + i] += video[i] * gain }
+    }
+    let earliest = MediaAudio.removing(mic: loudReflection, played: video, preRoll: preRoll)
+    check("media.roomGap.earliestNotStrongest", earliest.certain && earliest.diagnostics.lostUserSamples == 320, earliest.diagnostics.logLine)
+
+    for copies in [3, 5] {
+        var late = keyedUser
+        for i in video.indices { late[preRoll + i] += video[i] * 0.8 }
+        for copy in 0..<copies {
+            for i in 12000..<16000 { late[preRoll + i + copy * 80] += video[i] * 0.8 }
+        }
+        let result = MediaAudio.removing(mic: late, played: video, preRoll: preRoll)
+        check("media.roomTail.automatic.\(copies)", result.certain, result.diagnostics.logLine)
+        var masked = Set<Int>()
+        for range in result.diagnostics.cuts { masked.formUnion(range) }
+        check("media.roomTail.cutMasksStayBlank.\(copies)", masked.allSatisfy { result.samples[$0] == 0 })
+        let retained = (preRoll..<late.count).filter { !masked.contains($0) }
+        let error = retained.reduce(Float(0)) { $0 + (result.samples[$1] - keyedUser[$1]) * (result.samples[$1] - keyedUser[$1]) } / Float(retained.count)
+        // Adaptive fitting also removes the small projection of near-end noise onto the reference. Test
+        // separation power rather than requiring sample identity, and use a video-only control below.
+        let injected = retained.reduce(Float(0)) { $0 + (late[$1] - keyedUser[$1]) * (late[$1] - keyedUser[$1]) } / Float(retained.count)
+        check("media.roomTail.echoPowerReduced15dB.\(copies)", error < injected * 0.03, "\(error) / \(injected) \(result.diagnostics.logLine)")
+        check("media.roomTail.exactCutAccounting.\(copies)", result.diagnostics.lostUserSamples == masked.filter { $0 >= preRoll }.count)
+        let videoOnly = zip(late, keyedUser).map { $0 - $1 }
+        let isolated = MediaAudio.removing(mic: videoOnly, played: video, preRoll: preRoll)
+        let remainingPower = isolated.samples.dropFirst(preRoll).reduce(Float(0)) { $0 + $1 * $1 }
+        let originalPower = videoOnly.dropFirst(preRoll).reduce(Float(0)) { $0 + $1 * $1 }
+        check("media.roomTail.videoOnlyControl15dB.\(copies)", isolated.certain && remainingPower < originalPower * 0.03, isolated.diagnostics.logLine)
+    }
 
     // D-740: the callback must still own a recording at/after 300 ms. A cancelled tap owns none.
     for duration in [0.05, 0.1, 0.2, 0.299] {

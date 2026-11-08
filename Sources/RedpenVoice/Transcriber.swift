@@ -575,7 +575,7 @@ final class Transcriber {
                         } else { echoFailedFlag = true }
                         echoPreparing = false
                     }
-                    Log.note("media: mic/video match \(String(format: "%.3f", result.match)), \(result.certain ? "audio ready" : "uncertain, kept for paste")")
+                    Log.note("media: mic/video match \(String(format: "%.3f", result.match)), \(result.certain ? "audio ready" : "uncertain, kept for paste"); \(result.diagnostics.logLine)")
                     // Supported engines hear the cleaned audio. Never delete a matching user phrase from text.
                     return result.certain ? "" : nil
                 }
@@ -590,7 +590,7 @@ final class Transcriber {
             guard from == 0, !text.isEmpty, let task = lock.withLock({ echoTask }) else { return text }
             guard let video = await task.value else {
                 lock.withLock { echoFailedFlag = true }
-                Log.note("media: the video's words couldn't be written down")
+                Log.note("media: app audio cleanup could not be verified")
                 return text
             }
             return Self.logStrip(text, video: video)

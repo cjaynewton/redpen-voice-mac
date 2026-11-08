@@ -1031,9 +1031,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
-        recorder.begin(onBuffer: { buf in s.push(buf) },
-                       onLevel: { [weak self] v in DispatchQueue.main.async { self?.hud.level(v) } })
-        pendingMedia.preRoll = Int(recorder.pushedFrames)
+        pendingMedia.preRoll = Int(recorder.begin(onBuffer: { buf in s.push(buf) },
+                       onLevel: { [weak self] v in DispatchQueue.main.async { self?.hud.level(v) } }))
         micOwner = thisPress
         Log.note("recording from \(recorder.inputName)")
         escapePresses = EscapeTwice()
@@ -2145,7 +2144,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             else if s.echoFailed {
                 // A video was playing and its words couldn't be written down to take them off: nothing is typed.
                 if !newer { self.hud.flash("A video was playing and its words couldn't be checked. Press ⌃⌥V to paste", for: 3.5) }
-                Log.note("media: the video's words couldn't be written down, kept for paste")
+                Log.note("media: app audio cleanup could not be verified, kept for paste")
             }
             else {
                 // The words go where your cursor is now, whichever app that is. If it isn't in a text box (a web page,
