@@ -9,7 +9,7 @@ import VoiceCore
 enum Insert {
     /// `joining`: the dictation this text belongs to, when it is typed in pieces, so Take back removes all of it.
     static func text(_ text: String, joining: Int? = nil, confirmed: Bool = false, while still: () -> Bool = { true }) -> Bool {
-        typedSome = false; typedCount = 0; typedPadding = 0; unconfirmed = false; lastEdit = nil
+        typedSome = false; typedCount = 0; typedPadding = 0; unconfirmed = false; lastEdit = nil; draftAttempt = nil
         guard !text.isEmpty else { return true }  // nothing to type; replacing the selection with "" would delete it
         guard !ownWindowInFront else { Log.note("insert: a Redpen Voice window is in front, not typed"); return false }
         dictation = joining
@@ -34,6 +34,9 @@ enum Insert {
         } }
         // Draft bookkeeping needs readable evidence, rather than a successful event post.
         if confirmed, expected == nil { Log.note("insert: draft target unreadable, kept for Paste last"); return false }
+        if confirmed, let oldValue, let oldRange {
+            draftAttempt = (el, .init(before: oldValue, range: oldRange, text: padded))
+        }
         func recordEdit(_ inserted: String) {
             guard let oldValue, let oldRange, oldRange.location <= oldValue.utf16.count,
                   oldRange.length <= oldValue.utf16.count - oldRange.location else { return }
@@ -121,6 +124,8 @@ enum Insert {
     private(set) static var unconfirmed = false
     /// The exact edit just sent by Voice, for the starting box's expected text. Not arbitrary text read afterward.
     private(set) static var lastEdit: (element: AXUIElement, before: String, range: NSRange, replacement: String)?
+    /// Full attempted draft, even when it arrives after confirmation timed out. Never a confirmed edit record.
+    private(set) static var draftAttempt: (element: AXUIElement, draft: DictationEnding.LateDraft)?
 
     /// The box's text changed within a second of typing.
     private static func landed(in el: AXUIElement, before: String) -> Bool {

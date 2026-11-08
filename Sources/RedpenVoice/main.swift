@@ -1334,6 +1334,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var heard = 0
         var stopWhy: TalkingWords.Stop?
         var deliveryUncertain = false
+        /// One failed insertion stops drafts. Keep its own text and position apart from confirmed runs.
+        var lateDraft: (drafts: Range<Int>, insertion: DictationEnding.LateDraft)?
         /// Drafts stopped for a long talk (D-1023), and how many of Whisper's pieces the box holds checked, from the
         /// start: the long ending pastes the pieces after them.
         var longStopped = false
@@ -1479,6 +1481,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if session === d.owner { hud.caption(TalkingWords.typingLine(words: d.heard, handsFree: keys.handsFree, key: talkKeyName)) }
         } else {
             d.deliveryUncertain = Insert.typedSome || Insert.unconfirmed
+            if d.deliveryUncertain, let attempt = Insert.draftAttempt, let start = d.startBox,
+               CFEqual(attempt.element, start.element) {
+                d.lateDraft = (i..<i + 1, attempt.draft)
+            }
             if d.deliveryUncertain { d.checksStopped = true }  // the box no longer matches the record
             draftBlocked(d, .editUnconfirmed, during: "typing draft")
             stopDrafts(d)
@@ -1554,6 +1560,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// where you are (after taking the drafts back out of the first box when `takeBack`).
     enum DraftEnd { case landed, kept, deliver(takeBack: Bool) }
 
+    /// The only allowed correction to an uncertain record: our full insertion arrived late in the same box.
+    /// Keep the ordinary swap's expected-value, cursor and quiet guards, and never retry a failed swap.
+    private func reconcileLateDraft(_ d: Drafting) {
+        guard let late = d.lateDraft, let start = d.startBox,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == start.pid,
+              let (element, _) = Insert.focusedElement() else { return }
+        let sameWindow = start.window.flatMap { old in Self.boxWindow(element).map { CFEqual(old, $0) } } ?? false
+        guard let match = DictationEnding.reconcileLateDraft(late.insertion, confirmedDrafts: d.runs.map(\.text).joined(),
+            start: start.print, now: Self.boxPrint(element, withText: false), actual: Insert.value(element),
+            cursor: Insert.selectionRange(element), sameElement: CFEqual(element, start.element), sameWindow: sameWindow,
+            userEdited: start.userEdited, inStartBox: true, observedSend: start.sent) else { return }
+        start.print = match.box
+        d.runs.append(.init(drafts: late.drafts, text: match.text, checked: false))
+        d.lateDraft = nil
+        Log.note("draft: reconciled late own insertion, \(match.text.utf16.count) letters; ending still needs confirmation")
+    }
+
     /// The ending in draft mode (D-965). Still in the box the drafts went into, and it reads as Voice left it: the
     /// drafts swap for the complete checked dictation there. Moved away from an untouched first box: the drafts come
     /// back out of it and the whole checked dictation goes where you are. Changed or unconfirmed (D-1297): deliver
@@ -1569,6 +1592,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         else if text.isEmpty { draftBlocked(d, .emptyText, during: "ending"); end = .kept; hud.hide() }
         else {
+            reconcileLateDraft(d)
             // An uncertain draft only matters if it changed the box: one that reads exactly as Voice's confirmed
             // record still holds just the drafts in d.runs.
             let start = d.startBox
@@ -1577,7 +1601,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // same-box guard, but D-1297 still delivers the whole text once when you finish in another box.
             let typedThere = d.typedAny || (d.deliveryUncertain && !asLeft)
             switch DictationEnding.plan(typedInStartBox: typedThere, startBoxAsLeft: asLeft, inStartBox: start.map { isAt($0) } ?? false,
-                                       sent: !asLeft && start.map { wasSent($0) } == true) {
+                                       sent: start.map { wasSent($0) } == true) {
             case .inPlace:
                 end = start.map { swapEnding(d, $0, text: text) } == true ? .landed : .kept
                 if case .landed = end { hud.hide() }
@@ -1610,9 +1634,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// where long endings broke. Anywhere else the ordinary ending decides.
     private func finishLongDrafts(_ d: Drafting, _ s: Transcriber.Session, text: String, released: Date, gen: Int) async -> DraftEnd {
         guard !s.echoFailed, !text.isEmpty, let start = d.startBox else { return finishDrafts(d, s, text: text, released: released) }
+        reconcileLateDraft(d)
         let asLeft = unchanged(start)
         let typedThere = d.typedAny || (d.deliveryUncertain && !asLeft)
-        guard case .inPlace = DictationEnding.plan(typedInStartBox: typedThere, startBoxAsLeft: asLeft, inStartBox: isAt(start)) else {
+        guard case .inPlace = DictationEnding.plan(typedInStartBox: typedThere, startBoxAsLeft: asLeft, inStartBox: isAt(start), sent: wasSent(start)) else {
             return finishDrafts(d, s, text: text, released: released)
         }
         d.draftsStopped = true; d.checksStopped = true
