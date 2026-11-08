@@ -953,6 +953,92 @@ do {
           inStartBox: false, sent: DictationEnding.wasSent(start: notesA, now: notesA, value: "New draft after sending", observedSend: true)) == .keep)
     check("ending.shiftEnterIsNotSendEvidence", !EnterSend.owns(keyCode: 36, flags: EnterSend.shift))
 
+    // Nov 8: a complete unconfirmed draft arrived late, without a user edit. Only that exact insertion can
+    // advance the expected box and join the runs for the existing one-shot, guarded ending swap.
+    let beforeLate = "Mine stays. early words"
+    let lateText = " late draft"
+    let arrived = beforeLate + lateText
+    let lateBox = BoxPrint(role: "AXTextArea", identifier: "composer", frame: f0, text: beforeLate, title: "Notes")
+    let attempt = DictationEnding.LateDraft(before: beforeLate, range: NSRange(location: beforeLate.utf16.count, length: 0), text: lateText)
+    func reconcile(_ actual: String? = arrived, edited: Bool = false, here: Bool = true, element: Bool = true,
+                   window: Bool = true, sent: Bool = false, position: Int? = nil, selection: Int = 0,
+                   now: BoxPrint? = nil, pending: DictationEnding.LateDraft? = nil, start: BoxPrint? = nil,
+                   confirmed: String = " early words") -> (box: BoxPrint, text: String)? {
+        DictationEnding.reconcileLateDraft(pending ?? attempt, confirmedDrafts: confirmed, start: start ?? lateBox,
+            now: now ?? lateBox, actual: actual, cursor: actual.map { NSRange(location: position ?? $0.utf16.count, length: selection) },
+            sameElement: element, sameWindow: window, userEdited: edited, inStartBox: here, observedSend: sent)
+    }
+    let adopted = reconcile()
+    check("ending.lateDraftUpdatesExpected", adopted?.box.text == arrived && adopted?.text == lateText)
+    check("ending.lateDraftSameBoxFinishesInPlace", DictationEnding.plan(typedInStartBox: true,
+          startBoxAsLeft: adopted != nil, inStartBox: true) == .inPlace)
+    let lateSwap = adopted.flatMap { DraftReplacement(expectedBox: $0.box.text!, actual: arrived,
+        cursor: NSRange(location: arrived.utf16.count, length: 0), draft: " early words" + $0.text, replacement: " Checked words.") }
+    check("ending.lateDraftSwapIncludesEveryRun", lateSwap?.expected == "Mine stays. Checked words.")
+    check("ending.lateDraftExtraCharacterKeeps", reconcile(arrived + "x") == nil)
+    check("ending.lateDraftUserEditedKeeps", reconcile(edited: true) == nil)
+    check("ending.lateDraftPartialKeeps", reconcile(beforeLate + " late") == nil)
+    check("ending.lateDraftNotYetThereKeeps", reconcile(beforeLate) == nil)
+    check("ending.lateDraftDuplicateKeeps", reconcile(arrived + lateText) == nil)
+    check("ending.lateDraftChangedPrefixKeeps", reconcile("Yours stays. early words" + lateText) == nil)
+    check("ending.lateDraftPrefixWhitespaceChangeKeeps", reconcile("Mine  stays. early words" + lateText) == nil)
+    check("ending.lateDraftInternalWhitespaceChangeKeeps", reconcile(beforeLate + " late  draft") == nil)
+    check("ending.lateDraftCaseChangeKeeps", reconcile(beforeLate + " Late draft") == nil)
+    check("ending.lateDraftPunctuationChangeKeeps", reconcile(arrived + ".") == nil)
+    check("ending.lateDraftJoinWhitespaceAllowed", reconcile(beforeLate + "\u{00a0}\u{00a0}late draft\n")?.text == "\u{00a0}\u{00a0}late draft\n")
+    check("ending.lateDraftMissingWordBoundaryKeeps", reconcile(beforeLate + "late draft") == nil)
+    check("ending.lateDraftCursorMovedKeeps", reconcile(position: 4) == nil)
+    check("ending.lateDraftSelectionKeeps", reconcile(selection: 1) == nil)
+    check("ending.lateDraftUnreadableKeeps", reconcile(nil) == nil)
+    check("ending.lateDraftDifferentElementKeeps", reconcile(element: false) == nil)
+    check("ending.lateDraftDifferentWindowKeeps", reconcile(window: false) == nil)
+    check("ending.lateDraftDifferentBoxDelivers", reconcile(here: false) == nil && DictationEnding.plan(
+        typedInStartBox: true, startBoxAsLeft: false, inStartBox: false) == .deliver)
+    check("ending.lateDraftEmptySentKeeps", reconcile("") == nil && DictationEnding.plan(
+        typedInStartBox: true, startBoxAsLeft: false, inStartBox: true, sent: true) == .keep)
+    check("ending.lateDraftObservedSendKeeps", reconcile(sent: true) == nil && DictationEnding.plan(
+        typedInStartBox: true, startBoxAsLeft: false, inStartBox: true, sent: true) == .keep)
+    let switchedLate = BoxPrint(role: lateBox.role, identifier: lateBox.identifier, frame: f0, text: beforeLate, title: "Other note")
+    check("ending.lateDraftConversationChangedKeeps", reconcile(now: switchedLate) == nil)
+    let wrongAttempt = DictationEnding.LateDraft(before: beforeLate + "x", range: NSRange(location: beforeLate.utf16.count, length: 0), text: lateText)
+    check("ending.lateDraftStaleAttemptKeeps", reconcile(pending: wrongAttempt) == nil)
+    let replacingAttempt = DictationEnding.LateDraft(before: beforeLate, range: NSRange(location: beforeLate.utf16.count - 1, length: 1), text: lateText)
+    check("ending.lateDraftSelectionAttemptKeeps", reconcile(pending: replacingAttempt) == nil)
+    let invalidAttempt = DictationEnding.LateDraft(before: beforeLate, range: NSRange(location: -1, length: 0), text: lateText)
+    check("ending.lateDraftInvalidRangeKeeps", reconcile(pending: invalidAttempt) == nil)
+    check("ending.lateDraftUnrelatedConfirmedRunsKeep", reconcile(confirmed: "other words") == nil)
+    let firstAttempt = DictationEnding.LateDraft(before: "", range: NSRange(location: 0, length: 0), text: "first draft")
+    let firstBox = BoxPrint(role: "AXTextArea", identifier: "composer", frame: f0, text: "", title: "Notes")
+    check("ending.lateDraftWithoutConfirmedRuns", reconcile("first draft", pending: firstAttempt, start: firstBox, confirmed: "")?.box.text == "first draft")
+    let middleBefore = "Mine stays. early words AFTER"
+    let middleBox = BoxPrint(role: "AXTextArea", identifier: "composer", frame: f0, text: middleBefore, title: "Notes")
+    let middleAttempt = DictationEnding.LateDraft(before: middleBefore, range: NSRange(location: beforeLate.utf16.count, length: 0), text: lateText)
+    check("ending.lateDraftAtRecordedCursor", reconcile(arrived + " AFTER", position: arrived.utf16.count,
+        pending: middleAttempt, start: middleBox)?.box.text == arrived + " AFTER")
+    check("ending.lateDraftChangedSuffixKeeps", reconcile(arrived + " AFTERx", position: arrived.utf16.count,
+        pending: middleAttempt, start: middleBox) == nil)
+    let unicodeBefore = "Café 😀. early words"
+    let unicodeBox = BoxPrint(role: "AXTextArea", identifier: "composer", frame: f0, text: unicodeBefore, title: "Notes")
+    let unicodeAttempt = DictationEnding.LateDraft(before: unicodeBefore, range: NSRange(location: unicodeBefore.utf16.count, length: 0), text: lateText)
+    check("ending.lateDraftUTF16Cursor", reconcile(unicodeBefore + lateText, pending: unicodeAttempt, start: unicodeBox)?.box.text == unicodeBefore + lateText)
+    check("ending.lateDraftUnicodePrefixChangeKeeps", reconcile("Cafe\u{0301} 😀. early words" + lateText,
+        pending: unicodeAttempt, start: unicodeBox) == nil)
+    let (lateKeep, lateErase) = LongTalk.split([(" early words", true), (adopted?.text ?? "", false)])
+    check("ending.longLateDraftErasesOnlyRoughRun", lateKeep == 1 && lateErase == lateText)
+    // Simulate the existing in-place branch's single failed swap. A failure ends as kept, with no deliver action.
+    var swapAttempts = 0, wholeDeliveries = 0
+    var keptAfterSwap = false
+    switch DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: adopted != nil, inStartBox: true) {
+    case .inPlace:
+        swapAttempts += 1
+        keptAfterSwap = lateSwap?.landed("Mine stays. partial") != true
+    case .deliver, .takeBackThenDeliver: wholeDeliveries += 1
+    case .keep: keptAfterSwap = true
+    }
+    check("ending.lateDraftFailedSwapKeepsWithoutSecondDelivery", keptAfterSwap && swapAttempts == 1 && wholeDeliveries == 0)
+    check("ending.lateDraftSwapStillRequiresExpectedBox", DraftReplacement(expectedBox: arrived, actual: arrived + "x",
+        cursor: NSRange(location: arrived.utf16.count, length: 0), draft: " early words" + lateText, replacement: " Checked words.") == nil)
+
     // Taking Voice's words back out of the first box: only its own words before the cursor, never yours before them.
     let back = DraftReplacement(expectedBox: "Mine stays. one two three", actual: "Mine stays. one two three",
                                 cursor: NSRange(location: 25, length: 0), draft: " one two three", replacement: "")

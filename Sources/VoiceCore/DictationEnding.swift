@@ -31,6 +31,54 @@ public enum DictationEnding {
         return inStartBox ? .inPlace : .takeBackThenDeliver
     }
 
+    /// An insertion Voice attempted but did not confirm. This is separate from confirmed draft runs.
+    public struct LateDraft {
+        public let before: String
+        public let range: NSRange
+        public let text: String
+        public init(before: String, range: NSRange, text: String) {
+            self.before = before; self.range = range; self.text = text
+        }
+    }
+
+    /// Adopt only the complete attempted insertion, in its recorded place, while still in that exact box.
+    /// Surrounding text and the draft's contents are literal matches. Only the inserted joining whitespace may
+    /// vary. The returned text is the editor's actual inserted suffix, so replacement never deletes by a guess.
+    public static func reconcileLateDraft(_ draft: LateDraft, confirmedDrafts: String, start: BoxPrint, now: BoxPrint,
+                                          actual: String?, cursor: NSRange?, sameElement: Bool, sameWindow: Bool,
+                                          userEdited: Bool, inStartBox: Bool, observedSend: Bool = false) -> (box: BoxPrint, text: String)? {
+        // Compare UTF-16 literally too: normalization of letters outside the join isn't a whitespace change.
+        func exact(_ a: String, _ b: String) -> Bool { a.utf16.elementsEqual(b.utf16) }
+        guard inStartBox, sameElement, sameWindow, !userEdited,
+              let actual, let cursor, cursor.length == 0,
+              !wasSent(start: start, now: now, value: actual, observedSend: observedSend),
+              BoxMatch.same(start: start, now: now, nowText: start.text, sameElement: sameElement,
+                            sameWindow: sameWindow),
+              start.text.map({ exact($0, draft.before) }) == true, draft.range.length == 0, draft.range.location >= 0,
+              draft.range.location <= draft.before.utf16.count else { return nil }
+        let before = draft.before as NSString, value = actual as NSString
+        let prefix = before.substring(to: draft.range.location)
+        let suffix = before.substring(from: draft.range.location)
+        let added = value.length - before.length
+        guard added > 0, exact(value.substring(to: draft.range.location), prefix),
+              exact(value.substring(from: draft.range.location + added), suffix) else { return nil }
+        let inserted = value.substring(with: NSRange(location: draft.range.location, length: added))
+        let words = draft.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !words.isEmpty, exact(inserted.trimmingCharacters(in: .whitespacesAndNewlines), words) else { return nil }
+        // Whitespace may collapse or grow at a join, but a required word boundary cannot disappear.
+        if !prefix.isEmpty, prefix.last?.isWhitespace != true, draft.text.first?.isWhitespace == true,
+           inserted.first?.isWhitespace != true { return nil }
+        if !suffix.isEmpty, suffix.first?.isWhitespace != true, draft.text.last?.isWhitespace == true,
+           inserted.last?.isWhitespace != true { return nil }
+        guard cursor.location == draft.range.location + added,
+              DraftReplacement(expectedBox: actual, actual: actual, cursor: cursor,
+                               draft: confirmedDrafts + inserted, replacement: "") != nil else { return nil }
+        var box = start
+        guard box.recordEdit(before: draft.before, range: draft.range, replacement: inserted),
+              box.text.map({ exact($0, actual) }) == true else { return nil }
+        return (box, inserted)
+    }
+
     /// Keep D-998's send protection separate from an ordinary edit or unconfirmed Voice fix. A reused composer in
     /// another conversation is treated as sent too. With a URL, a window-title change alone is not a chat switch.
     /// `boxGone`: the first box no longer exists (a chat composer unmounted after Send). Its text can't be read, and
