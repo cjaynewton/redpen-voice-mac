@@ -1382,6 +1382,31 @@ do {
     let weakResult = MediaAudio.removing(mic: weak, played: video)
     let weakError = zip(weakResult.samples, user).reduce(Float(0)) { $0 + ($1.0 - $1.1) * ($1.0 - $1.1) } / Float(user.count)
     check("media.quietSpeakers.cleanedOrHeld", !weakResult.certain || weakError < 0.00001, "\(weakResult.match)")
+    var middle = user
+    for i in video.indices { middle[i + 10_000] += video[i] * 0.10 }
+    let middlePreRoll = MediaAudio.removing(mic: middle, played: video, preRoll: 9600)
+    check("media.middleBand.realPreRollAbstains", middlePreRoll.match >= 0.10 && middlePreRoll.match < 0.14
+          && !middlePreRoll.certain, "\(middlePreRoll.match)")
+
+    // The video was already playing during the real 600 ms microphone pre-roll. User speech starts at key-down.
+    let preRoll = 9600, trim = preRoll - 2400
+    let beforeKeyVideo = noise(123, count: preRoll)
+    var keyedUser = user
+    for i in 0..<preRoll { keyedUser[i] = 0 }
+    var playingBeforeKey = keyedUser
+    for i in 0..<preRoll { playingBeforeKey[i] = beforeKeyVideo[i] * 0.7 }
+    for i in video.indices { playingBeforeKey[i + preRoll] += video[i] * 0.7 }
+    let realPreRoll = MediaAudio.removing(mic: playingBeforeKey, played: video, preRoll: preRoll)
+    check("media.speakers.realPreRollCertain", realPreRoll.certain, "\(realPreRoll.match)")
+    check("media.speakers.onlyEarlyPreRollBlanked", realPreRoll.samples.prefix(trim).allSatisfy { $0 == 0 })
+    check("media.speakers.last150msPreRollKept", Array(realPreRoll.samples[trim..<preRoll]) == Array(playingBeforeKey[trim..<preRoll]))
+    let keyedError = zip(realPreRoll.samples.dropFirst(preRoll), keyedUser.dropFirst(preRoll))
+        .reduce(Float(0)) { $0 + ($1.0 - $1.1) * ($1.0 - $1.1) } / Float(user.count - preRoll)
+    check("media.speakers.realPreRollOpeningAndVideo", keyedError < 0.00001, "\(keyedError)")
+    check("media.speakers.noPostKeyBlanking", realPreRoll.samples[preRoll..<preRoll + 480].allSatisfy { $0 != 0 })
+    let headphonePreRoll = MediaAudio.removing(mic: headphones, played: video, preRoll: preRoll)
+    check("media.headphones.realPreRollUnchanged", headphonePreRoll.certain && headphonePreRoll.samples == headphones)
+    check("media.middleBand.realPreRollUntouched", !middlePreRoll.certain && middlePreRoll.samples == middle)
     let uneven = MediaAudio.removing(mic: Array(video.prefix(8000)), played: Array(video.prefix(8007)))
     check("media.partialBuffer.rangeSafe", uneven.samples.count == 8000)
     var changing = user

@@ -74,8 +74,15 @@ public enum MediaAudio {
         var cleaned = mic
         for i in 0..<min(reference.count, cleaned.count - bestLag) { cleaned[i + bestLag] -= gain * reference[i] }
 
-        // The app reference starts after the mic's pre-roll. Never guess who said earlier speech.
-        let unreferenced = Array(opening.prefix(preRoll > 0 ? bestLag : 0))
+        // Only a confirmed speaker copy trims pre-key audio, when the user was not dictating. Keep its last
+        // 150 ms, as before, and never trim anything at or after key-down. Headphones and the middle band
+        // returned above with their entire input untouched.
+        let keyDown = min(max(0, preRoll), opening.count)
+        for i in 0..<max(0, keyDown - 2400) { cleaned[i] = 0 }
+        // The app reference may start a little after key-down. Speech in that acoustic gap is still uncertain;
+        // sound before key-down is expected video, not a reason to block every speaker dictation.
+        let referenceStart = preRoll > 0 ? max(keyDown, bestLag) : keyDown
+        let unreferenced = Array(opening[keyDown..<referenceStart])
         let earlierLevel = unreferenced.isEmpty ? 0 : (unreferenced.reduce(Float(0)) { $0 + $1 * $1 } / Float(unreferenced.count)).squareRoot()
         let earlierSpeech = earlierLevel > 0.003
         // A second strong delayed copy means room reflections or processing exceeded this simple model.

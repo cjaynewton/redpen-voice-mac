@@ -102,11 +102,13 @@ final class Calls: @unchecked Sendable {
     static func main() async throws {
         let video = noise(12, 16_000)
         let user = noise(92, 48_000)
+        let beforeKeyVideo = noise(123, 9600)
         FakeASR.reference = video
         for speakers in [false, true] {
             var mic = [Float](repeating: 0, count: 48_000)
             // User starts at key-down, 600 ms into the saved pre-roll, before the 2300 ms cut.
             for i in 9600..<36_800 { mic[i] = user[i] }
+            for i in 0..<9600 { mic[i] = beforeKeyVideo[i] * (speakers ? 0.7 : 0.01) }
             if speakers { for i in video.indices { mic[i + 9600] += video[i] * 0.7 } }
             let original = mic
             let old = Transcriber.Session(whisper: WhisperKit())
@@ -126,8 +128,15 @@ final class Calls: @unchecked Sendable {
             check("matching user phrase retained in check", await s.echoStripped(heard, from: 0) == expected)
             check("later repetition kept", await s.echoStripped("Please tell me what", from: 36_800) == "Please tell me what")
             check("known opening remains deliverable", !s.echoFailed)
+            if speakers {
+                check("real speaker pre-roll trimmed", s.recorded.prefix(7200).allSatisfy { $0 == 0 })
+                check("last 150 ms of pre-roll retained", Array(s.recorded[7200..<9600]) == Array(original[7200..<9600]))
+            } else { check("real headphone pre-roll untouched", s.recorded == original) }
             var expectedAudio = original
-            if speakers { for i in video.indices { expectedAudio[i + 9600] -= video[i] * 0.7 } }
+            if speakers {
+                for i in 0..<7200 { expectedAudio[i] = 0 }
+                for i in video.indices { expectedAudio[i + 9600] -= video[i] * 0.7 }
+            }
             let error = zip(s.recorded, expectedAudio).reduce(Float(0)) { $0 + ($1.0 - $1.1) * ($1.0 - $1.1) } / Float(original.count)
             check("video waveform removed without cutting user", error < 0.00001)
             FakeASR.text = heard
@@ -138,7 +147,8 @@ final class Calls: @unchecked Sendable {
         let s = Transcriber.Session(whisper: WhisperKit())
         s.drafter = AsrManager(); s.holdForMedia()
         var mic = noise(999, 96_000)
-        for i in 0..<16_000 { mic[i + 10_000] += video[i] }
+        for i in 0..<9600 { mic[i] = beforeKeyVideo[i] * 0.7 }
+        for i in 0..<16_000 { mic[i + 9600] += video[i] }
         for i in 42_000..<48_000 { mic[i] = 0 }
         for i in 84_000..<96_000 { mic[i] = 0 }
         push(mic, to: s)
@@ -149,13 +159,15 @@ final class Calls: @unchecked Sendable {
         s.streamDrafts(); s.stream(Chunker())
         try await Task.sleep(for: .milliseconds(500))
         check("no draft before media decision", calls.lock.withLock { calls.drafts.isEmpty })
-        s.mediaEcho(video, through: 36_800); s.mediaSettled()
+        s.mediaEcho(video, through: 36_800, unreferencedPrefix: 9600); s.mediaSettled()
         try await Task.sleep(for: .milliseconds(1600))
         check("real first draft cleaned", calls.lock.withLock { calls.drafts.first == "My first words stay" })
         check("real first check cleaned", calls.lock.withLock { calls.checks.first == "My first words stay" })
         s.cancel()
 
-        // Unreferenced pre-roll must not auto-deliver earlier video words, or throw away possible user words.
+        // Only the unreferenced acoustic gap after key-down still abstains and preserves all possible user words.
+        for i in 9600..<10000 { mic[i] = user[i] }
+        for i in 0..<16_000 { mic[i + 10000] = user[i + 10000] + video[i] }
         let uncertain = Transcriber.Session(whisper: WhisperKit())
         push(mic, to: uncertain)
         uncertain.mediaEcho(video, unreferencedPrefix: 9600)
