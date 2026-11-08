@@ -394,19 +394,33 @@ final class Transcriber {
         // MARK: Leaving out the video's sound (Oct 26)
         /// Audio before this sample is blanked: what a video played into the mic before its pause took hold.
         private var silenceUntil = 0
-        /// False while Voice is still deciding whether something is playing; drafts and pieces wait, so the video's
-        /// words are never written. A missing answer times out with automatic typing blocked, not unchecked.
+        /// Wait briefly for media cleanup. D-1400: uncertainty releases original audio and never vetoes typing.
         private var mediaOpening = MediaOpening()
         private var echoPreparing = false
-        func holdForMedia() { lock.withLock { mediaOpening.hold() } }
-        /// A video was actually playing in this dictation (its words were taken off, or the start was left out).
-        var hadMedia: Bool { lock.withLock { echoTask != nil || echoAudio != nil || silenceUntil > 0 || echoFailedFlag } }
+        func holdForMedia(at now: Date = Date()) { lock.withLock { mediaOpening.hold(at: now) } }
+        /// Possible media must not be used to learn the user's voice, even when D-1400 allows raw delivery.
+        var hadMedia: Bool { lock.withLock { echoTask != nil || echoAudio != nil || silenceUntil > 0 || uncertainMedia } }
 
-        /// Let go before Voice could check a playing video: the words are kept for Paste last, not typed.
-        func mediaUnchecked() { lock.withLock { echoFailedFlag = true } }
-        func mediaSettled() { lock.withLock { mediaOpening.settle(through: mediaOpening.through) } }
+        /// An unchecked video does not stop delivery (D-1400). This is advisory, not a typing permission.
+        func mediaUnchecked(reason: String = "uncheckedVideo") {
+            let active = lock.withLock { uncertainMedia = true; mediaOpening.useOriginal(); return !cancelled }
+            if active { Log.note("media: unsure, typed anyway; reason=\(reason)") }
+        }
+        func mediaSettled() {
+            lock.withLock { if !echoPreparing { mediaOpening.settle(through: mediaOpening.through) } }
+        }
+        /// Called with lock held by both stream snapshots, so timeout and audio selection stay atomic.
+        private func mediaReadyLocked() -> Bool {
+            let timedOut = mediaOpening.timedOut
+            let ready = mediaOpening.ready()
+            if !timedOut, mediaOpening.timedOut {
+                uncertainMedia = true
+                if !cancelled { Log.note("media: unsure, typed anyway; reason=mediaDecisionTimeout") }
+            }
+            return ready && (!echoPreparing || mediaOpening.keepsOriginal)
+        }
         fileprivate var settledForLoops: Bool {
-            lock.withLock { mediaOpening.ready() && !echoPreparing }
+            lock.withLock { mediaReadyLocked() }
         }
 
         private func openingCut(_ proposed: Int, from: Int, available: Int) -> Int? {
@@ -421,9 +435,13 @@ final class Transcriber {
         /// Blanks everything before sample `i`, including audio that hasn't arrived yet.
         func silence(upTo i: Int) {
             lock.withLock {
+                _ = mediaReadyLocked()
+                guard mediaOpening.acceptsCleanup, !cancelled else { return }
                 silenceUntil = max(silenceUntil, i)
                 for k in 0..<min(silenceUntil, samples.count) { samples[k] = 0 }
                 if live != nil { audioGeneration += 1 }
+                // Commit the confirmed legacy-engine cut atomically with its timeout decision.
+                mediaOpening.settle(through: mediaOpening.through)
             }
         }
 
@@ -453,7 +471,7 @@ final class Transcriber {
                     let nap = Task { try await Task.sleep(for: .milliseconds(200)) }
                     if !lock.withLock({ if stopped { return false }; draftNap = nap; return true }) { nap.cancel() }
                     _ = try? await nap.value
-                    let (audio, done, ready) = lock.withLock { draftNap = nil; return (samples, stopped, mediaOpening.ready() && !echoPreparing) }
+                    let (audio, done, ready) = lock.withLock { draftNap = nil; return (samples, stopped, mediaReadyLocked()) }
                     if done { break }
                     if !ready { continue }
                     guard let proposed = chunker.cut(audio, from: from),
@@ -462,7 +480,7 @@ final class Transcriber {
                     // The draft and its callback go out together, so a Whisper check can never reach the app first.
                     lock.withLock {
                         drafts.append(Draft(start: from, end: c, text: text))
-                        if !echoFailedFlag && !mediaOpening.failed { onDraft?(drafts.count - 1, text) }
+                        if !cancelled { onDraft?(drafts.count - 1, text) }
                     }
                     from = c
                 }
@@ -489,7 +507,7 @@ final class Transcriber {
                     // Published only if not already stopped, in one step, so letting go can never miss it.
                     if !lock.withLock({ if stopped { return false }; napping = nap; return true }) { nap.cancel() }
                     _ = try? await nap.value
-                    let (audio, done, ds, ready) = lock.withLock { napping = nil; return (samples, stopped, drafts, mediaOpening.ready() && !echoPreparing) }
+                    let (audio, done, ds, ready) = lock.withLock { napping = nil; return (samples, stopped, drafts, mediaReadyLocked()) }
                     if done { break }
                     if !ready { continue }
                     if drafter != nil {
@@ -501,7 +519,7 @@ final class Transcriber {
                             let range = checkedUpTo..<d.upTo
                             cut = d.end; checkedUpTo = d.upTo
                             if !text.isEmpty { pieces.append(text) }
-                            if !echoFailed { onCheck?(range, text) }
+                            if !lock.withLock({ cancelled }) { onCheck?(range, text) }
                         } catch { Log.note("engine: a check failed, the ending covers it") }
                         continue
                     }
@@ -527,8 +545,7 @@ final class Transcriber {
                     do {
                         let text = await echoStripped(try await Transcriber.whisperText(whisper, Array(audio[cut..<c]), prompt: Transcriber.prompt(hints, carry ? pieces.last : nil)), from: cut)
                         cut = c
-                        // Once the video's words couldn't be checked, nothing more is typed as you talk.
-                        if !text.isEmpty { pieces.append(text); if !echoFailed { onPiece?(text) } }
+                        if !text.isEmpty { pieces.append(text); if !lock.withLock({ cancelled }) { onPiece?(text) } }
                     } catch { Log.note("engine: a piece failed, it will be written with the ending") }
                 }
             }
@@ -549,17 +566,21 @@ final class Transcriber {
         /// than blanking seconds or deleting transcript words that might belong to the user.
         private var echoTask: Task<String?, Never>?
         private var echoAudio: [Float]?
-        private var echoFailedFlag = false
-        /// The video's words couldn't be written down, so they couldn't be taken off: nothing is typed (Paste last).
-        var echoFailed: Bool { lock.withLock { echoFailedFlag || mediaOpening.failed } }
+        private var uncertainMedia = false
 
         /// Hands over what the paused app played, as 16 kHz mono. The first draft waits for local audio cleanup.
         func mediaEcho(_ played: [Float], through: Int = 0, unreferencedPrefix: Int = 0) {
-            lock.withLock { mediaOpening.include(through: through) }
+            let accepted = lock.withLock { () -> Bool in
+                _ = mediaReadyLocked()
+                guard mediaOpening.acceptsCleanup, !cancelled else { return false }
+                mediaOpening.include(through: through)
+                if live == nil, whisper != nil || parakeet != nil { echoPreparing = true }
+                return true
+            }
+            guard accepted else { return }
             if live != nil { lock.withLock { echoAudio = played }; return }
             let task: Task<String?, Never>?
             if whisper != nil || parakeet != nil {
-                lock.withLock { echoPreparing = true }
                 task = Task.detached { [self] in
                     // Include the room tail that the media boundary reserves, including buffers arriving after
                     // Chrome's quiet callback. A released recording has no more buffers, so this wait is bounded.
@@ -569,31 +590,43 @@ final class Transcriber {
                     }
                     let mic = recorded
                     let result = MediaAudio.removing(mic: mic, played: played, preRoll: unreferencedPrefix)
-                    lock.withLock {
-                        if result.certain {
-                            samples.replaceSubrange(0..<mic.count, with: result.samples)
-                        } else { echoFailedFlag = true }
-                        echoPreparing = false
-                    }
-                    Log.note("media: mic/video match \(String(format: "%.3f", result.match)), \(result.certain ? "audio ready" : "uncertain, kept for paste"); \(result.diagnostics.logLine)")
+                    acceptMediaResult(result, replacing: mic.count)
                     // Supported engines hear the cleaned audio. Never delete a matching user phrase from text.
-                    return result.certain ? "" : nil
+                    return ""
                 }
             }
-            else { task = nil }
+            else { task = nil; mediaUnchecked(reason: "mediaCleanerUnavailable") }
             lock.withLock { echoTask = task }
+        }
+
+        /// Confidence chooses audio, never delivery. Reject late results after raw audio was released.
+        @discardableResult
+        fileprivate func acceptMediaResult(_ result: MediaAudio.Result, replacing count: Int) -> Bool {
+            let accepted = lock.withLock { () -> Bool in
+                _ = mediaReadyLocked()
+                defer { echoPreparing = false }
+                guard mediaOpening.acceptsCleanup, !cancelled else { return false }
+                if result.certain && result.cleaned {
+                    samples.replaceSubrange(0..<count, with: result.samples)
+                    mediaOpening.settle(through: mediaOpening.through)
+                } else {
+                    uncertainMedia = true
+                    mediaOpening.useOriginal()
+                }
+                return true
+            }
+            if accepted {
+                Log.note("media: mic/video match \(String(format: "%.3f", result.match)), \(result.certain && result.cleaned ? "audio ready" : "unsure, typed anyway"); \(result.diagnostics.logLine)")
+            }
+            return accepted
         }
 
         /// Waits for the opening preparation result. Whisper/Parakeet's task returns an empty video transcript,
         /// so no user text is deleted. Later chunks must not wait again or remove any matching phrases.
         fileprivate func echoStripped(_ text: String, from: Int = 0) async -> String {
-            guard from == 0, !text.isEmpty, let task = lock.withLock({ echoTask }) else { return text }
-            guard let video = await task.value else {
-                lock.withLock { echoFailedFlag = true }
-                Log.note("media: app audio cleanup could not be verified")
-                return text
-            }
-            return Self.logStrip(text, video: video)
+            guard from == 0, !text.isEmpty, let task = lock.withLock({ mediaOpening.keepsOriginal ? nil : echoTask }) else { return text }
+            _ = await task.value
+            return text
         }
 
         fileprivate static func logStrip(_ text: String, video: String) -> String {

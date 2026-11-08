@@ -4,6 +4,9 @@ import Accelerate
 /// Local, bounded echo removal. A measured startup gap has no app reference and is blanked explicitly;
 /// its post-key length is reported. Neither matching transcript words nor entire opening seconds are deleted.
 public enum MediaAudio {
+    /// The measured room floor is around 0.003 to 0.007. This threshold classifies pre-roll only;
+    /// confirmed echo fitting and its residual checks keep their existing thresholds.
+    public static let roomNoiseFloor: Float = 0.01
     public struct Diagnostics {
         public var reason = "none"
         public var preRollRMS: Float?
@@ -30,6 +33,8 @@ public enum MediaAudio {
     public struct Result {
         public let samples: [Float]
         public let certain: Bool
+        /// False for every original-audio result, including a confident no-echo decision.
+        public let cleaned: Bool
         public let match: Float
         public let diagnostics: Diagnostics
     }
@@ -189,17 +194,21 @@ public enum MediaAudio {
         func unchanged(_ reason: String, match: Float = 0, certain: Bool = false) -> Result {
             var diagnostic = d; diagnostic.reason = reason
             diagnostic.cuts = []; diagnostic.lostUserSamples = 0
-            return Result(samples: mic, certain: certain, match: match, diagnostics: diagnostic)
+            return Result(samples: mic, certain: certain, cleaned: false, match: match, diagnostics: diagnostic)
         }
         guard let match = longMatch(opening) else { return unchanged("missingOrSilentReference") }
         // With an already-playing video, a quiet microphone before the user starts is evidence against
         // speaker pickup. A similar vowel said later must not turn headphones into a speaker clean-up.
-        if let level = d.preRollRMS, level < 0.003, match.score < 0.30 { return unchanged("quietPreRollNoMeasuredEcho", match: match.score, certain: true) }
+        if let level = d.preRollRMS,
+           (level < roomNoiseFloor && match.score < 0.14) || (level < 0.003 && match.score < 0.30) {
+            // Raising the weak-match noise floor must not bypass previously confirmed 0.14...0.30 echo.
+            return unchanged("quietPreRollNoMeasuredEcho", match: match.score, certain: true)
+        }
         if match.score < 0.10 {
-            if let level = d.preRollRMS, level >= 0.003 { return unchanged("audiblePreRollWithoutEchoMatch", match: match.score) }
+            if let level = d.preRollRMS, level >= roomNoiseFloor { return unchanged("audiblePreRollWithoutEchoMatch", match: match.score) }
             return unchanged("noMeasuredEcho", match: match.score, certain: true)
         }
-        guard match.score >= 0.14 else { return unchanged("middleBand", match: match.score) }
+        if match.score < 0.14 { return unchanged("noMeasuredEcho", match: match.score, certain: true) }
         guard let direct = fit(opening, reference, coarse: match.lag) else { return unchanged("delayFit", match: match.score) }
 
         d.gain = direct.gain
@@ -357,6 +366,6 @@ public enum MediaAudio {
             end = max(end, range.upperBound)
         }
         d.reason = d.cuts.isEmpty ? "echoRemoved" : "measuredAudioBlanked"
-        return Result(samples: cleaned, certain: true, match: match.score, diagnostics: d)
+        return Result(samples: cleaned, certain: true, cleaned: true, match: match.score, diagnostics: d)
     }
 }

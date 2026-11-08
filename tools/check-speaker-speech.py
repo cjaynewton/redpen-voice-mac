@@ -31,6 +31,30 @@ import AVFoundation
         let headphones = MediaAudio.removing(mic: expected, played: reference, preRoll: key)
         check("spoken headphones type automatically", headphones.certain)
         check("spoken headphones unchanged", headphones.samples == expected)
+        // Preserve existing confirmed cleanup even with pre-roll in the newly tolerated room-noise range.
+        func noise(_ seed: UInt64, _ count: Int) -> [Float] {
+            var state = seed
+            return (0..<count).map { _ in
+                state = state &* 6364136223846793005 &+ 1442695040888963407
+                return Float(Int32(truncatingIfNeeded: state >> 32)) / Float(Int32.max) * 0.1
+            }
+        }
+        let played = noise(12, 16000), near = noise(92, 48000)
+        for floor: Float in [0.0032, 0.0071] {
+            var tested = false
+            for gain: Float in [0.15, 0.18, 0.20, 0.25] {
+                var mic = near
+                for i in 0..<key { mic[i] = i.isMultiple(of: 2) ? floor : -floor }
+                for i in played.indices { mic[key + i] += played[i] * gain }
+                let old = PreviousMediaAudio.removing(mic: mic, played: played, preRoll: key)
+                if old.certain, old.match >= 0.14, old.match < 0.30, old.diagnostics.gain != nil {
+                    let current = MediaAudio.removing(mic: mic, played: played, preRoll: key)
+                    check("confirmed low-level cleanup unchanged at \(floor)", current.certain && current.samples == old.samples)
+                    tested = true; break
+                }
+            }
+            check("confirmed low-level control found at \(floor)", tested)
+        }
         var mic = expected
         for (delay, gain): (Int, Float) in [(0, 0.8), (320, 0.45), (880, 0.25)] {
             for i in 0..<end { mic[i + delay] += gain * video[i] }
@@ -63,8 +87,10 @@ with tempfile.TemporaryDirectory(prefix="speaker-speech-", dir=root / ".build") 
                         "-o", str(directory / f"{name}.wav"), words], check=True)
     legacy = subprocess.check_output(["git", "show", "bef88a6:Sources/VoiceCore/MediaAudio.swift"], cwd=root, text=True)
     (directory / "Legacy.swift").write_text(legacy.replace("public enum MediaAudio", "public enum LegacyMediaAudio", 1))
+    previous = subprocess.check_output(["git", "show", "39b95e5:Sources/VoiceCore/MediaAudio.swift"], cwd=root, text=True)
+    (directory / "Previous.swift").write_text(previous.replace("public enum MediaAudio", "public enum PreviousMediaAudio", 1))
     (directory / "Check.swift").write_text(source)
     subprocess.run(["xcrun", "swiftc", "-O", "-parse-as-library", str(directory / "Check.swift"),
-                    str(directory / "Legacy.swift"), str(root / "Sources/VoiceCore/MediaAudio.swift"),
+                    str(directory / "Legacy.swift"), str(directory / "Previous.swift"), str(root / "Sources/VoiceCore/MediaAudio.swift"),
                     "-o", str(directory / "check")], check=True, env=os.environ)
     subprocess.run([str(directory / "check"), str(directory / "video.wav"), str(directory / "user.wav")], check=True)

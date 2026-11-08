@@ -1,11 +1,13 @@
 import Foundation
 
-/// Holds the opening draft until the media decision is known. A slow or missing answer must never release
-/// unchecked video words into a text box. The microphone keeps recording throughout.
+/// Holds the first draft briefly for media cleanup. D-1400: a missing or unsure decision releases the original
+/// microphone audio for normal typing, and a late cleanup must not rewrite it afterwards.
 public struct MediaOpening: Sendable {
     public static let timeout: TimeInterval = 5
     private var began: Date?
-    public private(set) var failed = false
+    public private(set) var timedOut = false
+    public private(set) var keepsOriginal = false
+    public var acceptsCleanup: Bool { !keepsOriginal }
     public private(set) var through = 0
 
     public init() {}
@@ -17,14 +19,22 @@ public struct MediaOpening: Sendable {
         began = nil
     }
 
-    public mutating func include(through sample: Int) { through = max(through, sample) }
+    public mutating func include(through sample: Int) {
+        if acceptsCleanup { through = max(through, sample) }
+    }
 
-    /// A timeout lets finishing continue, but keeps all automatic typing closed for this dictation.
+    public mutating func useOriginal() {
+        keepsOriginal = true
+        through = 0
+        began = nil
+    }
+
+    /// A timeout releases normal typing with every original sample intact.
     public mutating func ready(at now: Date = Date()) -> Bool {
         guard let began else { return true }
         guard now.timeIntervalSince(began) >= Self.timeout else { return false }
-        failed = true
-        self.began = nil
+        timedOut = true
+        useOriginal()
         return true
     }
 

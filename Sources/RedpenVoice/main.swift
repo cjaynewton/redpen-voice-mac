@@ -919,8 +919,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             // so the video's words can't slip through. A press that short was all video if anything played.
                             guard self.press == thisPress, self.session === s, !self.pausedMedia else {
                                 played.stop()
-                                // Never erased: the words are kept for Paste last and nothing is typed.
-                                if MediaGate.isPlaying(peak: peak) { s.mediaUnchecked() }
+                                // D-1400: keep original audio and normal delivery. A cancelled tap stays cancelled.
+                                if MediaGate.isPlaying(peak: peak) { s.mediaUnchecked(reason: "pressEndedBeforeMediaDecision") }
                                 s.mediaSettled(); return
                             }
                             let playing = MediaGate.isPlaying(peak: peak)
@@ -935,7 +935,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             self.pausedHow = .chrome(token: "", tabs: [])
                             Media.pause(players, stillPaused: { [weak self] in self?.mediaPause.owns(pauseToken) == true }) { how, outcome in
                                 self.chromeAnswer(outcome)
-                                guard let how else { played.stop(); s.mediaUnchecked(); s.mediaSettled(); return }
+                                guard let how else { played.stop(); s.mediaUnchecked(reason: "chromePauseFailed"); s.mediaSettled(); return }
                                 self.pausedHow = how
                                 let pauseWatch = self.mediaPauseMonitor.start(players)
                                 let pausedAt = Date()
@@ -959,8 +959,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                         }
                                         if canTakeOff {
                                             // No usable reference is not permission to erase the user's opening words.
-                                            s.mediaUnchecked(); s.mediaSettled()
-                                            Log.note("media: no usable video reference, every sample kept for paste")
+                                            s.mediaUnchecked(reason: "unusableVideoReference"); s.mediaSettled()
                                             return
                                         }
                                         let cut = s.sampleAt(quietAt.addingTimeInterval(0.15))
@@ -1588,12 +1587,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The final plan owns delivery now. A late draft or check must not type into the finishing box as well.
         d.draftsStopped = true; d.checksStopped = true
         let end: DraftEnd
-        // Neither ending types anything, so the bar says why or goes: it used to stay on Writing until the next press.
-        if s.echoFailed {
-            draftBlocked(d, .echoFailed, during: "ending"); end = .kept
-            hud.flash("A video was playing and its words couldn't be checked. Press ⌃⌥V to paste", for: 3.5)
-        }
-        else if text.isEmpty { draftBlocked(d, .emptyText, during: "ending"); end = .kept; hud.hide() }
+        // An empty ending types nothing, so the bar goes instead of staying on Writing until the next press.
+        if text.isEmpty { draftBlocked(d, .emptyText, during: "ending"); end = .kept; hud.hide() }
         else {
             reconcileLateDraft(d)
             // An uncertain draft only matters if it changed the box: one that reads exactly as Voice's confirmed
@@ -1636,7 +1631,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// rest of the checked dictation goes in with one paste. Nothing long is erased or typed key by key, which is
     /// where long endings broke. Anywhere else the ordinary ending decides.
     private func finishLongDrafts(_ d: Drafting, _ s: Transcriber.Session, text: String, released: Date, gen: Int) async -> DraftEnd {
-        guard !s.echoFailed, !text.isEmpty, let start = d.startBox else { return finishDrafts(d, s, text: text, released: released) }
+        guard !text.isEmpty, let start = d.startBox else { return finishDrafts(d, s, text: text, released: released) }
         reconcileLateDraft(d)
         let asLeft = unchanged(start)
         let typedThere = d.typedAny || (d.deliveryUncertain && !asLeft)
@@ -2141,11 +2136,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.firstRun?.practiced(text); inserted = true; if !newer { self.hud.hide() }
                 Log.note("first run: practice sentence, \(text.split(separator: " ").count) words")
             }
-            else if s.echoFailed {
-                // A video was playing and its words couldn't be written down to take them off: nothing is typed.
-                if !newer { self.hud.flash("A video was playing and its words couldn't be checked. Press ⌃⌥V to paste", for: 3.5) }
-                Log.note("media: app audio cleanup could not be verified, kept for paste")
-            }
             else {
                 // The words go where your cursor is now, whichever app that is. If it isn't in a text box (a web page,
                 // a video, a list), nothing is typed there: the words wait for you to click into one.
@@ -2228,7 +2218,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.resumeMedia()
             Log.note("dictation \(Log.int(seconds))s, \(raw.split(separator: " ").count) words, write \(Log.ms(Date().timeIntervalSince(t0)))ms, engine \(engineMs)ms, key up to done \(Log.ms(Date().timeIntervalSince(releasedAt)))ms, into \(app), inserted \(inserted)")
             self.refreshMenu()
-            if !newer, !text.isEmpty, !s.endingLost, !s.echoFailed { self.scheduleWordSuggestion(gen: gen) }
+            if !newer, !text.isEmpty, !s.endingLost { self.scheduleWordSuggestion(gen: gen) }
             if self.quitting { NSApp.reply(toApplicationShouldTerminate: true) }
         }
     }

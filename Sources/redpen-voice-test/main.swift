@@ -1348,13 +1348,14 @@ do {
     check("media.opening.firstDraftIncludesPause", opening.cut(16_000, from: 0, available: 48_000) == 36_800)
     check("media.opening.waitsForRoomTail", opening.cut(16_000, from: 0, available: 35_000) == nil)
     check("media.opening.laterDraftUnchanged", opening.cut(50_000, from: 36_800, available: 60_000) == 50_000)
-    check("media.opening.noFailureOnSlowSuccess", !opening.failed)
+    check("media.opening.noTimeoutOnSlowSuccess", !opening.timedOut)
     var missing = MediaOpening()
     missing.hold(at: now)
     check("media.opening.timeoutFinishes", missing.ready(at: now.addingTimeInterval(5)))
-    check("media.opening.timeoutBlocksTyping", missing.failed)
+    check("media.opening.timeoutReleasesOriginal", missing.timedOut && missing.keepsOriginal)
+    check("media.opening.timeoutClearsBoundary", missing.cut(16000, from: 0, available: 16000) == 16000)
     missing.settle()
-    check("media.opening.lateAnswerCannotUnlockTyping", missing.failed)
+    check("media.opening.lateAnswerCannotRewriteOriginal", !missing.acceptsCleanup)
 
     // Deterministic synthetic microphone and app waveforms. No recordings, models or hardware are used.
     func noise(_ seed: UInt64, count: Int) -> [Float] {
@@ -1385,8 +1386,8 @@ do {
     var middle = user
     for i in video.indices { middle[i + 10_000] += video[i] * 0.10 }
     let middlePreRoll = MediaAudio.removing(mic: middle, played: video, preRoll: 9600)
-    check("media.middleBand.realPreRollAbstains", middlePreRoll.match >= 0.10 && middlePreRoll.match < 0.14
-          && !middlePreRoll.certain, "\(middlePreRoll.match)")
+    check("media.weakMatch.noEcho", middlePreRoll.match >= 0.10 && middlePreRoll.match < 0.14
+          && middlePreRoll.certain, "\(middlePreRoll.match)")
 
     // The video was already playing during the real 600 ms microphone pre-roll. User speech starts at key-down.
     let preRoll = 9600, trim = preRoll - 2400
@@ -1409,11 +1410,18 @@ do {
     let headphonePreRoll = MediaAudio.removing(mic: quietHeadphones, played: video, preRoll: preRoll)
     check("media.headphones.realPreRollUnchanged", headphonePreRoll.certain && headphonePreRoll.samples == quietHeadphones)
     let unidentified = MediaAudio.removing(mic: headphones, played: video, preRoll: preRoll)
-    check("media.audibleUnmatchedPreRoll.noAutomaticLeak", !unidentified.certain && unidentified.samples == headphones
+    check("media.audibleUnmatchedPreRoll.originalKept", !unidentified.certain && unidentified.samples == headphones
           && unidentified.diagnostics.reason == "audiblePreRollWithoutEchoMatch")
-    check("media.middleBand.realPreRollUntouched", !middlePreRoll.certain && middlePreRoll.samples == middle)
-    check("media.middleBand.reasonLogged", middlePreRoll.diagnostics.reason == "middleBand"
+    check("media.weakMatch.realPreRollUntouched", middlePreRoll.samples == middle)
+    check("media.weakMatch.reasonLogged", middlePreRoll.diagnostics.reason == "noMeasuredEcho"
           && middlePreRoll.diagnostics.logLine.contains("gain unmeasured"))
+    check("media.roomNoiseFloor.measuredRoom", MediaAudio.roomNoiseFloor == 0.01)
+    for level: Float in [0.0032, 0.0052, 0.0071] {
+        var roomNoise = keyedUser
+        for i in 0..<preRoll { roomNoise[i] = i.isMultiple(of: 2) ? level : -level }
+        let result = MediaAudio.removing(mic: roomNoise, played: video, preRoll: preRoll)
+        check("media.roomNoise.noUncertainty.\(level)", result.certain && result.samples == roomNoise, result.diagnostics.logLine)
+    }
     let uneven = MediaAudio.removing(mic: Array(video.prefix(8000)), played: Array(video.prefix(8007)))
     check("media.partialBuffer.rangeSafe", uneven.samples.count == 8000)
     var changing = user

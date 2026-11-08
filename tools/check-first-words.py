@@ -7,6 +7,8 @@ The before/after measurement counts known user samples blanked, not real-world A
 """
 from pathlib import Path
 import os
+import re
+import json
 import subprocess
 import tempfile
 
@@ -32,7 +34,10 @@ import Speech
 import Foundation
 
 enum Log {
-    static func note(_ s: String) {}
+    static let lock = NSLock()
+    static var notes: [String] = []
+    static func note(_ s: String) { lock.withLock { notes.append(s) } }
+    static var recorded: [String] { lock.withLock { notes } }
     static func ms(_ t: Double) -> Int { Int(t * 1000) }
     static func int(_ t: Double) -> Int { Int(t) }
 }
@@ -127,7 +132,7 @@ final class Calls: @unchecked Sendable {
             check("matching user phrase retained", await s.echoStripped(heard, from: 0) == expected)
             check("matching user phrase retained in check", await s.echoStripped(heard, from: 0) == expected)
             check("later repetition kept", await s.echoStripped("Please tell me what", from: 36_800) == "Please tell me what")
-            check("known opening remains deliverable", !s.echoFailed)
+            check("known opening ready for delivery", s.settledForLoops)
             if speakers {
                 check("real speaker pre-roll trimmed", s.recorded.prefix(7200).allSatisfy { $0 == 0 })
                 check("all pre-key video removed", s.recorded.prefix(9600).allSatisfy { $0 == 0 })
@@ -173,21 +178,86 @@ final class Calls: @unchecked Sendable {
         uncertain.mediaEcho(video, unreferencedPrefix: 9600)
         let early = "Yesterday was sunny please tell me what send report"
         check("uncovered prefix kept", await uncertain.echoStripped(early) == early)
-        check("startup gap permits typing", !uncertain.echoFailed)
+        check("startup gap permits typing", uncertain.settledForLoops)
         check("only measured startup gap blanked", uncertain.recorded.prefix(10000).allSatisfy { $0 == 0 }
               && uncertain.recorded[10000..<10480].contains { $0 != 0 })
         uncertain.cancel()
         let oneWord = Transcriber.Session(whisper: WhisperKit())
         push(mic, to: oneWord); oneWord.mediaEcho(video, unreferencedPrefix: 9600)
         check("one-word uncertain prefix keeps every word", await oneWord.echoStripped("Wait please tell me what happened") == "Wait please tell me what happened")
-        check("matching user words still permit typing", !oneWord.echoFailed)
+        check("matching user words still permit typing", oneWord.settledForLoops)
         oneWord.cancel()
         let failed = Transcriber.Session(whisper: WhisperKit())
         push(mic, to: failed)
         failed.mediaEcho([Float](repeating: 0, count: 5000))
         check("reference failure keeps words", await failed.echoStripped("My first words stay") == "My first words stay")
-        check("reference failure blocks typing", failed.echoFailed)
+        check("reference failure permits typing", failed.settledForLoops)
+        check("reference failure keeps original audio", failed.recorded == mic)
         failed.cancel()
+
+        // D-1400 covers every helper reason, including a future reason the delivery layer does not know.
+        // Deliberately supply blank candidate output: an unsure result must still retain the original mic.
+        FakeASR.text = "User opening words stay"
+        let reasons = [__UNSURE_REASONS__]
+        var pending: [(String, Transcriber.Session, Calls)] = []
+        func start(_ reason: String, _ s: Transcriber.Session) {
+            let calls = Calls()
+            s.onDraft = { _, text in calls.draft(text) }
+            s.onCheck = { _, text in calls.check(text) }
+            s.drafter = AsrManager(); s.streamDrafts(); s.stream(Chunker())
+            pending.append((reason, s, calls))
+        }
+        for reason in reasons {
+            let s = Transcriber.Session(whisper: WhisperKit())
+            s.holdForMedia(); push(mic, to: s)
+            var diagnostic = MediaAudio.Diagnostics(); diagnostic.reason = reason
+            let result = MediaAudio.Result(samples: [Float](repeating: 0, count: mic.count), certain: false, cleaned: true, match: 0.2, diagnostics: diagnostic)
+            check("unsure result accepted \(reason)", s.acceptMediaResult(result, replacing: mic.count))
+            check("unsure keeps original \(reason)", s.recorded == mic && s.settledForLoops)
+            check("unsure reason logged \(reason)", Log.recorded.contains { $0.contains("unsure, typed anyway") && $0.contains("reason=\(reason),") })
+            start(reason, s)
+        }
+        for reason in ["chromePauseFailed", "unusableVideoReference", "pressEndedBeforeMediaDecision", "mediaCleanerUnavailable", "uncheckedVideo"] {
+            let s = Transcriber.Session(whisper: WhisperKit())
+            s.holdForMedia(); push(mic, to: s)
+            s.mediaUnchecked(reason: reason); s.mediaSettled()
+            check("unchecked keeps original \(reason)", s.recorded == mic && s.settledForLoops)
+            check("unchecked logged \(reason)", Log.recorded.contains { $0.contains("unsure, typed anyway; reason=\(reason)") })
+            start(reason, s)
+        }
+        let timeout = Transcriber.Session(whisper: WhisperKit())
+        timeout.holdForMedia(at: Date().addingTimeInterval(-6)); push(mic, to: timeout)
+        check("timeout releases typing", timeout.settledForLoops)
+        timeout.mediaEcho(video, through: mic.count + 16000, unreferencedPrefix: 9600)
+        timeout.silence(upTo: mic.count)
+        check("late decision cannot blank timed-out audio", timeout.recorded == mic)
+        start("timeout", timeout)
+
+        let inFlight = Transcriber.Session(whisper: WhisperKit())
+        inFlight.holdForMedia(); push(mic, to: inFlight)
+        inFlight.mediaEcho(video, through: mic.count + 16000, unreferencedPrefix: 9600)
+        inFlight.holdForMedia(at: Date().addingTimeInterval(-6))
+        check("timeout releases in-flight preparation", inFlight.settledForLoops)
+        check("timeout does not await late cleanup", await inFlight.echoStripped("User opening words stay") == "User opening words stay")
+        start("inFlightTimeout", inFlight)
+
+        let cancelled = Transcriber.Session(whisper: WhisperKit())
+        cancelled.holdForMedia(); push(mic, to: cancelled)
+        let cancelledCalls = Calls()
+        cancelled.drafter = AsrManager()
+        cancelled.onDraft = { _, text in cancelledCalls.draft(text) }
+        cancelled.onCheck = { _, text in cancelledCalls.check(text) }
+        cancelled.streamDrafts(); cancelled.stream(Chunker()); cancelled.cancel()
+        cancelled.mediaUnchecked(reason: "chromePauseFailed")
+
+        try await Task.sleep(for: .milliseconds(1600))
+        for (reason, s, calls) in pending {
+            check("draft typed for \(reason)", calls.lock.withLock { calls.drafts.contains("User opening words stay") })
+            check("check typed for \(reason)", calls.lock.withLock { calls.checks.contains("User opening words stay") })
+            check("final text delivered for \(reason)", try await s.finish().contains("User opening words stay"))
+            check("all original audio retained for \(reason)", s.recorded == mic)
+        }
+        check("cancel still suppresses drafts and checks", cancelledCalls.lock.withLock { cancelledCalls.drafts.isEmpty && cancelledCalls.checks.isEmpty })
 
         // Recording keeps everything between the loudness decision and Chrome's eventual answer.
         let recording = Recording(continuous: true)
@@ -212,6 +282,10 @@ final class Calls: @unchecked Sendable {
 with tempfile.TemporaryDirectory(prefix="first-words-", dir=ROOT / ".build") as tmp:
     tmp = Path(tmp)
     source = tmp / "Harness.swift"
+    helper = (ROOT / "Sources/VoiceCore/MediaAudio.swift").read_text()
+    reasons = sorted(set(re.findall(r'unchanged\("([^"]+)"', helper)) - {"quietPreRollNoMeasuredEcho", "noMeasuredEcho"})
+    reasons += ["middleBand", "futureUnknownReason"]
+    tests = tests.replace("__UNSURE_REASONS__", ", ".join(json.dumps(reason) for reason in reasons))
     source.write_text(stubs + session + "\n}\n" + recording + tests)
     core = ROOT / "Sources/VoiceCore"
     files = [core / name for name in ["MediaEcho.swift", "MediaAudio.swift", "MediaOpening.swift", "MediaGate.swift", "Chunker.swift",
