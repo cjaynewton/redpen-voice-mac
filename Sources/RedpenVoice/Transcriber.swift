@@ -395,18 +395,22 @@ final class Transcriber {
         /// Audio before this sample is blanked: what a video played into the mic before its pause took hold.
         private var silenceUntil = 0
         /// False while Voice is still deciding whether something is playing; drafts and pieces wait, so the video's
-        /// words are never written. Counts as settled after 2 s whatever happens.
-        private var mediaSettledFlag = true
-        private var holdingSince = Date()
-        func holdForMedia() { lock.withLock { mediaSettledFlag = false; holdingSince = Date() } }
+        /// words are never written. A missing answer times out with automatic typing blocked, not unchecked.
+        private var mediaOpening = MediaOpening()
+        private var echoPreparing = false
+        func holdForMedia() { lock.withLock { mediaOpening.hold() } }
         /// A video was actually playing in this dictation (its words were taken off, or the start was left out).
         var hadMedia: Bool { lock.withLock { echoTask != nil || echoAudio != nil || silenceUntil > 0 || echoFailedFlag } }
 
         /// Let go before Voice could check a playing video: the words are kept for Paste last, not typed.
         func mediaUnchecked() { lock.withLock { echoFailedFlag = true } }
-        func mediaSettled() { lock.withLock { mediaSettledFlag = true } }
+        func mediaSettled() { lock.withLock { mediaOpening.settle(through: mediaOpening.through) } }
         fileprivate var settledForLoops: Bool {
-            lock.withLock { mediaSettledFlag || Date().timeIntervalSince(holdingSince) > 2 }
+            lock.withLock { mediaOpening.ready() && !echoPreparing }
+        }
+
+        private func openingCut(_ proposed: Int, from: Int, available: Int) -> Int? {
+            lock.withLock { mediaOpening.cut(proposed, from: from, available: available) }
         }
 
         /// The sample heard at `d` (later than the newest sample means one not yet arrived).
@@ -449,15 +453,16 @@ final class Transcriber {
                     let nap = Task { try await Task.sleep(for: .milliseconds(200)) }
                     if !lock.withLock({ if stopped { return false }; draftNap = nap; return true }) { nap.cancel() }
                     _ = try? await nap.value
-                    let (audio, done) = lock.withLock { draftNap = nil; return (samples, stopped) }
+                    let (audio, done, ready) = lock.withLock { draftNap = nil; return (samples, stopped, mediaOpening.ready() && !echoPreparing) }
                     if done { break }
-                    if !settledForLoops { continue }
-                    guard let c = chunker.cut(audio, from: from) else { continue }
-                    let text = (try? await Transcriber.parakeetText(drafter, Array(audio[from..<c]))) ?? ""
+                    if !ready { continue }
+                    guard let proposed = chunker.cut(audio, from: from),
+                          let c = openingCut(proposed, from: from, available: audio.count) else { continue }
+                    let text = await echoStripped((try? await Transcriber.parakeetText(drafter, Array(audio[from..<c]))) ?? "", from: from)
                     // The draft and its callback go out together, so a Whisper check can never reach the app first.
                     lock.withLock {
                         drafts.append(Draft(start: from, end: c, text: text))
-                        onDraft?(drafts.count - 1, text)
+                        if !echoFailedFlag && !mediaOpening.failed { onDraft?(drafts.count - 1, text) }
                     }
                     from = c
                 }
@@ -484,23 +489,24 @@ final class Transcriber {
                     // Published only if not already stopped, in one step, so letting go can never miss it.
                     if !lock.withLock({ if stopped { return false }; napping = nap; return true }) { nap.cancel() }
                     _ = try? await nap.value
-                    let (audio, done, ds) = lock.withLock { napping = nil; return (samples, stopped, drafts) }
+                    let (audio, done, ds, ready) = lock.withLock { napping = nil; return (samples, stopped, drafts, mediaOpening.ready() && !echoPreparing) }
                     if done { break }
-                    if !settledForLoops { continue }
+                    if !ready { continue }
                     if drafter != nil {
                         // Draft mode: Whisper rereads whole runs of drafts; no head start (the drafts are the speed).
                         // Audio and drafts are read in one step, so a draft can't end past the audio in hand.
                         guard let d = draftCheckCut(ds, from: cut), d.end <= audio.count, d.end > cut else { continue }
                         do {
-                            let text = try await Transcriber.whisperText(whisper, Array(audio[cut..<d.end]), prompt: Transcriber.prompt(hints, nil))
+                            let text = await echoStripped(try await Transcriber.whisperText(whisper, Array(audio[cut..<d.end]), prompt: Transcriber.prompt(hints, nil)), from: cut)
                             let range = checkedUpTo..<d.upTo
                             cut = d.end; checkedUpTo = d.upTo
                             if !text.isEmpty { pieces.append(text) }
-                            onCheck?(range, text)
+                            if !echoFailed { onCheck?(range, text) }
                         } catch { Log.note("engine: a check failed, the ending covers it") }
                         continue
                     }
-                    guard let c = chunker.cut(audio, from: cut) else {
+                    guard let proposed = chunker.cut(audio, from: cut),
+                          let c = openingCut(proposed, from: cut, available: audio.count) else {
                         // Quiet for a moment with new words since the last piece: write them now, ahead of release.
                         // Once per quiet spell: again only after you have said more. Letting go cancels a guess still
                         // being written, so the ending never waits on work it may throw away.
@@ -519,7 +525,7 @@ final class Transcriber {
                     // The cut moves only once the piece is written: a failed piece stays in the audio still to do,
                     // so the ending picks it up instead of losing it.
                     do {
-                        let text = await echoStripped(try await Transcriber.whisperText(whisper, Array(audio[cut..<c]), prompt: Transcriber.prompt(hints, carry ? pieces.last : nil)))
+                        let text = await echoStripped(try await Transcriber.whisperText(whisper, Array(audio[cut..<c]), prompt: Transcriber.prompt(hints, carry ? pieces.last : nil)), from: cut)
                         cut = c
                         // Once the video's words couldn't be checked, nothing more is typed as you talk.
                         if !text.isEmpty { pieces.append(text); if !echoFailed { onPiece?(text) } }
@@ -539,29 +545,49 @@ final class Transcriber {
         private let parakeet: AsrManager?
 
         // MARK: The video's words (D-817)
-        /// What the paused app played, written down; its words come off the start of the dictation, once, instead
-        /// of blanking the first second (which lost your first words when you started over the video).
+        /// Preparing the opening audio locally. Supported engines hear a measured app copy removed, rather
+        /// than blanking seconds or deleting transcript words that might belong to the user.
         private var echoTask: Task<String?, Never>?
         private var echoAudio: [Float]?
-        private var echoDone = false
         private var echoFailedFlag = false
         /// The video's words couldn't be written down, so they couldn't be taken off: nothing is typed (Paste last).
-        var echoFailed: Bool { lock.withLock { echoFailedFlag } }
+        var echoFailed: Bool { lock.withLock { echoFailedFlag || mediaOpening.failed } }
 
-        /// Hands over what the paused app played, as 16 kHz mono.
-        func mediaEcho(_ played: [Float]) {
+        /// Hands over what the paused app played, as 16 kHz mono. The first draft waits for local audio cleanup.
+        func mediaEcho(_ played: [Float], through: Int = 0, unreferencedPrefix: Int = 0) {
+            lock.withLock { mediaOpening.include(through: through) }
             if live != nil { lock.withLock { echoAudio = played }; return }
             let task: Task<String?, Never>?
-            if let whisper { task = Task { try? await Transcriber.whisperText(whisper, played) } }
-            else if let parakeet { task = Task { try? await Transcriber.parakeetText(parakeet, played) } }
+            if whisper != nil || parakeet != nil {
+                lock.withLock { echoPreparing = true }
+                task = Task.detached { [self] in
+                    // Include the room tail that the media boundary reserves, including buffers arriving after
+                    // Chrome's quiet callback. A released recording has no more buffers, so this wait is bounded.
+                    let until = Date().addingTimeInterval(0.2)
+                    while Date() < until, lock.withLock({ samples.count < through && !cancelled }) {
+                        try? await Task.sleep(for: .milliseconds(10))
+                    }
+                    let mic = recorded
+                    let result = MediaAudio.removing(mic: mic, played: played, preRoll: unreferencedPrefix)
+                    lock.withLock {
+                        if result.certain {
+                            samples.replaceSubrange(0..<mic.count, with: result.samples)
+                        } else { echoFailedFlag = true }
+                        echoPreparing = false
+                    }
+                    Log.note("media: mic/video match \(String(format: "%.3f", result.match)), \(result.certain ? "audio ready" : "uncertain, kept for paste")")
+                    // Supported engines hear the cleaned audio. Never delete a matching user phrase from text.
+                    return result.certain ? "" : nil
+                }
+            }
             else { task = nil }
             lock.withLock { echoTask = task }
         }
 
-        /// The first words written lose the video's words, once.
-        fileprivate func echoStripped(_ text: String) async -> String {
-            guard !text.isEmpty, let task = lock.withLock({ echoDone ? nil : echoTask }) else { return text }
-            lock.withLock { echoDone = true }
+        /// Waits for the opening preparation result. Whisper/Parakeet's task returns an empty video transcript,
+        /// so no user text is deleted. Later chunks must not wait again or remove any matching phrases.
+        fileprivate func echoStripped(_ text: String, from: Int = 0) async -> String {
+            guard from == 0, !text.isEmpty, let task = lock.withLock({ echoTask }) else { return text }
             guard let video = await task.value else {
                 lock.withLock { echoFailedFlag = true }
                 Log.note("media: the video's words couldn't be written down")
@@ -648,7 +674,7 @@ final class Transcriber {
                     _ = try? await nap.value
                 }
                 if lock.withLock({ cancelled }) { return "" }
-                // The ending: wait for the video decision (2 s at most), then finish. Written again from the saved
+                // The ending: wait for the bounded video decision, then finish. Written again from the saved
                 // audio when anything above went wrong or the audio changed while it was being written.
                 while !settledForLoops, !lock.withLock({ cancelled }) { try await Task.sleep(for: .milliseconds(20)) }
                 var tries = 0
@@ -795,7 +821,7 @@ final class Transcriber {
                 return Silence.clean(text, peak: peak)
             }
             if let whisper {
-                // A quick release before Voice decided about a video: wait for that (2 s at most), so the video's
+                // A quick release before Voice decided about a video: wait for its bounded decision, so the video's
                 // words are still taken off.
                 while !settledForLoops { try? await Task.sleep(for: .milliseconds(20)) }
                 let (nap, guess, dnap) = lock.withLock { stopped = true; return (napping, guessing, draftNap) }
@@ -820,7 +846,7 @@ final class Transcriber {
                         endingLost = true
                     }
                 }
-                let ending = await echoStripped(tail)
+                let ending = await echoStripped(tail, from: cut)
                 if !ending.isEmpty { pieces.append(ending) }
                 lastTail = ending
                 onPiece = nil; onDraft = nil; onCheck = nil

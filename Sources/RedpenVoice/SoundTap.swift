@@ -15,17 +15,42 @@ enum SoundTap {
     final class Recording: @unchecked Sendable {
         private let lock = NSLock()
         private var parts: [(rate: Double, samples: [Float])] = []
-        func add(_ samples: [Float], rate: Double) { lock.lock(); parts.append((rate, samples)); lock.unlock() }
+        let continuous: Bool
+        private var closed = false
+        private var recent: Float = 0
+        private var expired = false
+        var truncated: Bool { lock.lock(); defer { lock.unlock() }; return expired }
+        init(continuous: Bool = false) { self.continuous = continuous }
+        func add(_ samples: [Float], rate: Double) {
+            lock.lock(); defer { lock.unlock() }
+            parts.append((rate, samples))
+            recent = max(recent, samples.map(abs).max() ?? 0)
+        }
+        func stop() { lock.lock(); closed = true; lock.unlock() }
+        var isClosed: Bool { lock.lock(); defer { lock.unlock() }; return closed }
+        func expire() { lock.lock(); expired = !closed; closed = true; lock.unlock() }
+        /// Uses the same still-running tap, so there is no unrecorded gap while Chrome answers pause.
+        func waitForQuiet(tries: Int = 8, done: @escaping @Sendable (Date) -> Void) {
+            lock.lock(); recent = 0; lock.unlock()
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.1) { [self] in
+                lock.lock(); let peak = recent; lock.unlock()
+                if isClosed || !MediaGate.isPlaying(peak: peak) { stop(); done(Date()) }
+                else if tries <= 0 { expire(); done(Date()) }
+                else { waitForQuiet(tries: tries - 1, done: done) }
+            }
+        }
         /// Loudest sample heard, 0 to 1.
         var peak: Float { lock.lock(); defer { lock.unlock() }; return parts.map { $0.samples.map(abs).max() ?? 0 }.max() ?? 0 }
         /// Everything heard, as 16 kHz mono for the speech engines.
         func mono16k() -> [Float] {
             lock.lock(); let all = parts; lock.unlock()
             var out: [Float] = []
+            var position = 0.0, previousRate = 0.0
             for p in all where p.rate > 0 {
+                if p.rate != previousRate { position = 0; previousRate = p.rate }
                 let step = p.rate / 16000
-                var t = 0.0
-                while Int(t) < p.samples.count { out.append(p.samples[Int(t)]); t += step }
+                while Int(position) < p.samples.count { out.append(p.samples[Int(position)]); position += step }
+                position -= Double(p.samples.count)
             }
             return out
         }
@@ -56,11 +81,11 @@ enum SoundTap {
 
     private static func listen(_ request: Listen) {
         let processes = request.processes, seconds = request.seconds, record = request.record
-        let done: @Sendable (Float?) -> Void = { v in
+        let release: @Sendable () -> Void = {
             let next = listens.finish()
-            request.done(v)
             if let next { listen(next) }
         }
+        let done: @Sendable (Float?) -> Void = { v in release(); request.done(v) }
         let desc = CATapDescription(stereoMixdownOfProcesses: processes)
         desc.uuid = UUID()
         desc.isPrivate = true
@@ -100,8 +125,7 @@ enum SoundTap {
                 let n = Int(b.mDataByteSize) / MemoryLayout<Float>.size
                 var m: Float = 0
                 for i in 0..<n { m = max(m, abs(p[i])) }
-                box.value = max(box.value, m)
-                box.frames += n
+                box.add(peak: m, frames: n)
                 // Every channel, whether they come together in one buffer or one buffer each, mixed to one.
                 if record != nil {
                     let ch = max(1, Int(b.mNumberChannels)), frames = n / ch
@@ -121,15 +145,37 @@ enum SoundTap {
         }
         // Shut down from a different queue than the one the audio arrives on. Stopping the device from its own
         // audio queue deadlocked CoreAudio and froze the whole app (Oct 22 2026).
-        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + seconds) {
+        let stop: @Sendable () -> Void = { [dev, tap] in
             AudioDeviceStop(dev, proc)
             AudioDeviceDestroyIOProcID(dev, proc)
             AudioHardwareDestroyAggregateDevice(dev)
             AudioHardwareDestroyProcessTap(tap)
-            if box.frames == 0 { Log.note("media listen: no audio frames (the app is paused or silent, or audio capture isn't allowed)") }
-            done(box.frames > 0 ? box.value : nil)
+            release()
+        }
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + seconds) {
+            let peak = box.snapshot
+            if peak.frames == 0 { Log.note("media listen: no audio frames (the app is paused or silent, or audio capture isn't allowed)") }
+            if let record, record.continuous {
+                request.done(peak.frames > 0 ? peak.value : nil)
+                // The media decision owns this tap until quiet, cancellation, or the bounded deadline.
+                finishRecording(record, deadline: Date().addingTimeInterval(4), stop: stop)
+            } else { stop(); request.done(peak.frames > 0 ? peak.value : nil) }
         }
     }
 
-    private final class Peak: @unchecked Sendable { var value: Float = 0; var frames = 0 }
+    private static func finishRecording(_ record: Recording, deadline: Date, stop: @escaping @Sendable () -> Void) {
+        if record.isClosed { stop(); return }
+        if Date() >= deadline { record.expire(); stop(); return }
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.05) {
+            finishRecording(record, deadline: deadline, stop: stop)
+        }
+    }
+
+    private final class Peak: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: Float = 0
+        private var frames = 0
+        func add(peak: Float, frames n: Int) { lock.lock(); value = max(value, peak); frames += n; lock.unlock() }
+        var snapshot: (value: Float, frames: Int) { lock.lock(); defer { lock.unlock() }; return (value, frames) }
+    }
 }

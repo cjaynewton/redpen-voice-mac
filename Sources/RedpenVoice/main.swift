@@ -909,22 +909,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let pressedAt = Date()
                 let mine = pendingMedia
                 // What the app plays from here until it goes quiet is kept, so its words can come off the start.
-                let played = SoundTap.Recording()
+                let played = SoundTap.Recording(continuous: true)
                 SoundTap.loudness(of: players.map(\.object), for: 0.25, record: played) { peak in
                     DispatchQueue.main.async { [weak self] in
                         let wait = max(0, 0.3 - Date().timeIntervalSince(pressedAt))
                         DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
-                            guard let self, let s = mine.session else { return }
+                            guard let self, let s = mine.session else { played.stop(); return }
                             // Let go (or pressed again) before Voice could decide: this dictation still gets a decision,
                             // so the video's words can't slip through. A press that short was all video if anything played.
                             guard self.press == thisPress, self.session === s, !self.pausedMedia else {
+                                played.stop()
                                 // Never erased: the words are kept for Paste last and nothing is typed.
                                 if MediaGate.isPlaying(peak: peak) { s.mediaUnchecked() }
                                 s.mediaSettled(); return
                             }
                             let playing = MediaGate.isPlaying(peak: peak)
                             Log.note("media: apps [\(players.map(\.name).joined(separator: ", "))], loudness \(peak.map { String(format: "%.4f", $0) } ?? "no tap"), paused \(playing)")
-                            guard playing else { s.mediaSettled(); return }  // nothing playing: every word kept
+                            guard playing else { played.stop(); s.mediaSettled(); return }  // nothing playing: every word kept
                             self.pausedMedia = true
                             // The last pause's watch would see this video still playing while Chrome answers and give
                             // the new pause up (Nov 2 2026). It starts again, for this pause, once the pause is made.
@@ -934,29 +935,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             self.pausedHow = .chrome(token: "", tabs: [])
                             Media.pause(players, stillPaused: { [weak self] in self?.mediaPause.owns(pauseToken) == true }) { how, outcome in
                                 self.chromeAnswer(outcome)
-                                guard let how else { s.mediaSettled(); return }
+                                guard let how else { played.stop(); s.mediaUnchecked(); s.mediaSettled(); return }
                                 self.pausedHow = how
                                 let pauseWatch = self.mediaPauseMonitor.start(players)
                                 let pausedAt = Date()
-                                // The video's own sound reached the mic until the pause took hold: listen for that app going
-                                // quiet, then leave out everything before it, plus 0.15 s for the speakers and the room.
-                                Self.waitForQuiet(players.map(\.object), tries: 8, record: played) { quietAt in
+                                // Listen until the app goes quiet. Its words can then come off the opening transcript
+                                // without deleting the user's microphone audio, including speech before the pause.
+                                played.waitForQuiet { quietAt in
                                     DispatchQueue.main.async {
                                         self.mediaPauseMonitor.didSettle(pauseWatch)
                                         // Every word you said is kept and the video's words come off the start (D-817),
-                                        // when Voice heard the video and the engine can write it down. Otherwise the
-                                        // start is left out as before: the Mac's own engine, drafts typed as you talk,
-                                        // nothing heard, or Instant, which drops the rest of a dictation when two voices
+                                        // by removing a measured copy of app sound before Whisper/Parakeet hear the
+                                        // opening. Drafts and checks wait for that audio. The Mac's own engine still
+                                        // leaves the start out, as does Instant, which drops the rest when two voices
                                         // overlap (6 of 211 WildSpeech clips with other people talking, Oct 26 2026).
                                         let audio = played.mono16k()
-                                        let canTakeOff = ["whisper", "parakeet"].contains(self.config.engine) && s.drafter == nil
-                                        if canTakeOff, played.peak > 0, audio.count > 1600 {
-                                            // The second before the key went down came from the mic alone; the app's sound
-                                            // wasn't heard then, so that part is left out, all but its last 0.15 s.
-                                            if mine.preRoll > 2400 { s.silence(upTo: mine.preRoll - 2400) }
-                                            s.mediaEcho(audio)
+                                        let canTakeOff = ["whisper", "parakeet"].contains(self.config.engine)
+                                        if canTakeOff, !played.truncated, played.peak > 0, audio.count > 1600 {
+                                            s.mediaEcho(audio, through: s.sampleAt(quietAt.addingTimeInterval(0.15)), unreferencedPrefix: mine.preRoll)
                                             s.mediaSettled()
-                                            Log.note("media: kept every word; the video's \(String(format: "%.1f", Double(audio.count) / 16000)) s will come off the start, quiet \(Log.ms(quietAt.timeIntervalSince(pausedAt)))ms after the pause")
+                                            Log.note("media: kept the microphone opening; checking \(String(format: "%.1f", Double(audio.count) / 16000)) s of app sound, quiet \(Log.ms(quietAt.timeIntervalSince(pausedAt)))ms after the pause")
+                                            return
+                                        }
+                                        if canTakeOff {
+                                            // No usable reference is not permission to erase the user's opening words.
+                                            s.mediaUnchecked(); s.mediaSettled()
+                                            Log.note("media: no usable video reference, every sample kept for paste")
                                             return
                                         }
                                         let cut = s.sampleAt(quietAt.addingTimeInterval(0.15))

@@ -1334,6 +1334,72 @@ check("box.emptyOtherThread", !BoxMatch.same(start: emptyStart, now: BoxPrint(ro
 check("box.emptyNoContext", !BoxMatch.same(start: BoxPrint(role: "AXTextArea", identifier: nil, frame: f0, text: "", title: nil), now: BoxPrint(role: "AXTextArea", identifier: nil, frame: f0, text: nil, title: nil), nowText: "", sameElement: true))
 check("echo.scatteredKept", MediaEcho.strip("I need the report tomorrow", video: "the weather tomorrow") == "I need the report tomorrow", MediaEcho.strip("I need the report tomorrow", video: "the weather tomorrow"))
 check("echo.preRollWord", MediaEcho.strip("Wait please tell me what so we ship it", video: "please tell me what") == "So we ship it", MediaEcho.strip("Wait please tell me what so we ship it", video: "please tell me what"))
+
+// The media decision holds the first draft past Chrome's slow answer, then includes the whole opening.
+do {
+    let now = Date(timeIntervalSince1970: 1000)
+    var opening = MediaOpening()
+    opening.hold(at: now)
+    check("media.opening.waitsPastOldTwoSecondTimeout", !opening.ready(at: now.addingTimeInterval(2.5)))
+    opening.include(through: 36_800)
+    check("media.opening.referenceDoesNotReleaseDrafts", !opening.ready(at: now.addingTimeInterval(3)))
+    opening.settle(through: 36_800)
+    check("media.opening.releasedByDecision", opening.ready(at: now.addingTimeInterval(3)))
+    check("media.opening.firstDraftIncludesPause", opening.cut(16_000, from: 0, available: 48_000) == 36_800)
+    check("media.opening.waitsForRoomTail", opening.cut(16_000, from: 0, available: 35_000) == nil)
+    check("media.opening.laterDraftUnchanged", opening.cut(50_000, from: 36_800, available: 60_000) == 50_000)
+    check("media.opening.noFailureOnSlowSuccess", !opening.failed)
+    var missing = MediaOpening()
+    missing.hold(at: now)
+    check("media.opening.timeoutFinishes", missing.ready(at: now.addingTimeInterval(5)))
+    check("media.opening.timeoutBlocksTyping", missing.failed)
+    missing.settle()
+    check("media.opening.lateAnswerCannotUnlockTyping", missing.failed)
+
+    // Deterministic synthetic microphone and app waveforms. No recordings, models or hardware are used.
+    func noise(_ seed: UInt64, count: Int) -> [Float] {
+        var state = seed
+        return (0..<count).map { _ in
+            state = state &* 6364136223846793005 &+ 1442695040888963407
+            return (Float(Int32(truncatingIfNeeded: state >> 32)) / Float(Int32.max)) * 0.1
+        }
+    }
+    let video = noise(12, count: 16_000)
+    let user = noise(92, count: 48_000)
+    let headphones = user
+    var speakers = user
+    for i in video.indices { speakers[i + 10_000] += video[i] * 0.7 }
+    let absent = MediaAudio.removing(mic: headphones, played: video)
+    let present = MediaAudio.removing(mic: speakers, played: video)
+    check("media.headphones.unchangedAudio", absent.certain && absent.samples == headphones, "\(absent.match)")
+    check("media.speakers.acousticCopyRemoved", present.certain, "\(present.match)")
+    let error = zip(present.samples, user).reduce(Float(0)) { $0 + ($1.0 - $1.1) * ($1.0 - $1.1) } / Float(user.count)
+    check("media.speakers.userSignalRetained", error < 0.00001, "\(error)")
+    check("media.silentReferenceHeld", !MediaAudio.removing(mic: user, played: [Float](repeating: 0, count: 4000)).certain)
+    check("media.shortReferenceHeld", !MediaAudio.removing(mic: user, played: [0.1]).certain)
+    var weak = user
+    for i in video.indices { weak[i + 10_000] += video[i] * 0.15 }
+    let weakResult = MediaAudio.removing(mic: weak, played: video)
+    let weakError = zip(weakResult.samples, user).reduce(Float(0)) { $0 + ($1.0 - $1.1) * ($1.0 - $1.1) } / Float(user.count)
+    check("media.quietSpeakers.cleanedOrHeld", !weakResult.certain || weakError < 0.00001, "\(weakResult.match)")
+    let uneven = MediaAudio.removing(mic: Array(video.prefix(8000)), played: Array(video.prefix(8007)))
+    check("media.partialBuffer.rangeSafe", uneven.samples.count == 8000)
+    var changing = user
+    for i in video.indices { changing[i + 10_000] += video[i] * (i < 12_000 ? 0.7 : 0.35) }
+    let changingResult = MediaAudio.removing(mic: changing, played: video)
+    check("media.volumeChange.heldWithOriginal", !changingResult.certain && changingResult.samples == changing)
+    var reflection = speakers
+    for i in 12_000..<16_000 { reflection[i + 10_320] += video[i] * 0.7 }
+    check("media.lateReflection.held", !MediaAudio.removing(mic: reflection, played: video).certain)
+
+    // D-740: the callback must still own a recording at/after 300 ms. A cancelled tap owns none.
+    for duration in [0.05, 0.1, 0.2, 0.299] {
+        var key = TalkKeyState()
+        _ = key.event(key: 63, down: true, at: 10)
+        check("media.quickTap.cancelled.\(duration)", key.event(key: 63, down: false, at: 10 + duration) == .cancel)
+        check("media.quickTap.noSessionToPause.\(duration)", !key.active && !key.handsFree)
+    }
+}
 check("meaning.minus", Meaning.changed("send -5 copies", "Send 5 copies.") == "number")
 check("meaning.hyphenNumbers", Meaning.changed("send twenty-one copies today", "Send twenty-two copies today.") == "number")
 check("meaning.hyphenSame", Meaning.changed("send twenty-one copies", "Send twenty-one copies.") == nil)
