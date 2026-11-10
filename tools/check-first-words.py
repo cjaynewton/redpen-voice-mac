@@ -84,7 +84,7 @@ replace_source = block(insert_source, "static func replaceDraft(")
 finish_source = block(session, "func finish()")
 wiring_checks += [
     ("prefix adapter types only planned suffix", "type(edit.replacement, while: safe)" in replace_source and "type(replacement," not in replace_source),
-    ("prefix adapter keeps full-box and cursor evidence", all(term in replace_source for term in ["DraftReplacement(expectedBox: expectedBox, actual: value, cursor: cursor", "guard still()", "confirm(edit.expected, in: element, while: still)"])),
+    ("prefix adapter keeps full-box and cursor evidence", all(term in replace_source for term in ["DraftReplacement(expectedBox: expectedBox, actual: value, cursor: cursor", "guard await still()", "confirm(edit.expected, in: element, while: still)"])),
     ("prefix adapter never retries uncertain edit", replace_source.count("backspace(") == 1 and replace_source.count("type(edit.replacement,") == 1),
     ("new press preserves finishing session tail", "invalidateTail" not in begin and "clearDraftTailLocked" not in begin),
     ("Escape cancels cache and tasks", "clearDraftTailLocked()" in block(session, "func cancel()") and "session?.cancel()" in block(app_source, "private func discard()")),
@@ -112,6 +112,21 @@ wiring_checks += [
     ("deferred correction revokes on send and newer press", all(term in block(app_source, "private func swapEnding(") for term in ['!start.sent', 'self.delivery == d.generation'])),
     ("suspended final delivery revokes on a sent Enter", 'self.enterRevision == endingEnterRevision' in block(app_source, "private func end()")),
     ("waiting short delivery cannot overlap new recording", 'self.session == nil && self.delivery == gen' in block(app_source, "private func checkWaiting(")),
+]
+end_source = block(app_source, "private func end()")
+queued_finish = end_source[end_source.index("await self.edits.enqueue"):]
+wiring_checks += [
+    ("discard considers unconfirmed and partial attempts", "d.typedAny || d.deliveryUncertain" in block(app_source, "private func discard()")),
+    ("discard proves uncertain draft before removal", "reconcileLateDraft(d)" in block(app_source, "private func removeDrafts(") and "guard d.lateDraft == nil else { return false }" in app_source),
+    ("cleanup network outside edit queue", end_source.index("await Cleanup.run(raw)") < end_source.index("await self.edits.enqueue")),
+    ("tap classification sleeps outside edit queue", "Task.sleep" not in queued_finish),
+    ("long paste quiet wait outside edit queue", "Task.sleep" not in block(app_source, "private func finishLongDrafts(")),
+    ("queued finish revalidates tap before editing", "guard self.deliveries.waitForTap(after: gen) <= 0" in queued_finish),
+    ("Paste last serialized and revalidates generation", "edits.enqueue" in block(app_source, "private func pasteLastNow(") and "self.delivery == gen" in block(app_source, "private func pasteLastNow(")),
+    ("waiting timer coalesces pending edit jobs", "!self.waitingCheckPending" in block(app_source, "private func holdForClick(")),
+    ("Return and backstop respect same posting boundary", "EditBoundary.shared.sendWhenSafe" in (ROOT / "Sources/RedpenVoice/EnterSendTap.swift").read_text()),
+    ("Enter override invalidates ending across cleanup waits", end_source.index("let endingEnterRevision = enterRevision") < end_source.index("s.finish()") and "var newer = self.delivery != gen || self.enterRevision != endingEnterRevision" in queued_finish),
+    ("main hardware check asynchronously awaits listener", "await DraftSafety.resolveHardwareAsync" in block(app_source, "private func draftQuiet(") and "await DraftSafety.resolveHardwareAsync" in block(app_source, "private static func userQuietSinceAsync(")),
 ]
 for name, passed in wiring_checks:
     if not passed:
@@ -214,33 +229,71 @@ enum Transcriber {
 '''
 # Exercise the actual Insert.replaceDraft adapter with an inert editor, never AX or keyboard events.
 replacement_adapter = block(insert_source, "static func replaceDraft(")
+text_start = insert_source[insert_source.index("static func text("):]
+text_adapter = text_start[:text_start.index("async -> Bool {")] + block(text_start, "async -> Bool {")
 insert_stubs = r'''
 
 typealias AXUIElement = NSObject
+let kAXFocusedUIElementAttribute = "focus"
+let kAXSelectedTextAttribute = "text"
+enum FakeAXResult { case success, failure }
+func AXUIElementCreateSystemWide() -> AXUIElement { Insert.element }
+func AXUIElementCopyAttributeValue(_ el: AXUIElement, _ attr: CFString, _ result: inout CFTypeRef?) -> FakeAXResult {
+    result = Insert.element; return .success
+}
+func AXUIElementGetTypeID() -> CFTypeID { CFGetTypeID(Insert.element) }
+func AXUIElementSetAttributeValue(_ el: AXUIElement, _ attr: CFString, _ value: CFString) -> FakeAXResult {
+    guard Insert.axAccepts else { return .failure }
+    Insert.box += value as String; return .success
+}
 enum Insert {
     static let element = NSObject()
     static var box = ""
     static var deleted = 0, typed = "", attempts = 0
+    static var typedSome = false, typedCount = 0, typedPadding = 0, unconfirmed = false
+    static var axAccepts = false
+    static var dictation: Int?
+    static var draftAttempt: (element: AXUIElement, draft: DictationEnding.LateDraft)?
+    static var onTypeChunk: (() -> Void)?
+    static var ownWindowInFront: Bool { false }
+    static var canTypeAtFocus: Bool { true }
+    static func wakeElectron(_ e: AXUIElement) {}
+    static func fit(_ text: String, in e: AXUIElement) -> String { text }
+    static func spaced(_ text: String, before e: AXUIElement) -> String { text }
+    static func remember(_ text: String) {}
+    static func landed(in e: AXUIElement, before: String) async -> Bool { box != before }
     static var canConfirm = true
     static var onConfirm: (() -> Void)?
     static var lastEdit: (element: AXUIElement, before: String, range: NSRange, replacement: String)?
-    static func reset(_ value: String) { box = value; deleted = 0; typed = ""; attempts = 0; canConfirm = true; onConfirm = nil }
+    static func reset(_ value: String) { box = value; deleted = 0; typed = ""; attempts = 0; canConfirm = true; onConfirm = nil; onTypeChunk = nil; axAccepts = false; typedSome = false; typedCount = 0 }
     static func value(_ e: AXUIElement) -> String? { box }
     static func selectedRange(_ e: AXUIElement) -> NSRange? { NSRange(location: box.utf16.count, length: 0) }
     static func focusedElement() -> (AXUIElement, Int)? { (element, 1) }
     static func forgetLast() {}
-    static func backspace(_ count: Int, while still: () -> Bool) async -> Int {
+    static func backspace(_ count: Int, while still: () async -> Bool) async -> Int {
         attempts += 1
         var n = 0
-        while n < count && still() { box.removeLast(); deleted += 1; n += 1 }
+        while n < count {
+            guard await still() else { break }
+            box.removeLast(); deleted += 1; n += 1
+        }
         return n
     }
-    static func type(_ text: String, while still: () -> Bool) async -> Bool {
-        guard still() else { return false }; typed += text; box += text; return true
+    static func type(_ text: String, while still: () async -> Bool) async -> Bool {
+        let units = Array(text.utf16)
+        for from in stride(from: 0, to: units.count, by: 20) {
+            guard await still() else { return false }
+            let part = Array(units[from..<min(from + 20, units.count)])
+            let posted = String(decoding: part, as: UTF16.self)
+            typed += posted; box += posted; typedSome = true; typedCount += part.count
+            if let onTypeChunk { await Task.yield(); onTypeChunk() }
+        }
+        return await still()
     }
-    static func confirm(_ expected: String, in e: AXUIElement, while still: () -> Bool) async -> Bool {
+    static func confirm(_ expected: String, in e: AXUIElement, while still: () async -> Bool, attempts: Int = 20) async -> Bool {
         if let onConfirm { await Task.yield(); onConfirm() }
-        return still() && canConfirm && BoxText.same(expected, box)
+        guard await still() else { return false }
+        return canConfirm && BoxText.same(expected, box)
     }
 '''
 tests = r'''
@@ -377,6 +430,69 @@ final class Calls: @unchecked Sendable {
         }
         Insert.onConfirm = nil
 
+        // Actual Insert.text cancelled in AX confirmation or between posted chunks.
+        for viaAX in [false, true] {
+            Insert.reset("Original ")
+            var recording = true
+            Insert.axAccepts = viaAX
+            if viaAX { Insert.onConfirm = { recording = false } }
+            else { Insert.onTypeChunk = { recording = false } }
+            let attempted = "These are words that span more than one typing chunk"
+            let typed = await Insert.text(attempted, joining: 7, confirmed: true, while: { recording })
+            check("Escape interrupts actual draft posting/confirm", !typed && Insert.unconfirmed)
+            let posted = viaAX ? attempted : String(attempted.prefix(20))
+            check("Escape retains exact posted attempt", Insert.draftAttempt?.draft.text == posted && Insert.box == "Original " + posted)
+            let start = BoxPrint(role: "AXTextArea", identifier: nil, frame: nil, text: "Original ", title: "Chat")
+            let match = DictationEnding.reconcileLateDraft(Insert.draftAttempt!.draft, confirmedDrafts: "", start: start, now: start,
+                actual: Insert.box, cursor: Insert.selectedRange(Insert.element), sameElement: true, sameWindow: true,
+                userEdited: false, inStartBox: true)
+            check("Escape can prove exactly the posted text", match?.text == posted)
+            let removed = await Insert.replaceDraft(match!.text, with: "", expectedBox: match!.box.text!, in: Insert.element, while: { true })
+            check("Escape removes only proven own text", removed && Insert.box == "Original ")
+        }
+        Insert.onConfirm = nil; Insert.onTypeChunk = nil
+
+        // Both second Enter and cap wait only for the posting transaction, not AX confirmation.
+        for reason in ["second Enter", "Enter cap", "backstop"] {
+            Insert.reset("wrong")
+            var returned = false
+            Insert.onTypeChunk = {
+                EditBoundary.shared.sendWhenSafe { returned = true }
+                check("\(reason) waits until matching retype completes", !returned && Insert.box == "right")
+            }
+            Insert.onConfirm = { check("\(reason) precedes confirmation", returned) }
+            _ = await Insert.replaceDraft("wrong", with: "right", expectedBox: "wrong", in: Insert.element, while: { true })
+            check("\(reason) sends at safe boundary", returned)
+        }
+        Insert.onTypeChunk = nil; Insert.onConfirm = nil
+
+        // The async listener grace catches held Enter; unknown typing and clicks still fail closed.
+        var listenerReads = 0
+        var mainTurn = false
+        let mainJob = Task { @MainActor in mainTurn = true }
+        let caught = await DraftSafety.resolveHardwareAsync(since: 1) {
+            listenerReads += 1
+            return .init(now: 2, keyDownAgo: 0, leftClickAgo: 10, rightClickAgo: 10,
+                talkKeyDownTimes: listenerReads > 1 ? [2] : [], typingKeyDownAt: nil)
+        }
+        await mainJob.value
+        check("listener grace catches late Enter evidence", caught.failure(since: 1) == nil && listenerReads == 2)
+        check("listener grace yields the main actor", mainTurn)
+        var unknownReads = 0
+        let unknown = await DraftSafety.resolveHardwareAsync(since: 1) {
+            unknownReads += 1
+            return .init(now: 2, keyDownAgo: 0, leftClickAgo: 10, rightClickAgo: 10,
+                talkKeyDownTimes: [], typingKeyDownAt: nil)
+        }
+        check("listener grace bounded to two waits", unknownReads == 3 && unknown.failure(since: 1) == .hardwareKey)
+        var clickReads = 0
+        let click = await DraftSafety.resolveHardwareAsync(since: 1) {
+            clickReads += 1
+            return .init(now: 2, keyDownAgo: 0, leftClickAgo: 0, rightClickAgo: 10,
+                talkKeyDownTimes: [], typingKeyDownAt: nil)
+        }
+        check("listener never grants exemption to a click", clickReads == 1 && click.failure(since: 1) != nil)
+
         // The real confirmation wait and edit queue, with a blocking fake AX read on a worker.
         let edits = SerialEdits()
         var slowReadStarted = false, confirmedSlow = false, laterEditRan = false
@@ -426,6 +542,25 @@ final class Calls: @unchecked Sendable {
             check("fast result uses unchanged names then ums processing", Fillers.strip(Names(text: "monika = Monica").apply(text)) == "Monica sends two reports")
             short.cancel()
         }
+        Transcriber.lastJob = 0
+        let earlyFast = Transcriber.Session(whisper: WhisperKit())
+        earlyFast.fastFinisher = AsrManager()
+        FakeASR.text = "Whisper already checked this ending."
+        let earlyBefore = FakeASR.count
+        push(noise(777, 16000) + [Float](repeating: 0, count: 16000), to: earlyFast)
+        earlyFast.stream(Chunker())
+        check("ordinary early Whisper inference runs", try await until { FakeASR.count > earlyBefore })
+        // Let the stream publish the completed fake result before stop cancels its nap.
+        try await Task.sleep(for: .milliseconds(100))
+        let earlyFastBefore = FakeASR.lock.withLock { FakeASR.fastAudio.count }
+        let checkedBefore = FakeASR.count
+        let earlyResult = try await earlyFast.finish()
+        check("already checked Whisper beats enabled fast finish", earlyResult == "Whisper already checked this ending." && FakeASR.count == checkedBefore)
+        check("already checked Whisper starts no fast inference", FakeASR.lock.withLock { FakeASR.fastAudio.count } == earlyFastBefore)
+        check("early reuse numeric outcome logged", Log.recorded.contains { $0.hasPrefix("ending tail: reused=1 outcome=1 ") })
+        earlyFast.cancel()
+        Transcriber.lastJob = 10
+
         let cleanedFast = Transcriber.Session(whisper: WhisperKit())
         cleanedFast.fastFinisher = AsrManager()
         let fastPCM = noise(333, 32000)
@@ -493,6 +628,7 @@ final class Calls: @unchecked Sendable {
         FakeASR.text = "Checked synthetic tail."
         FakeASR.delay = 300
         FakeASR.ignoreCancellation = true
+        let preparedLogStart = Log.recorded.count
         let prepared = Transcriber.Session(whisper: WhisperKit())
         let beforeStage = FakeASR.count
         check("tail PCM staged before stop", try await staged(prepared))
@@ -509,7 +645,7 @@ final class Calls: @unchecked Sendable {
         check("running foreground check awaited once", preparedResult == "Checked synthetic tail." && FakeASR.count == finalStart + 1)
         check("quiet capture extension included byte for byte", FakeASR.lock.withLock { FakeASR.whisperAudio.last == tailAudio + quietTail })
         check("awaited outcome and zero line wait logged", Log.recorded.contains { $0 == "ending check: in line 0ms outcome=4" })
-        check("staged PCM never reported as checked result reuse", !Log.recorded.contains { $0.hasPrefix("ending tail: reused=1") })
+        check("staged PCM never reported as checked result reuse", !Log.recorded.dropFirst(preparedLogStart).contains { $0.hasPrefix("ending tail: reused=1") })
         let preparedAudio = prepared.recorded
         prepared.silence(upTo: preparedAudio.count)
         check("foreground consumption seals later cleanup", prepared.recorded == preparedAudio)
@@ -827,10 +963,10 @@ with tempfile.TemporaryDirectory(prefix="first-words-", dir=ROOT / ".build") as 
     reasons += ["middleBand", "futureUnknownReason"]
     tests = tests.replace("__WIRING_CHECKS__", str(len(wiring_checks)))
     tests = tests.replace("__UNSURE_REASONS__", ", ".join(json.dumps(reason) for reason in reasons))
-    source.write_text(stubs.replace("__PRODUCTION_GATE__", gate) + session + "\n}\n" + recording + insert_stubs + replacement_adapter + "\n}\n" + tests)
+    source.write_text(stubs.replace("__PRODUCTION_GATE__", gate) + session + "\n}\n" + recording + insert_stubs + replacement_adapter + "\n" + text_adapter + "\n}\n" + tests)
     core = ROOT / "Sources/VoiceCore"
     files = [core / name for name in ["MediaEcho.swift", "MediaAudio.swift", "MediaOpening.swift", "MediaGate.swift", "Chunker.swift",
-                                    "Silence.swift", "FocusGate.swift", "CheckedTail.swift", "BoxText.swift", "EnterSend.swift", "LongTalk.swift", "BoxMatch.swift", "DictationEnding.swift", "TalkKeyState.swift", "DictationDelivery.swift", "TalkTimingTrace.swift", "TalkCapture.swift", "StartTargetWait.swift", "FastFinish.swift", "EditWait.swift", "SerialEdits.swift", "Names.swift", "Fillers.swift"]]
+                                    "Silence.swift", "FocusGate.swift", "CheckedTail.swift", "BoxText.swift", "EnterSend.swift", "LongTalk.swift", "BoxMatch.swift", "DictationEnding.swift", "TalkKeyState.swift", "DictationDelivery.swift", "TalkTimingTrace.swift", "TalkCapture.swift", "StartTargetWait.swift", "FastFinish.swift", "EditWait.swift", "SerialEdits.swift", "EditBoundary.swift", "DraftSafety.swift", "DraftInput.swift", "Names.swift", "Fillers.swift"]]
     subprocess.run(["xcrun", "swiftc", "-O", "-parse-as-library", "-swift-version", "5", str(source),
                     *map(str, files), "-o", str(tmp / "check")], cwd=ROOT, check=True)
     subprocess.run([str(tmp / "check")], cwd=ROOT, check=True, env=os.environ)

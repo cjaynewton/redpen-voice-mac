@@ -4,8 +4,8 @@ import VoiceCore
 /// Holds a plain Enter while Voice is armed (D-1008) and sends it later. The only tap in Voice that keeps a key from
 /// the app in front, so it is careful: it is armed only while a dictation runs or finishes, the arming runs out by
 /// itself when Voice stops renewing it, and every held Enter goes out exactly once.
-/// A held Enter is sent from the main thread, where Voice does all its typing, so it never lands in the middle of
-/// Voice's own keys. If the main thread stalls, the tap's own queue sends it after the backstop.
+/// Both the main-thread send and the tap backstop respect the active edit's posting boundary.
+/// Confirmation waits do not delay Return; a Delete and its retype stay together.
 final class EnterSendTap: @unchecked Sendable {
     static let shared = EnterSendTap()
 
@@ -164,12 +164,19 @@ final class EnterSendTap: @unchecked Sendable {
     }
 
     /// Posts the held key once, if `take` still finds it waiting.
-    private func send(_ id: Int, why: String, take: (inout EnterSend) -> Int?) {
-        lock.lock(); let code = take(&rules); lock.unlock()
-        guard let code, let pair = VoiceEvents.keyboardPair(key: CGKeyCode(code)) else { return }
-        // Marked as Voice's own, so this tap and the other watchers let it through.
-        pair.down.post(tap: .cgSessionEventTap); pair.up.post(tap: .cgSessionEventTap)
-        if Thread.isMainThread { onSent(id, why) } else { DispatchQueue.main.async { self.onSent(id, why) } }
+    private func send(_ id: Int, why: String, take: @escaping (inout EnterSend) -> Int?) {
+        // State invalidation and Return posting share the main actor. The backstop requests that same boundary.
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { self.send(id, why: why, take: take) }
+            return
+        }
+        EditBoundary.shared.sendWhenSafe { [self] in
+            lock.lock(); let code = take(&rules); lock.unlock()
+            guard let code, let pair = VoiceEvents.keyboardPair(key: CGKeyCode(code)) else { return }
+            // The rule is consumed only at the safe boundary, not while waiting for a replacement.
+            pair.down.post(tap: .cgSessionEventTap); pair.up.post(tap: .cgSessionEventTap)
+            if Thread.isMainThread { onSent(id, why) } else { DispatchQueue.main.async { self.onSent(id, why) } }
+        }
     }
 
     private static var now: Double { ProcessInfo.processInfo.systemUptime }

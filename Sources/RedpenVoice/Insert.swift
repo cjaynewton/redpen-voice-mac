@@ -8,20 +8,26 @@ import VoiceCore
 /// cursor back; when an app says yes and does nothing, the text is typed instead, as key events.
 enum Insert {
     /// `joining`: the dictation this text belongs to, when it is typed in pieces, so Take back removes all of it.
-    @MainActor static func text(_ text: String, joining: Int? = nil, confirmed: Bool = false, while still: () -> Bool = { true }) async -> Bool {
+    @MainActor static func text(_ text: String, joining: Int? = nil, confirmed: Bool = false, while still: () async -> Bool = { true }) async -> Bool {
         typedSome = false; typedCount = 0; typedPadding = 0; unconfirmed = false; lastEdit = nil; draftAttempt = nil
         guard !text.isEmpty else { return true }  // nothing to type; replacing the selection with "" would delete it
+        guard EditBoundary.shared.begin() else { return false }
+        var posting = true
+        func endPosting() { if posting { posting = false; EditBoundary.shared.end() } }
+        defer { endPosting() }
         guard !ownWindowInFront else { Log.note("insert: a Redpen Voice window is in front, not typed"); return false }
         dictation = joining
         defer { dictation = nil }
         let sys = AXUIElementCreateSystemWide()
         var focusedRef: CFTypeRef?
         let hasFocus = AXUIElementCopyAttributeValue(sys, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success
-        guard still(), hasFocus, let focusedRef, CFGetTypeID(focusedRef) == AXUIElementGetTypeID() else {
+        guard await still(), hasFocus, let focusedRef, CFGetTypeID(focusedRef) == AXUIElementGetTypeID() else {
             Log.note("insert: no focused element, kept for Paste last")
             return false
         }
         let el = focusedRef as! AXUIElement
+        // The short listener wait yields. Its old focus snapshot must still name the current box.
+        guard focusedElement().map({ CFEqual($0.0, el) }) == true else { return false }
         wakeElectron(el)
         // A whole dictation fits the sentence it lands in; pieces typed while you talk keep their exact text.
         let fitted = joining == nil ? fit(text, in: el) : text
@@ -44,8 +50,10 @@ enum Insert {
         }
         if let before = oldRange, AXUIElementSetAttributeValue(el, kAXSelectedTextAttribute as CFString, padded as CFString) == .success {
             if confirmed, let expected {
+                unconfirmed = true  // an accepted AX edit may already be in the box when Escape interrupts the read
+                endPosting()
                 if await confirm(expected, in: el, while: still, attempts: 2) {
-                    recordEdit(padded); remember(padded); return true
+                    unconfirmed = false; recordEdit(padded); remember(padded); return true
                 }
                 // An accepted edit can arrive late. Only fall back when neither text nor cursor changed.
                 guard value(el) == oldValue, selectedRange(el) == oldRange else {
@@ -56,16 +64,30 @@ enum Insert {
             if !confirmed, let after = selectedRange(el), after.location == before.location + (padded as NSString).length || after.location > before.location {
                 recordEdit(padded); remember(padded); return true
             }
+            guard await still() else { return false }
+            if !posting {
+                guard EditBoundary.shared.begin() else { return false }
+                posting = true
+            }
             Log.note("insert: accessibility accepted but cursor did not move, typing")
         }
         // Focus can move between the check and here: never type into a page or a video.
         guard Self.canTypeAtFocus else { Log.note("insert: focus left the text box, not typed"); return false }
         let before = joining == nil ? value(el) : nil
-        let safe: () -> Bool = { still() && focusedElement().map { CFEqual($0.0, el) } == true }
+        let safe: () async -> Bool = {
+            guard await still() else { return false }
+            return focusedElement().map { CFEqual($0.0, el) } == true
+        }
         let ok = await type(padded, while: safe)
+        // Even a cancelled/partial post keeps exactly its posted prefix for guarded discard recovery.
+        if confirmed, typedSome, let oldValue, let oldRange {
+            draftAttempt = (el, .init(before: oldValue, range: oldRange,
+                text: String(decoding: padded.utf16.prefix(typedCount), as: UTF16.self)))
+        }
+        endPosting()
         if confirmed, let expected {
             let landed = ok ? await confirm(expected, in: el, while: still) : false
-            if landed { recordEdit(padded); remember(padded) }
+            if landed { unconfirmed = false; recordEdit(padded); remember(padded) }
             else { unconfirmed = true; Log.note("insert: draft typing not confirmed, kept for Paste last") }
             return landed
         }
@@ -83,7 +105,7 @@ enum Insert {
 
     /// Read the complete expected value in the original focused box. Whitespace normalization is harmless;
     /// a changed word, cursor movement alone, or merely posting events cannot confirm a draft.
-    @MainActor private static func confirm(_ expected: String, in element: AXUIElement, while still: () -> Bool,
+    @MainActor private static func confirm(_ expected: String, in element: AXUIElement, while still: () async -> Bool,
                                 attempts: Int = 20) async -> Bool {
         await EditWait.confirm(attempts: attempts, while: still) {
             // Read-only AX work can itself block inside another app, even without a polling sleep.
@@ -96,9 +118,13 @@ enum Insert {
 
     /// Replace only the known suffix, using the editor's actual length and checking what landed afterward.
     @MainActor static func replaceDraft(_ draft: String, with replacement: String, expectedBox: String,
-                             in element: AXUIElement, while still: @escaping () -> Bool) async -> Bool {
+                             in element: AXUIElement, while still: @escaping () async -> Bool) async -> Bool {
         lastEdit = nil
-        guard still(), let (now, _) = focusedElement(), CFEqual(now, element),
+        guard EditBoundary.shared.begin() else { return false }
+        var posting = true
+        func endPosting() { if posting { posting = false; EditBoundary.shared.end() } }
+        defer { endPosting() }
+        guard await still(), let (now, _) = focusedElement(), CFEqual(now, element),
               let value = value(element), let cursor = selectedRange(element),
               let edit = DraftReplacement(expectedBox: expectedBox, actual: value, cursor: cursor,
                                           draft: draft, replacement: replacement) else { return false }
@@ -109,13 +135,15 @@ enum Insert {
         Log.note("ending replace: kept=\(kept) deleted=\(unchanged ? 0 : count) retyped=\(unchanged ? 0 : edit.replacement.count)")
         StartTrace.note(.replacement, gesture: 0, count: kept, value: unchanged ? 0 : edit.replacement.count)
         if unchanged { return true }
-        let safe: () -> Bool = {
-            still() && focusedElement().map { CFEqual($0.0, element) } == true
+        let safe: () async -> Bool = {
+            guard await still() else { return false }
+            return focusedElement().map { CFEqual($0.0, element) } == true
         }
         StartTrace.note(.replacementPost, gesture: 0)
         let deleted = await backspace(count, while: safe)
         let retyped = deleted == count ? (edit.replacement.isEmpty ? true : await type(edit.replacement, while: safe)) : false
         Log.note("ending replace post: elapsed_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime - began)) deleted=\(deleted) retyped=\(retyped ? 1 : 0)")
+        endPosting() // Return can now send, even if the following AX read takes seconds.
         let confirmed = retyped ? await confirm(edit.expected, in: element, while: still) : false
         Log.note("ending replace confirm: elapsed_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime - began)) confirmed=\(confirmed ? 1 : 0)")
         guard confirmed else {
@@ -163,8 +191,8 @@ enum Insert {
     /// Wait for shortcut keys to come up, post an isolated Command-V, then watch the original box.
     /// Restore the clipboard only after visible AX evidence. On failure the words stay for a manual paste.
     @MainActor
-    static func paste(_ text: String, triggerKey: CGKeyCode? = nil, shape: PasteShape = .exact) async -> PasteResult {
-        guard !text.isEmpty, !pasteBusy else { return PasteResult(landed: false, copied: false) }
+    static func paste(_ text: String, triggerKey: CGKeyCode? = nil, shape: PasteShape = .exact, while still: () -> Bool = { true }) async -> PasteResult {
+        guard still(), !text.isEmpty, !pasteBusy else { return PasteResult(landed: false, copied: false) }
         pasteInFlight = true
         defer { pasteInFlight = false; pasteQuietUntil = DispatchTime.now() + 1.5 }
         unconfirmed = false
@@ -188,6 +216,7 @@ enum Insert {
         let modifierKeys = [kVK_Command, kVK_RightCommand, kVK_Control, kVK_RightControl,
                             kVK_Option, kVK_RightOption, kVK_Shift, kVK_RightShift, kVK_Function]
         while !Task.isCancelled {
+            guard still() else { return failed("ownership changed") }
             let sameElement = focusedElement().map { $0.1 == pid && CFEqual($0.0, element) } ?? false
             var sameTarget = sameElement && NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
                 && pasteContext(element) == context
@@ -423,14 +452,14 @@ enum Insert {
     /// Option held it deletes whole words. `still` is asked before every character; the moment it says no (you
     /// typed or clicked), it stops. Returns how many it deleted.
     @discardableResult
-    @MainActor static func backspace(_ count: Int, while still: () -> Bool = { true }) async -> Int {
+    @MainActor static func backspace(_ count: Int, while still: () async -> Bool = { true }) async -> Int {
         var done = 0
         for _ in 0..<count {
-            guard still() else { break }
+            guard await still() else { break }
             guard let pair = VoiceEvents.keyboardPair(key: CGKeyCode(kVK_Delete)) else { return done }
             pair.down.post(tap: .cgSessionEventTap); pair.up.post(tap: .cgSessionEventTap)
             done += 1
-            try? await Task.sleep(for: .microseconds(1500))
+            if !EditBoundary.shared.expedited { try? await Task.sleep(for: .microseconds(1500)) }
         }
         return done
     }
@@ -530,12 +559,12 @@ enum Insert {
     /// the last key press", so Voice's own typing looked like you typing and live drafts stopped after the first
     /// 20 characters (Oct 26, every draft dictation stuck at one run).
     /// Stops if you switch apps partway, so the rest never lands somewhere else, or when `still` says no.
-    @MainActor static func type(_ text: String, while still: () -> Bool = { true }) async -> Bool {
+    @MainActor static func type(_ text: String, while still: () async -> Bool = { true }) async -> Bool {
         let app = NSWorkspace.shared.frontmostApplication?.processIdentifier
         var ok = false
         for chunk in Array(text.utf16).chunks(of: 20) {
             if NSWorkspace.shared.frontmostApplication?.processIdentifier != app { Log.note("insert: app changed while typing, stopped"); return false }
-            guard still() else { Log.note("insert: you typed or clicked, stopped"); return false }
+            guard await still() else { Log.note("insert: you typed or clicked, stopped"); return false }
             // A tab change keeps the same app: check the place itself too, so the rest never become page shortcuts.
             guard canTypeAtFocus else { Log.note("insert: no typing target while typing, stopped"); return false }
             var units = chunk
@@ -547,9 +576,10 @@ enum Insert {
             down.flags = []; up.flags = []
             down.post(tap: .cgSessionEventTap); up.post(tap: .cgSessionEventTap)
             ok = true; typedSome = true; typedCount += units.count
-            try? await Task.sleep(for: .milliseconds(4))
+            if !EditBoundary.shared.expedited { try? await Task.sleep(for: .milliseconds(4)) }
         }
-        return ok && still()
+        guard ok else { return false }
+        return await still()
     }
 }
 

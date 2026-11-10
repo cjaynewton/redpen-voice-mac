@@ -66,4 +66,18 @@ public enum DraftSafety {
         }
         return current
     }
+
+    /// Give the passive key listener two tiny turns without blocking key/UI handling.
+    @MainActor public static func resolveHardwareAsync(since start: Double, sample: () -> HardwareSample) async -> HardwareSample {
+        var current = sample()
+        for _ in 0..<2 {
+            guard current.failure(since: start) == .hardwareKey,
+                  current.typingKeyDownAt.map({ $0 >= start }) != true,
+                  current.leftClickAgo >= max(0, current.now - start),
+                  current.rightClickAgo >= max(0, current.now - start) else { break }
+            try? await Task.sleep(for: .milliseconds(5))
+            current = sample()
+        }
+        return current
+    }
 }

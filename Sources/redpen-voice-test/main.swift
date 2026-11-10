@@ -3232,5 +3232,50 @@ let pausedFast = [Float](repeating: 0.1, count: 16000) + [Float](repeating: 0, c
 check("fastFinish.internalPausesIncluded", FastFinish.speechSeconds(pausedFast) == 21)
 check("fastFinish.partialFrame", FastFinish.speechSeconds([Float](repeating: 0.1, count: 320001)) > 20)
 
+// Return requests and the backstop share one posting boundary.
+do {
+    let boundary = EditBoundary()
+    var sent = 0
+    check("editBoundary.begin", boundary.begin())
+    boundary.sendWhenSafe { sent += 1 }
+    check("editBoundary.waitsForRetype", sent == 0)
+    check("editBoundary.pendingRefusesNewPost", !boundary.begin())
+    boundary.end()
+    check("editBoundary.sendsAtBoundary", sent == 1)
+    boundary.sendWhenSafe { sent += 1 }
+    check("editBoundary.idleEnterImmediate", sent == 2)
+    check("editBoundary.nextEditCanStart", boundary.begin())
+    boundary.sendWhenSafe { sent += 1 }
+    check("editBoundary.graceRetainsPacing", !boundary.expedited)
+    try? await Task.sleep(for: .milliseconds(330))
+    check("editBoundary.graceExpeditesOnly", boundary.expedited && sent == 2)
+    boundary.end()
+    check("editBoundary.graceStillSendsAtBoundary", sent == 3 && !boundary.expedited)
+}
+// An unconfirmed posted prefix is adopted only with the full original box and cursor evidence.
+do {
+    let before = "My note: "
+    let start = BoxPrint(role: "AXTextArea", identifier: nil, frame: nil, text: before, title: "Chat", url: "https://chat.test/one")
+    for posted in ["a whole draft", "the first twenty uni"] {
+        let actual = before + posted
+        let attempt = DictationEnding.LateDraft(before: before, range: NSRange(location: before.utf16.count, length: 0), text: posted)
+        func reconcile(_ actual: String, edited: Bool = false, sent: Bool = false) -> (box: BoxPrint, text: String)? {
+            DictationEnding.reconcileLateDraft(attempt, confirmedDrafts: "", start: start, now: start,
+                actual: actual, cursor: NSRange(location: actual.utf16.count, length: 0),
+                sameElement: true, sameWindow: true, userEdited: edited, inStartBox: true, observedSend: sent)
+        }
+        let match = reconcile(actual)
+        check("discard.recoversPosted.\(posted.count)", match?.text == posted && match?.box.text == actual)
+        check("discard.exactRemovalPlan.\(posted.count)", match.flatMap {
+            DraftReplacement(expectedBox: $0.box.text!, actual: actual,
+                cursor: NSRange(location: actual.utf16.count, length: 0), draft: $0.text, replacement: "")
+        }?.expected == before)
+        check("discard.keepsChangedBox.\(posted.count)", reconcile(actual + " mine") == nil)
+        check("discard.keepsEditedBox.\(posted.count)", reconcile(actual, edited: true) == nil)
+        check("discard.keepsSentBox.\(posted.count)", reconcile(actual, sent: true) == nil)
+        check("discard.keepsNotYetVisible.\(posted.count)", reconcile(before) == nil)
+    }
+}
+
 print("\(pass) passed, \(fail) failed")
 exit(fail == 0 ? 0 : 1)

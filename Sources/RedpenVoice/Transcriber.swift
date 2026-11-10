@@ -989,7 +989,13 @@ final class Transcriber {
                                                    speechSeconds: speechSeconds)
                 var tail: String?
                 var finishEngine = 0 // 0 Whisper, 1 Parakeet, 2 already checked Whisper
-                if useFast, let fastFinisher {
+                // A checked Whisper tail costs nothing more and keeps the more accurate answer.
+                if let e = early, e.end <= audio.count, !Chunker.hasSpeech(audio, from: e.end, reference: cut) {
+                    tail = e.text
+                    finishEngine = 2
+                    Log.note("ending tail: reused=1 outcome=1 mono_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime))")
+                }
+                if tail == nil, useFast, let fastFinisher {
                     do {
                         // Same sealed, cleaned PCM and exact checked boundary as Whisper would consume.
                         // Keep every already checked piece. Only the uncommitted tail changes engine.
@@ -1006,20 +1012,14 @@ final class Transcriber {
                     }
                 }
                 if tail == nil {
-                    if let e = early, e.end <= audio.count, !Chunker.hasSpeech(audio, from: e.end, reference: cut) {
-                        tail = e.text
-                        finishEngine = 2
-                        Log.note("engine: ending was written ahead of release")
-                    } else {
-                        Log.note("ending tail: reused=0 outcome=\(outcome) mono_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime))")
-                        StartTrace.note(.tailReuse, gesture: traceID)
-                        do { tail = try await Transcriber.whisperText(whisper, finalAudio, prompt: Transcriber.prompt(hints, carry ? pieces.last : nil), endingOutcome: outcome) }
-                        catch {
-                            Log.note("engine: the ending failed, \(pieces.count) pieces kept")
-                            if pieces.isEmpty { throw error }
-                            tail = ""
-                            endingLost = true
-                        }
+                    Log.note("ending tail: reused=0 outcome=\(outcome) mono_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime))")
+                    StartTrace.note(.tailReuse, gesture: traceID)
+                    do { tail = try await Transcriber.whisperText(whisper, finalAudio, prompt: Transcriber.prompt(hints, carry ? pieces.last : nil), endingOutcome: outcome) }
+                    catch {
+                        Log.note("engine: the ending failed, \(pieces.count) pieces kept")
+                        if pieces.isEmpty { throw error }
+                        tail = ""
+                        endingLost = true
                     }
                 }
                 Log.note("ending finish: engine=\(finishEngine) ms=\(Log.ms(Date().timeIntervalSince(t0))) audio_s=\(String(format: "%.3f", Double(finalAudio.count) / Double(Chunker.rate))) speech_s=\(String(format: "%.3f", speechSeconds))")
