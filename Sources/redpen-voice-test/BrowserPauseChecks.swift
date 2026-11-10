@@ -38,6 +38,16 @@ func browserPauseChecks(_ check: (String, Bool, String) -> Void) {
     c("severalTabFailuresThenSuccess", failures.op.counts == [4:1] && failures.finishes == 1)
     c("partialSuccessNotHiddenByLaterTab", failures.actions.last == .pause(4, document: "doc", retry: false))
 
+    let partial = Fake(); partial.op.start(); partial.answer(.ids([10])); partial.answer(.ids([1,2]))
+    partial.answer(.candidate("first")); partial.answer(.paused(1))
+    c("partialVisibleBeforeLaterAnswer", partial.op.counts == [1:1] && !partial.op.finished && partial.actions.last == .probe(2))
+    partial.time = 8; partial.answer(.timeout, after: 0)
+    c("partialPauseThenTimeout", partial.op.finished && partial.op.outcome == .handled(tabs: [1], count: 1))
+    let multi = Fake(); multi.op.start(); multi.answer(.ids([10,20])); multi.answer(.ids([1]))
+    multi.answer(.candidate("first")); multi.answer(.paused(1)); multi.answer(.ids([2]))
+    multi.answer(.candidate("second")); multi.answer(.paused(1))
+    c("sameGroupPausesMultipleWindows", multi.op.finished && multi.op.counts == [1:1,2:1])
+
     let late = Fake(); late.candidate(); late.time = 5.2; late.op.tick()
     var audio = MediaOpening(); audio.hold(at: Date(timeIntervalSince1970: 0))
     c("audioFallbackAtFive", audio.ready(at: Date(timeIntervalSince1970: 5)) && audio.keepsOriginal)

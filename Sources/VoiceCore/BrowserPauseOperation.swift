@@ -113,8 +113,12 @@ public final class BrowserPauseOperation {
             if discoveryRetries.insert(key).inserted { queue.append(action) }
         default: break
         }
-        // A confirmed pause is returned immediately, rather than hidden behind later tabs in its group.
-        if !counts.isEmpty || reply == .notAllowed { queue.removeAll() }
+        // Keep the current group's remaining candidates, as before. Publish each success through progress now;
+        // later timeouts cannot erase it. Once a group succeeds, do not discover unrelated background groups.
+        if !counts.isEmpty { queue.removeAll { action in
+            switch action { case .windows, .tabs: return true; default: return false }
+        } }
+        if reply == .notAllowed { queue.removeAll() }
         advance()
     }
     private func settleIfIdle() {
