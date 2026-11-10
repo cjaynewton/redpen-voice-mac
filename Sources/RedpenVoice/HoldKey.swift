@@ -19,7 +19,8 @@ final class HoldKey {
     var onDown: () -> Bool = { false }
     var canBegin: () -> Bool = { true }
     var onUp: () -> Void = {}
-    var onCancel: () -> Void = {}
+    var onCancel: (TalkKeyState.CancelReason) -> Void = { _ in }
+    var onConfirm: () -> Void = {}
     /// Hands-free just started (second tap), so the bar can say so.
     var onHandsFree: () -> Void = {}
     /// An Escape key-down (event time, repeat), seen without taking it from the app in front (D-987). True when a
@@ -36,11 +37,19 @@ final class HoldKey {
     private var monitors: [Any] = []
     private var state = TalkKeyState()
     private var releaseTimer: Timer?
+    private var pendingWork: DispatchWorkItem?
+    private var holdWork: DispatchWorkItem?
+    private(set) var gestureID = 0
+    private(set) var captureID = 0
+    var mediaAllowed: Bool { state.canPauseMedia(at: ProcessInfo.processInfo.systemUptime) }
     private var inputSequence = 0
     private let draftInputMonitor = DraftInputMonitor()
     func trackDraft(since: Double) -> DraftInput { draftInputMonitor.track(since: since) }
     /// Escape threw the dictation away.
-    func discard() { state.discard(at: ProcessInfo.processInfo.systemUptime); updateReleaseTimer() }
+    func discard() {
+        pendingWork?.cancel(); holdWork?.cancel()
+        state.discard(at: ProcessInfo.processInfo.systemUptime); updateReleaseTimer()
+    }
     /// Enter finished the dictation (D-1008): back to idle the same way, so a talk key still held does nothing when it
     /// comes up and the next press starts a new dictation.
     func stopFromEnter() { discard() }
@@ -118,7 +127,7 @@ final class HoldKey {
     private func flagsChanged(_ e: NSEvent) {
         let code = Int(e.keyCode)
         guard isTalkKey(code), let flag = Self.modifiers[code] else {
-            if !isOwn(e) { apply(state.otherKey()) }
+            if !isOwn(e) { apply(state.otherKey(at: e.timestamp)) }
             return
         }
         receive(e, down: e.modifierFlags.contains(flag))
@@ -165,9 +174,22 @@ final class HoldKey {
         inputSequence += 1
         let sequence = inputSequence
         state.doubleTap = doubleTap
+        if down, !state.held { gestureID = StartTrace.nextGesture() }
         let action = state.event(key: code, down: down, ownEvent: own,
                                  canBegin: canBegin(), at: e.timestamp)
+        if action == .begin { captureID = gestureID }
+        StartTrace.note(down ? .keyDown : .keyUp, gesture: gestureID, capture: captureID, eventAt: e.timestamp)
         apply(action)
+        if down, action == .begin || action == .resume {
+            let id = gestureID
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, self.gestureID == id, let owner = self.state.owner else { return }
+                self.apply(self.state.confirmHold(hardwareDown: CGEventSource.keyState(.hidSystemState, key: CGKeyCode(owner)),
+                                                 at: ProcessInfo.processInfo.systemUptime))
+            }
+            holdWork?.cancel(); holdWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + max(0, e.timestamp + Self.tapLength - ProcessInfo.processInfo.systemUptime), execute: work)
+        }
         if down, !hardware {
             // A real queued up carries the exact tap duration, even if the next press is already held.
             // If that up was missed, this already-released down still completes as a quick tap.
@@ -186,6 +208,8 @@ final class HoldKey {
         let action = state.checkRelease(key: owner, hardwareDown: hardware, at: ProcessInfo.processInfo.systemUptime)
         if action == .end { Log.note("hold key: release was missed, ended from the key's real state") }
         apply(action)
+        // A deadline can fire a fraction before tapLength. The hardware poll also confirms an ongoing hold.
+        if hardware { apply(state.confirmHold(hardwareDown: true, at: ProcessInfo.processInfo.systemUptime)) }
     }
 
     private func updateReleaseTimer() {
@@ -205,10 +229,35 @@ final class HoldKey {
     private func apply(_ action: TalkKeyState.Action?) {
         defer { updateReleaseTimer() }
         switch action {
-        case .begin: if !onDown() { state.rejectBegin() }
+        case .begin:
+            pendingWork?.cancel()
+            if !onDown() { state.rejectBegin() }
+            else if state.confirmed { onConfirm() }
+        case .resume:
+            pendingWork?.cancel()
+            StartTrace.note(.resumedTap, gesture: gestureID, capture: captureID)
+        case .pendingTap:
+            holdWork?.cancel()
+            StartTrace.note(.pendingTap, gesture: gestureID, capture: captureID)
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.apply(self.state.expireTap(at: ProcessInfo.processInfo.systemUptime))
+            }
+            pendingWork?.cancel(); pendingWork = work
+            let wait = max(0, (state.pendingTapUntil ?? 0) - ProcessInfo.processInfo.systemUptime)
+            DispatchQueue.main.asyncAfter(deadline: .now() + wait, execute: work)
+        case .confirmHold:
+            StartTrace.note(.confirmedHold, gesture: gestureID, capture: captureID)
+            onConfirm()
         case .end: onUp()
-        case .cancel: onCancel()
-        case .handsFree: Log.note("hold key: hands-free on"); onHandsFree()
+        case .cancel:
+            pendingWork?.cancel(); holdWork?.cancel()
+            StartTrace.note(.cancelled, gesture: gestureID, capture: captureID, value: state.cancelReason == .tapTimeout ? 1 : 2)
+            onCancel(state.cancelReason)
+        case .handsFree:
+            holdWork?.cancel()
+            StartTrace.note(.handsFree, gesture: gestureID, capture: captureID)
+            Log.note("hold key: hands-free on"); onConfirm(); onHandsFree()
         case nil: break
         }
     }

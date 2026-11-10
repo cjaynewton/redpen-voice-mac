@@ -59,7 +59,7 @@ enum SoundTap {
     static func loudness(of processes: [AudioObjectID], for seconds: Double, record: Recording? = nil, done: @escaping @Sendable (Float?) -> Void) {
         guard !processes.isEmpty else { Log.note("media listen: no media processes"); done(nil); return }
         let request = Listen(processes: processes, seconds: seconds, record: record, done: done)
-        if let next = listens.submit(request) { listen(next) }
+        if let next = listens.submit(request) { setup.async { listen(next) } }
         else { Log.note("media listen: busy, queued \(seconds)s listen") }
     }
 
@@ -70,12 +70,13 @@ enum SoundTap {
         let done: @Sendable (Float?) -> Void
     }
     private static let listens = MediaListenQueue<Listen>()
+    private static let setup = DispatchQueue(label: "redpen.voice.tap-setup", qos: .userInitiated)
 
     /// A diagnostic sample never queues behind or stacks on another listen. False means try next time.
     static func loudnessIfIdle(of processes: [AudioObjectID], for seconds: Double, done: @escaping @Sendable (Float?) -> Void) -> Bool {
         guard !processes.isEmpty,
               let next = listens.submitIfIdle(Listen(processes: processes, seconds: seconds, record: nil, done: done)) else { return false }
-        listen(next)
+        setup.async { listen(next) }
         return true
     }
 
@@ -83,7 +84,7 @@ enum SoundTap {
         let processes = request.processes, seconds = request.seconds, record = request.record
         let release: @Sendable () -> Void = {
             let next = listens.finish()
-            if let next { listen(next) }
+            if let next { setup.async { listen(next) } }
         }
         let done: @Sendable (Float?) -> Void = { v in release(); request.done(v) }
         let desc = CATapDescription(stereoMixdownOfProcesses: processes)

@@ -8,7 +8,7 @@ import VoiceCore
 /// starts by surprise.
 enum Media {
     /// An app sending sound out right now, with the CoreAudio object that lets its sound alone be listened to.
-    struct Player { let name: String; let object: AudioObjectID; let pid: pid_t }
+    struct Player: Sendable { let name: String; let object: AudioObjectID; let pid: pid_t }
 
     /// The apps sending sound out right now that could be playing a video or a song. Sound routers, system alert
     /// sounds, Siri's listener and this app are left out, so a notification never decides a pause.

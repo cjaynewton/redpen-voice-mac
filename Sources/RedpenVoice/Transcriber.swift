@@ -344,6 +344,10 @@ final class Transcriber {
 
     /// One dictation: audio in while the key is held, text out after release.
     final class Session: @unchecked Sendable {
+        var traceID = 0
+        private var tracedFirstDraft = false
+        private var cleanupSealed = false
+        private var firstKeptSample = 0
         private let input: AsyncStream<AnalyzerInput>
         private let feed: AsyncStream<AnalyzerInput>.Continuation
         private var analyzer: SpeechAnalyzer?
@@ -404,10 +408,16 @@ final class Transcriber {
         /// An unchecked video does not stop delivery (D-1400). This is advisory, not a typing permission.
         func mediaUnchecked(reason: String = "uncheckedVideo") {
             let active = lock.withLock { uncertainMedia = true; mediaOpening.useOriginal(); return !cancelled }
+            StartTrace.note(.firstSampleKept, gesture: traceID, count: 0)
             if active { Log.note("media: unsure, typed anyway; reason=\(reason)") }
         }
         func mediaSettled() {
-            lock.withLock { if !echoPreparing { mediaOpening.settle(through: mediaOpening.through) } }
+            lock.withLock {
+                if !echoPreparing {
+                    mediaOpening.settle(through: mediaOpening.through)
+                    StartTrace.note(.firstSampleKept, gesture: traceID, count: firstKeptSample)
+                }
+            }
         }
         /// Called with lock held by both stream snapshots, so timeout and audio selection stay atomic.
         private func mediaReadyLocked() -> Bool {
@@ -416,6 +426,7 @@ final class Transcriber {
             if !timedOut, mediaOpening.timedOut {
                 uncertainMedia = true
                 if !cancelled { Log.note("media: unsure, typed anyway; reason=mediaDecisionTimeout") }
+                StartTrace.note(.firstSampleKept, gesture: traceID, count: 0, value: 2)
             }
             return ready && (!echoPreparing || mediaOpening.keepsOriginal)
         }
@@ -424,7 +435,11 @@ final class Transcriber {
         }
 
         private func openingCut(_ proposed: Int, from: Int, available: Int) -> Int? {
-            lock.withLock { mediaOpening.cut(proposed, from: from, available: available) }
+            lock.withLock {
+                let next = mediaOpening.cut(proposed, from: from, available: available)
+                if next != nil { cleanupSealed = true }
+                return next
+            }
         }
 
         /// The sample heard at `d` (later than the newest sample means one not yet arrived).
@@ -436,12 +451,14 @@ final class Transcriber {
         func silence(upTo i: Int) {
             lock.withLock {
                 _ = mediaReadyLocked()
-                guard mediaOpening.acceptsCleanup, !cancelled else { return }
+                guard mediaOpening.acceptsCleanup, !cleanupSealed, !cancelled else { return }
                 silenceUntil = max(silenceUntil, i)
+                firstKeptSample = silenceUntil
                 for k in 0..<min(silenceUntil, samples.count) { samples[k] = 0 }
                 if live != nil { audioGeneration += 1 }
                 // Commit the confirmed legacy-engine cut atomically with its timeout decision.
                 mediaOpening.settle(through: mediaOpening.through)
+                StartTrace.note(.firstSampleKept, gesture: traceID, count: silenceUntil, value: 1)
             }
         }
 
@@ -479,6 +496,10 @@ final class Transcriber {
                     let text = await echoStripped((try? await Transcriber.parakeetText(drafter, Array(audio[from..<c]))) ?? "", from: from)
                     // The draft and its callback go out together, so a Whisper check can never reach the app first.
                     lock.withLock {
+                        if !tracedFirstDraft, !text.isEmpty {
+                            tracedFirstDraft = true
+                            StartTrace.note(.firstDraftReady, gesture: traceID, count: text.utf16.count)
+                        }
                         drafts.append(Draft(start: from, end: c, text: text))
                         if !cancelled { onDraft?(drafts.count - 1, text) }
                     }
@@ -572,7 +593,7 @@ final class Transcriber {
         func mediaEcho(_ played: [Float], through: Int = 0, unreferencedPrefix: Int = 0) {
             let accepted = lock.withLock { () -> Bool in
                 _ = mediaReadyLocked()
-                guard mediaOpening.acceptsCleanup, !cancelled else { return false }
+                guard mediaOpening.acceptsCleanup, !cleanupSealed, !cancelled else { return false }
                 mediaOpening.include(through: through)
                 if live == nil, whisper != nil || parakeet != nil { echoPreparing = true }
                 return true
@@ -590,7 +611,7 @@ final class Transcriber {
                     }
                     let mic = recorded
                     let result = MediaAudio.removing(mic: mic, played: played, preRoll: unreferencedPrefix)
-                    acceptMediaResult(result, replacing: mic.count)
+                    acceptMediaResult(result, replacing: mic.count, preRoll: unreferencedPrefix)
                     // Supported engines hear the cleaned audio. Never delete a matching user phrase from text.
                     return ""
                 }
@@ -601,17 +622,25 @@ final class Transcriber {
 
         /// Confidence chooses audio, never delivery. Reject late results after raw audio was released.
         @discardableResult
-        fileprivate func acceptMediaResult(_ result: MediaAudio.Result, replacing count: Int) -> Bool {
+        fileprivate func acceptMediaResult(_ result: MediaAudio.Result, replacing count: Int, preRoll: Int = 0) -> Bool {
             let accepted = lock.withLock { () -> Bool in
                 _ = mediaReadyLocked()
                 defer { echoPreparing = false }
-                guard mediaOpening.acceptsCleanup, !cancelled else { return false }
+                guard mediaOpening.acceptsCleanup, !cleanupSealed, !cancelled else { return false }
                 if result.certain && result.cleaned {
                     samples.replaceSubrange(0..<count, with: result.samples)
                     mediaOpening.settle(through: mediaOpening.through)
+                    // The cleaner masks pre-roll plus measured ranges. Natural zero samples are still retained.
+                    firstKeptSample = min(max(0, preRoll), count)
+                    for cut in result.diagnostics.cuts.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+                        if cut.lowerBound <= firstKeptSample { firstKeptSample = max(firstKeptSample, cut.upperBound) }
+                    }
+                    StartTrace.note(.firstSampleKept, gesture: traceID, count: firstKeptSample, value: 1)
                 } else {
                     uncertainMedia = true
                     mediaOpening.useOriginal()
+                    firstKeptSample = 0
+                    StartTrace.note(.firstSampleKept, gesture: traceID, count: 0)
                 }
                 return true
             }
@@ -754,6 +783,7 @@ final class Transcriber {
         private func feedLive(_ live: StreamingUnifiedAsrManager) async throws {
             let chunk: [Float] = lock.withLock {
                 defer { fed = samples.count }
+                cleanupSealed = true
                 return fed < samples.count ? Array(samples[fed...]) : []
             }
             guard !chunk.isEmpty, let f = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false),

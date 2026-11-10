@@ -3,7 +3,7 @@ import Foundation
 /// Event-timed talk gestures. Hardware state is used only to recover missing releases.
 public struct TalkKeyState {
     public enum Action: Equatable { case begin, resume, pendingTap, confirmHold, end, cancel, handsFree }
-    public enum CancelReason { case otherKey, tapTimeout }
+    public enum CancelReason { case otherKey, tapTimeout, startFailure }
     public private(set) var cancelReason = CancelReason.otherKey
     public private(set) var confirmed = false
     public static let tapLength = DictationDelivery.tapLength

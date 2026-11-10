@@ -18,6 +18,7 @@ final class Recorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     private var ringFrames: AVAudioFrameCount = 0
     private var preRollFrames: AVAudioFrameCount = 0
     private var live: ((AVAudioPCMBuffer) -> Void)?
+    private var firstLive: ((Int) -> Void)?
     /// The level while nobody is talking, for the first window's microphone check. Called on the mic queue.
     private var watcher: ((Float) -> Void)?
     func watchLevel(_ f: ((Float) -> Void)?) { lock.lock(); watcher = f; lock.unlock() }
@@ -75,7 +76,9 @@ final class Recorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
         if let live {
             pushedFrames += buf.frameLength
             peak = max(peak, Recorder.peak(buf))
-            lock.unlock(); live(buf); return
+            let first = firstLive; firstLive = nil
+            // Serialize with begin's pre-roll replay. The first live buffer must never pass the first tap's audio.
+            first?(Int(buf.frameLength)); live(buf); lock.unlock(); return
         }
         ring.append(buf); ringFrames += buf.frameLength
         while ringFrames > preRollFrames, let first = ring.first { ring.removeFirst(); ringFrames -= first.frameLength }
@@ -84,21 +87,23 @@ final class Recorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
 
     /// The key went down: hand over the pre-roll, then everything live. Returns the pre-roll's length in frames.
     @discardableResult
-    func begin(onBuffer: @escaping (AVAudioPCMBuffer) -> Void, onLevel: @escaping (Float) -> Void) -> AVAudioFrameCount {
+    func begin(onBuffer: @escaping (AVAudioPCMBuffer) -> Void, onLevel: @escaping (Float) -> Void,
+               onFirstLiveBuffer: ((Int) -> Void)? = nil) -> AVAudioFrameCount {
         lock.lock()
         let pre = ring; ring.removeAll(); ringFrames = 0
         live = onBuffer
+        firstLive = onFirstLiveBuffer
         let preFrames = pre.reduce(0) { $0 + $1.frameLength }
         pushedFrames = preFrames; peak = pre.reduce(0) { max($0, Recorder.peak($1)) }
-        lock.unlock()
         level = onLevel
         for b in pre { onBuffer(b) }
+        lock.unlock()
         return preFrames
     }
 
     /// The key came up: stop handing audio over. Capture keeps running for next time.
     func end() {
-        lock.lock(); live = nil; lock.unlock()
+        lock.lock(); live = nil; firstLive = nil; lock.unlock()
         level = nil
     }
 

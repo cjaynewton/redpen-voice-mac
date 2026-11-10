@@ -28,6 +28,37 @@ def block(source, marker):
 
 session = block((ROOT / "Sources/RedpenVoice/Transcriber.swift").read_text(), "final class Session:")
 recording = block((ROOT / "Sources/RedpenVoice/SoundTap.swift").read_text(), "final class Recording:")
+# Passive source contracts for the real AppDelegate/adapter path, alongside runtime audio/state checks below.
+app_source = (ROOT / "Sources/RedpenVoice/main.swift").read_text()
+begin = block(app_source, "private func begin()")
+activate = block(app_source, "private func activateStart(")
+media = block(app_source, "private func startMedia(")
+confirmed = block(app_source, "private func whenMediaConfirmed(")
+hold_source = (ROOT / "Sources/RedpenVoice/HoldKey.swift").read_text()
+hud_source = (ROOT / "Sources/RedpenVoice/HUD.swift").read_text()
+recorder_source = (ROOT / "Sources/RedpenVoice/Recorder.swift").read_text()
+wiring_checks = [
+    ("bar on first accepted down before recorder attach", begin.index('hud.show("", level: true)') < begin.index("recorder.begin(")),
+    ("capture attaches before yielding setup", begin.index("recorder.begin(") < begin.index("DispatchQueue.main.async { [weak self] in self?.prepareStart")),
+    ("no slow discovery or delayed HUD on start path", all(term not in begin for term in ["Insert.focus", "boxPrint", "playingApps()", "SoundTap.loudness", "recorder.start(", "asyncAfter", "loadNames", "engine.session("])),
+    ("HUD orders on initial show", "panel.orderFrontRegardless()" in block(hud_source, "func show(")),
+    ("capture promotion needs confirmation and bounded target result", "capture.confirmed, capture.targetDone" in block(app_source, "private func activateIfReady(")),
+    ("media action is gated by gesture not timer alone", "keys.mediaAllowed, pendingStart == nil" in confirmed and "whenMediaConfirmed(" in media),
+    ("no blanket opening zeroing in app media path", "silence(upTo:" not in media),
+    ("quiet Chrome guard survived conflict resolution", "askChromeWhenQuiet" in media and "chromeOnly: !playing" in media),
+    ("SoundTap setup off caller", "setup.async { listen(next) }" in (ROOT / "Sources/RedpenVoice/SoundTap.swift").read_text()),
+    ("event-time cancel reason reaches app", "onCancel(state.cancelReason)" in hold_source and "cancel(disposableTap: reason != .otherKey)" in app_source),
+    ("recorder serializes pre-roll before live buffer", block(recorder_source, "func begin(").index("for b in pre { onBuffer(b) }") < block(recorder_source, "func begin(").index("lock.unlock()")),
+    ("default mic moves after the release tail, never during pending capture", "pendingStart == nil" in block(app_source, "private func remicIfDefaultMoved(") and 'remicIfDefaultMoved(reason: "input moved while talking")' in block(app_source, "private func end()")),
+    ("input tracking starts on first down and is carried into drafts", "keys.trackDraft(since: capture.beganUptime)" in begin and "input: capture.input" in activate),
+    ("late target cannot ignore real typing", "capture.input?.snapshot().typingAt == nil" in app_source),
+    ("missing start target cannot claim later box for drafts", "if startBox == nil { drafting?.draftsStopped = true; drafting?.checksStopped = true" in activate),
+]
+for name, passed in wiring_checks:
+    if not passed:
+        raise AssertionError(name)
+print(f"{len(wiring_checks)} startup source contracts passed (not screen-pixel or hardware proof)", flush=True)
+
 stubs = r'''
 import AVFoundation
 import Speech
@@ -54,6 +85,14 @@ final class LiveWordsPriority {
     static let shared = LiveWordsPriority()
     final class Lease { func end() {} }
     func begin() -> Lease { Lease() }
+}
+enum StartTrace {
+    static let lock = NSLock()
+    static var firstKept: [Int: Int] = [:]
+    static func note(_ event: TalkTimingTrace.Event, gesture: Int, count: Int = 0, value: Int = 0) {
+        if event == .firstSampleKept { lock.withLock { firstKept[gesture] = count } }
+    }
+    static func offset(_ gesture: Int) -> Int? { lock.withLock { firstKept[gesture] } }
 }
 enum FakeASR {
     static var reference: [Float] = []
@@ -86,7 +125,7 @@ final class Calls: @unchecked Sendable {
     func check(_ t: String) { lock.withLock { checks.append(t) } }
 }
 @main struct Run {
-    static var count = 0
+    static var count = __WIRING_CHECKS__
     static func check(_ name: String, _ ok: Bool) {
         if !ok { print("FAIL \(name)"); fflush(stdout); exit(1) }; count += 1
     }
@@ -121,9 +160,12 @@ final class Calls: @unchecked Sendable {
             let before = (9600..<36_800).filter { old.recorded[$0] != original[$0] }.count / 16
             old.cancel()
             let s = Transcriber.Session(whisper: WhisperKit())
+            s.traceID = speakers ? 2 : 1
             s.drafter = AsrManager(); s.holdForMedia(); push(mic, to: s)
             s.mediaEcho(video, through: 36_800, unreferencedPrefix: 9600); s.mediaSettled()
             while !s.settledForLoops { try await Task.sleep(for: .milliseconds(10)) }
+            s.mediaSettled() // Repeated settlement must not reset the trace's applied mask boundary.
+            check("trace reports first retained sample after actual cut", StartTrace.offset(s.traceID) == (speakers ? 9600 : 0))
             let after = (9600..<36_800).filter { s.recorded[$0] == 0 && original[$0] != 0 }.count / 16
             check("all opening PCM retained", after == 0 && before == 1700)
             let heard = "Please tell me what happened"
@@ -168,6 +210,11 @@ final class Calls: @unchecked Sendable {
         try await Task.sleep(for: .milliseconds(1600))
         check("real first draft cleaned", calls.lock.withLock { calls.drafts.first == "My first words stay" })
         check("real first check cleaned", calls.lock.withLock { calls.checks.first == "My first words stay" })
+        let alreadyUsed = s.recorded
+        s.silence(upTo: alreadyUsed.count)
+        check("late blanket cut cannot rewrite a ready draft", s.recorded == alreadyUsed)
+        let lateCleanup = MediaAudio.removing(mic: alreadyUsed, played: video, preRoll: 9600)
+        check("late media fit cannot replace a ready draft", !s.acceptMediaResult(lateCleanup, replacing: alreadyUsed.count) && s.recorded == alreadyUsed)
         s.cancel()
 
         // A measured 25 ms post-key startup gap is blanked; it no longer makes the whole dictation abstain.
@@ -259,6 +306,36 @@ final class Calls: @unchecked Sendable {
         }
         check("cancel still suppresses drafts and checks", cancelledCalls.lock.withLock { cancelledCalls.drafts.isEmpty && cancelledCalls.checks.isEmpty })
 
+        for cancelByKey in [false, true] {
+            var gesture = TalkKeyState()
+            let pending = TalkCapture<[Float]>(maxFrames: 48_000)
+            let target = Transcriber.Session(whisper: WhisperKit())
+            let start = noise(444, 4000), gap = noise(445, 4000)
+            _ = gesture.event(key: 63, down: true, at: 0)
+            pending.append(start, frames: start.count)
+            _ = gesture.event(key: 63, down: false, at: 0.1)
+            pending.append(gap, frames: gap.count)
+            check("pending tap never feeds engine", target.recorded.isEmpty)
+            let action = cancelByKey ? gesture.otherKey(at: 0.2) : gesture.expireTap(at: 0.6)
+            check("single tap or other-key cancellation is explicit", action == .cancel)
+            pending.discard()
+            check("cancelled first-tap audio is not delivered", !pending.activate { push($0, to: target) } && target.recorded.isEmpty)
+            target.cancel()
+        }
+        var gesture = TalkKeyState()
+        let pendingTap = TalkCapture<[Float]>(maxFrames: 48_000)
+        let promoted = Transcriber.Session(whisper: WhisperKit())
+        let firstTap = noise(446, 4000), gap = noise(447, 4000), secondTap = noise(448, 4000)
+        _ = gesture.event(key: 63, down: true, at: 0)
+        pendingTap.append(firstTap, frames: firstTap.count)
+        _ = gesture.event(key: 63, down: false, at: 0.1)
+        pendingTap.append(gap, frames: gap.count)
+        check("double tap resumes original capture", gesture.event(key: 63, down: true, canBegin: false, at: 0.2) == .resume)
+        pendingTap.append(secondTap, frames: secondTap.count)
+        check("second release confirms same capture", gesture.event(key: 63, down: false, at: 0.3) == .handsFree)
+        check("double tap replays first samples once", pendingTap.activate { push($0, to: promoted) } && promoted.recorded == firstTap + gap + secondTap)
+        promoted.cancel()
+
         // Recording keeps everything between the loudness decision and Chrome's eventual answer.
         let recording = Recording(continuous: true)
         recording.add([Float](repeating: 0.1, count: 4000), rate: 16000)
@@ -285,11 +362,12 @@ with tempfile.TemporaryDirectory(prefix="first-words-", dir=ROOT / ".build") as 
     helper = (ROOT / "Sources/VoiceCore/MediaAudio.swift").read_text()
     reasons = sorted(set(re.findall(r'unchanged\("([^"]+)"', helper)) - {"quietPreRollNoMeasuredEcho", "noMeasuredEcho"})
     reasons += ["middleBand", "futureUnknownReason"]
+    tests = tests.replace("__WIRING_CHECKS__", str(len(wiring_checks)))
     tests = tests.replace("__UNSURE_REASONS__", ", ".join(json.dumps(reason) for reason in reasons))
     source.write_text(stubs + session + "\n}\n" + recording + tests)
     core = ROOT / "Sources/VoiceCore"
     files = [core / name for name in ["MediaEcho.swift", "MediaAudio.swift", "MediaOpening.swift", "MediaGate.swift", "Chunker.swift",
-                                    "Silence.swift", "TalkKeyState.swift", "DictationDelivery.swift"]]
+                                    "Silence.swift", "TalkKeyState.swift", "DictationDelivery.swift", "TalkTimingTrace.swift", "TalkCapture.swift"]]
     subprocess.run(["xcrun", "swiftc", "-O", "-parse-as-library", "-swift-version", "5", str(source),
                     *map(str, files), "-o", str(tmp / "check")], cwd=ROOT, check=True)
     subprocess.run([str(tmp / "check")], cwd=ROOT, check=True, env=os.environ)

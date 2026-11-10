@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import VoiceCore
+import QuartzCore
 
 /// A small dark bar near the bottom of the screen while you talk, in the style picked in Settings. Messages use the
 /// same bar: a flat grey line beside the words when something went wrong, a green tick when something worked. Never takes focus, so the cursor stays where the words will land.
@@ -38,6 +39,30 @@ final class HUD {
     private let copyWords = NSButton(title: "Copy", target: nil, action: nil)
     private let throwAway = NSButton(title: "Throw away", target: nil, action: nil)
     private var waitAction: ((Bool) -> Void)?
+    var traceID = 0
+
+    /// Key-down must not wait for Accessibility. Refine this pointer choice when the bounded snapshot returns.
+    func flushInitialDisplay() {
+        panel.displayIfNeeded()
+        CATransaction.flush()
+    }
+
+    func captureImmediately() {
+        let screens = NSScreen.screens
+        startBox = nil
+        dictationScreen = screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? screens.first
+    }
+
+    func refineCapture(textBox: CGRect?, window: CGRect?) {
+        let screens = NSScreen.screens
+        guard let primary = screens.first else { return }
+        startBox = textBox.map { BarScreen.fromAccessibility($0, primaryTop: primary.frame.maxY) }
+        let choice = BarScreen.choose(screens: screens.map(\.frame), textBox: startBox,
+                                     window: window.map { BarScreen.fromAccessibility($0, primaryTop: primary.frame.maxY) },
+                                     pointer: NSEvent.mouseLocation)
+        dictationScreen = choice.map { screens[$0.index] }
+        if panel.isVisible { place() }
+    }
 
     func captureScreen(textBox: CGRect?) {
         let screens = NSScreen.screens
@@ -112,6 +137,7 @@ final class HUD {
 
     /// Bars only while talking; words only when something needs saying.
     func show(_ text: String, level: Bool, ok: Bool = false) {
+        StartTrace.note(.barRequested, gesture: traceID)
         typingStopped = false
         clearSuggestion()
         hideAt?.cancel()
@@ -124,6 +150,7 @@ final class HUD {
         layout(text: text, level: level)
         place()
         panel.orderFrontRegardless()
+        StartTrace.note(.barOrdered, gesture: traceID, value: panel.isVisible ? 1 : 0)
         tick?.invalidate(); tick = nil
         if level { startTicking() }
     }

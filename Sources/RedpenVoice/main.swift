@@ -53,7 +53,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             else { mediaPause.release(); mediaPauseMonitor.stop() }
         }
     }
-    private var settleWork: DispatchWorkItem?
     private var busy = false
     private var press = 0
     private var pasteKey: Shortcut?
@@ -89,6 +88,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pauseMeetingKey: Shortcut?
 
     func applicationDidFinishLaunching(_ n: Notification) {
+        StartTrace.launch()
+        StartTarget.startWatching()
         // Test modes return before settings, microphone, menus, updates, recovery, or any provider can start.
         if let i = CommandLine.arguments.firstIndex(of: "--live-words-shot"), i + 1 < CommandLine.arguments.count {
             let width = CommandLine.arguments.firstIndex(of: "--width").flatMap { $0 + 1 < CommandLine.arguments.count ? Double(CommandLine.arguments[$0 + 1]) : nil } ?? 700
@@ -629,9 +630,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return false }
             return !self.busy && self.session == nil && self.writing == 0 && self.testFile == nil
         }
-        keys.onDown = { [weak self] in self?.begin(); return self?.session != nil }
+        keys.onDown = { [weak self] in self?.begin(); return self?.pendingStart != nil || self?.session != nil }
         keys.onUp = { [weak self] in self?.end() }
-        keys.onCancel = { [weak self] in self?.cancel() }
+        keys.onCancel = { [weak self] reason in self?.cancel(reason: reason) }
+        keys.onConfirm = { [weak self] in self?.confirmStart() }
         keys.onEscape = { [weak self] at, repeated in self?.escapePressed(at: at, repeated: repeated) ?? false }
         keys.heldByEnter = { [enterTap] at in enterTap.held(at: at) }
         enterTap.setTalkKeys(keys.keys.map(\.code))
@@ -770,11 +772,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     private var quitting = false
     private var updateWatch: AnyCancellable?
-    /// Set while Voice decides whether something was playing, so the new session holds its drafts until then.
-    private var holdForMedia = false
     /// The dictation a video decision belongs to, kept even after you let go, and how much of it came from before the
     /// key went down. A new one for every press.
-    final class PendingMedia { weak var session: Transcriber.Session?; var preRoll = 0 }
+    @MainActor final class PendingMedia { weak var session: Transcriber.Session?; var preRoll = 0 }
     private var pendingMedia = PendingMedia()
 
     /// Calls back once the apps' sound has gone quiet (checked every tenth of a second), or after `tries` checks.
@@ -836,7 +836,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Restarts the warm mic on the Mac's current input if it has moved. Waits if a dictation is running.
     private func remicIfDefaultMoved(reason: String) {
-        guard config.inputDevice.isEmpty, session == nil, testFile == nil, meeting == nil,
+        guard config.inputDevice.isEmpty, session == nil, pendingStart == nil, testFile == nil, meeting == nil,
               let now = Mics.defaultInput()?.uid, now != recorder.currentUID else { return }
         Log.note("mic: \(reason), moving to \(Mics.defaultInput()?.name ?? now)")
         recorder.stopEngine()
@@ -850,152 +850,149 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do { try recorder.start(format: format) } catch { Log.note("mic warm failed: \(error.localizedDescription)") }
     }
 
+    /// The only synchronous start work is bar display and attaching the warm recorder to bounded memory.
+    @MainActor private final class PendingStart {
+        let id: Int
+        let audio: TalkCapture<AVAudioPCMBuffer>
+        let format: AVAudioFormat
+        let targetStamp: StartTarget.Stamp
+        let began = Date()
+        let beganUptime = ProcessInfo.processInfo.systemUptime
+        var input: DraftInput?
+        var preRoll = 0
+        var confirmed = false
+        var targetDone = false
+        var activated = false
+        var endRequested = false
+        var activate: (() -> Void)?
+        var mediaRecording: SoundTap.Recording?
+        var previousEnterWait: (id: Int, gen: Int, long: Bool)?
+        init(id: Int, format: AVAudioFormat, stamp: StartTarget.Stamp) {
+            self.id = id; self.format = format; targetStamp = stamp
+            audio = TalkCapture(maxFrames: Int(format.sampleRate * 3))
+        }
+    }
+    private var pendingStart: PendingStart?
+
     private func begin() {
-        // No dictation while a meeting records: the meeting holds the microphone, and a dictation's media pause would
-        // silence the others' side of the recording. Live words never needed this lifted (review, Nov 6 2026).
+        if pendingStart != nil { cancel(reason: .tapTimeout) }
         if meeting != nil { hud.flash("Meeting notes are on", for: 1.5); return }
         guard !busy, session == nil, testFile == nil else { return }
-        if firstRun?.isOpen == true { firstRun?.keySeen() }
         guard engine.state == .ready, let format = engine.audioFormat else { hud.flash(engineWord == "ready" ? "Not ready" : "Engine " + engineWord); return }
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { hud.flash("Allow the microphone"); return }
+        let capture = PendingStart(id: keys.captureID, format: format, stamp: StartTarget.stamp())
+        capture.input = keys.trackDraft(since: capture.beganUptime)
+        capture.previousEnterWait = enterWait; enterWait = nil
+        pendingStart = capture
+        press += 1
+        deliveries.begin()
+        startedAt = capture.began
+        startBox = nil
+        // No Accessibility, device discovery, names file or SoundTap setup before this show/attach pair.
+        hud.traceID = capture.id
+        hud.captureImmediately()
+        hud.style = config.levelLook == "off" ? "pen" : config.levelLook
+        hud.micName = recorder.inputName
+        hud.show("", level: true)
+        capture.preRoll = Int(recorder.begin(onBuffer: { capture.audio.append($0, frames: Int($0.frameLength)) },
+            onLevel: { [weak self] v in DispatchQueue.main.async { self?.hud.level(v) } },
+            onFirstLiveBuffer: { frames in StartTrace.note(.firstMicBuffer, gesture: capture.id, count: frames) }))
+        micOwner = press
+        StartTrace.note(.captureAttached, gesture: capture.id, count: capture.preRoll)
+        escapePresses = EscapeTwice()
+        hud.flushInitialDisplay()
+        // Return to AppKit so the already-ordered panel can paint before engine/target/media work.
+        DispatchQueue.main.async { [weak self] in self?.prepareStart(capture) }
+    }
+
+    private func prepareStart(_ capture: PendingStart) {
+        guard pendingStart === capture else { return }
         liveWordsDictation = LiveWordsPriority.shared.begin()
-        remicIfDefaultMoved(reason: "input moved before this press")
+        if firstRun?.isOpen == true { firstRun?.keySeen() }
         suggestionWork?.cancel(); hud.hideSuggestion()
-        if waitingText != nil { stopWaiting(); hud.hide(); Log.note("insert: new press, the waiting words stay for paste") }
-        // A held Enter from the last dictation goes now, before this one types anything. A long talk's is dropped:
-        // its words may not all be in yet (D-1023).
-        if let w = enterWait {
-            enterWait = nil
+        if waitingText != nil { stopWaiting(); Log.note("insert: new press, the waiting words stay for paste") }
+        if let w = capture.previousEnterWait {
+            capture.previousEnterWait = nil
             if w.long { enterTap.drop(w.id, why: "a new press began") } else { enterTap.release(w.id, why: "a new press began") }
         }
-        // Where this dictation's words go back to, if you move away while they are written.
-        if Insert.focus().kind == .text, let (el, pid) = Insert.focusedElement() {
-            startBox = StartBox(pid: pid, element: el, app: NSRunningApplication(processIdentifier: pid)?.localizedName ?? "that app",
-                                window: Self.boxWindow(el), print: Self.boxPrint(el, withText: true))
-        } else { startBox = nil }
-        hud.captureScreen(textBox: startBox?.print.frame)
         fixWatch.finish()
-        deliveries.begin()
-        let generation = delivery
-        busy = true
-        // The bar waits a quarter second, so an Fn shortcut never flickers it.
-        let settle = DispatchWorkItem { [weak self] in
-            guard let self, self.session != nil, self.delivery == generation else { return }
-            if self.config.showLevel {
-                self.hud.style = self.config.levelLook; self.hud.micName = self.recorder.inputName
-                self.hud.show("", level: true)
-            }
-        }
-        // The pause listens to the speakers for that same quarter second and presses pause only on real sound.
-        // An app holding the speakers open in silence (Chrome, Boom 3D) no longer starts a paused video.
-        press += 1
-        let thisPress = press
-        // A press that starts while the last one's pause is still held (its words still being written) takes the
-        // pause over, so the video comes back once, after this press, and is never paused or started twice.
-        // The video is left alone until this is a real press: a quick tap (the first of a double tap, or a stray
-        // tap) is over before 0.3 s and never presses anything, so taps can't flip a video on and off.
-        pendingMedia = PendingMedia()
-        if resumeWork != nil { resumeWork?.cancel(); resumeWork = nil }  // pressed again before the video came back
-        if pausedMedia {
-            // Invalidate an older resume listen, even if this press ends before its callback arrives.
-            pausedMedia = true
-            Log.note("media: still paused from the last press")
-        } else if config.pauseMedia {
-            let players = Media.playingApps()
-            if players.isEmpty { Log.note("media: no app playing") }
-            else {
-                holdForMedia = true
-                // Listen from the moment the key goes down; press pause no sooner than 0.3 s in, so a tap never does.
-                let pressedAt = Date()
-                let mine = pendingMedia
-                // What the app plays from here until it goes quiet is kept, so its words can come off the start.
-                let played = SoundTap.Recording(continuous: true)
-                SoundTap.loudness(of: players.map(\.object), for: 0.25, record: played) { peak in
-                    DispatchQueue.main.async { [weak self] in
-                        let wait = max(0, 0.3 - Date().timeIntervalSince(pressedAt))
-                        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
-                            guard let self, let s = mine.session else { played.stop(); return }
-                            // Let go (or pressed again) before Voice could decide: this dictation still gets a decision,
-                            // so the video's words can't slip through. A press that short was all video if anything played.
-                            guard self.press == thisPress, self.session === s, !self.pausedMedia else {
-                                played.stop()
-                                // D-1400: keep original audio and normal delivery. A cancelled tap stays cancelled.
-                                if MediaGate.isPlaying(peak: peak) { s.mediaUnchecked(reason: "pressEndedBeforeMediaDecision") }
-                                s.mediaSettled(); return
-                            }
-                            let playing = MediaGate.isPlaying(peak: peak)
-                            let askChrome = MediaGate.askChromeWhenQuiet(peak: peak, chromePlaying: players.contains { Media.isChrome($0) })
-                            Log.note("media: apps [\(players.map(\.name).joined(separator: ", "))], loudness \(peak.map { String(format: "%.4f", $0) } ?? "no tap"), paused \(playing)\(askChrome ? ", quiet, asking Chrome" : "")")
-                            guard playing || askChrome else { played.stop(); s.mediaSettled(); return }  // nothing playing: every word kept
-                            self.pausedMedia = true
-                            // The last pause's watch would see this video still playing while Chrome answers and give
-                            // the new pause up (Nov 2 2026). It starts again, for this pause, once the pause is made.
-                            self.mediaPauseMonitor.stop()
-                            let pauseToken = self.mediaPause.generation
-                            // Until Chrome answers, a resume has nothing to put back, so it presses nothing.
-                            self.pausedHow = .chrome(token: "", tabs: [])
-                            Media.pause(players, chromeOnly: !playing, stillPaused: { [weak self] in self?.mediaPause.owns(pauseToken) == true }) { how, outcome in
-                                self.chromeAnswer(outcome)
-                                guard let how else {
-                                    played.stop()
-                                    if playing { s.mediaUnchecked(reason: "chromePauseFailed") }
-                                    // Asked only because the listen was quiet, and Chrome had nothing playing: nothing was
-                                    // paused, so nothing is held to resume later.
-                                    else if self.mediaPause.owns(pauseToken) { self.pausedMedia = false; Log.note("media: Chrome had nothing playing, left alone") }
-                                    s.mediaSettled(); return
-                                }
-                                self.pausedHow = how
-                                let pauseWatch = self.mediaPauseMonitor.start(players)
-                                let pausedAt = Date()
-                                // Listen until the app goes quiet. Its words can then come off the opening transcript
-                                // without deleting the user's microphone audio, including speech before the pause.
-                                played.waitForQuiet { quietAt in
-                                    DispatchQueue.main.async {
-                                        self.mediaPauseMonitor.didSettle(pauseWatch)
-                                        // Every word you said is kept and the video's words come off the start (D-817),
-                                        // by removing a measured copy of app sound before Whisper/Parakeet hear the
-                                        // opening. Drafts and checks wait for that audio. The Mac's own engine still
-                                        // leaves the start out, as does Instant, which drops the rest when two voices
-                                        // overlap (6 of 211 WildSpeech clips with other people talking, Oct 26 2026).
-                                        let audio = played.mono16k()
-                                        let canTakeOff = ["whisper", "parakeet"].contains(self.config.engine)
-                                        if canTakeOff, !played.truncated, played.peak > 0, audio.count > 1600 {
-                                            s.mediaEcho(audio, through: s.sampleAt(quietAt.addingTimeInterval(0.15)), unreferencedPrefix: mine.preRoll)
-                                            s.mediaSettled()
-                                            Log.note("media: kept the microphone opening; checking \(String(format: "%.1f", Double(audio.count) / 16000)) s of app sound, quiet \(Log.ms(quietAt.timeIntervalSince(pausedAt)))ms after the pause")
-                                            return
-                                        }
-                                        if canTakeOff {
-                                            // No usable reference is not permission to erase the user's opening words.
-                                            s.mediaUnchecked(reason: "unusableVideoReference"); s.mediaSettled()
-                                            return
-                                        }
-                                        let cut = s.sampleAt(quietAt.addingTimeInterval(0.15))
-                                        s.silence(upTo: cut)
-                                        s.mediaSettled()
-                                        Log.note("media: left out the first \(String(format: "%.1f", Double(cut) / 16000)) s (the video's sound), quiet \(Log.ms(quietAt.timeIntervalSince(pausedAt)))ms after the pause")
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        settleWork?.cancel(); settleWork = settle
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: settle)
         let (s, module) = engine.session(config)
         session = s
-        refreshEnterArm()
+        s.traceID = capture.id
         sessionEngine = config.engine
-        pendingMedia.session = s
-        if holdForMedia { s.holdForMedia(); holdForMedia = false }
-        startedAt = Date()
+        refreshEnterArm()
+        let pending = PendingMedia()
+        pending.session = s; pending.preRoll = capture.preRoll
+        pendingMedia = pending
+        // Freeze media cleanup against a timeout before any stream can use the opening.
+        if config.pauseMedia && !pausedMedia { s.holdForMedia() }
+        capture.activate = { [weak self, weak s, weak capture] in
+            guard let self, let s, let capture else { return }
+            self.activateStart(capture, session: s, module: module)
+        }
+        StartTarget.discover(capture.targetStamp) { [weak self, weak capture] target in
+            DispatchQueue.main.async {
+                guard let self, let capture, self.pendingStart === capture, !capture.targetDone else { return }
+                if StartTarget.stamp() == capture.targetStamp, capture.input?.snapshot().typingAt == nil, let target {
+                    self.startBox = StartBox(pid: capture.targetStamp.pid, element: target.element,
+                        app: NSRunningApplication(processIdentifier: capture.targetStamp.pid)?.localizedName ?? "that app",
+                        window: target.window, print: target.print)
+                    self.hud.refineCapture(textBox: target.print.frame, window: target.windowFrame)
+                }
+                capture.targetDone = true
+                StartTrace.note(.targetResult, gesture: capture.id, value: self.startBox == nil ? 0 : 1)
+                self.activateIfReady(capture)
+            }
+        }
+        // A hung AX service never holds transcription. Late results cannot be adopted by another capture.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self, weak capture] in
+            guard let self, let capture, self.pendingStart === capture, !capture.targetDone else { return }
+            capture.targetDone = true
+            StartTrace.note(.targetResult, gesture: capture.id, value: -1)
+            self.activateIfReady(capture)
+        }
+        let thisPress = press
+        StartTrace.note(.mediaStart, gesture: capture.id)
+        let receivePlayers: @MainActor @Sendable ([Media.Player]) -> Void = { [weak self, weak s, weak capture] players in
+            guard let self, let s, let capture else { return }
+            guard self.session === s, self.press == thisPress else {
+                s.mediaUnchecked(reason: "pressEndedBeforeMediaDiscovery"); s.mediaSettled(); return
+            }
+            self.startMedia(players, session: s, pending: pending, capture: capture, press: thisPress)
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let players = Media.playingApps()
+            DispatchQueue.main.async { receivePlayers(players) }
+        }
+        activateIfReady(capture)
+    }
+
+    private func confirmStart() {
+        guard let capture = pendingStart else { return }
+        capture.confirmed = true
+        activateIfReady(capture)
+    }
+
+    private func activateIfReady(_ capture: PendingStart) {
+        guard pendingStart === capture, capture.confirmed, capture.targetDone else { return }
+        capture.activate?()
+    }
+
+    private func activateStart(_ capture: PendingStart, session s: Transcriber.Session, module: (any SpeechModule)?) {
+        guard pendingStart === capture, session === s, !capture.activated else { return }
+        guard !capture.audio.overflowed else { failStart("Talk again. The start took too long."); return }
+        let format = capture.format
         names = Names(text: Config.loadNames()); Insert.keepNames = Set(names.spellings)
         if config.sounds { NSSound(named: "Pop")?.play() }
-        if recorder.inputName.isEmpty {
-            do { try recorder.start(format: format) } catch {
-                Log.note("mic failed: \(error.localizedDescription)"); hud.flash("No microphone"); session = nil; liveWordsDictation?.end(); liveWordsDictation = nil; deliveries.cancel(); busy = false; return
+        if !recorder.isRunning {
+            do {
+                try recorder.start(format: format)
+                // A cold start clears Recorder's callback. Reattach this same pending capture afterwards.
+                recorder.begin(onBuffer: { capture.audio.append($0, frames: Int($0.frameLength)) },
+                    onLevel: { [weak self] v in DispatchQueue.main.async { self?.hud.level(v) } },
+                    onFirstLiveBuffer: { frames in StartTrace.note(.firstMicBuffer, gesture: capture.id, count: frames) })
+            } catch {
+                Log.note("mic failed: \(error.localizedDescription)"); failStart("No microphone"); return
             }
         }
         // The engine is listening before the pre-roll arrives, so nothing waits in a queue.
@@ -1016,7 +1013,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             s.streamDrafts()
             s.stream(Chunker(pauseSeconds: talk.pauseSeconds))
         } else if config.engine == "whisper", s.drafter != nil, config.mode != "rewrite" {
-            drafting = Drafting(owner: s, startBox: startBox, keys: keys)
+            drafting = Drafting(owner: s, startBox: startBox, keys: keys, since: capture.began,
+                                uptime: capture.beganUptime, input: capture.input)
+            if startBox == nil { drafting?.draftsStopped = true; drafting?.checksStopped = true; drafting?.stopWhy = .noBox }
             s.onDraft = { [weak self, weak s] i, t in DispatchQueue.main.async { if let s { self?.draft(i, t, from: s) } } }
             s.onCheck = { [weak self, weak s] r, t in DispatchQueue.main.async { if let s { self?.check(r, t, from: s) } } }
             s.streamDrafts()
@@ -1038,36 +1037,156 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
-        pendingMedia.preRoll = Int(recorder.begin(onBuffer: { buf in s.push(buf) },
-                       onLevel: { [weak self] v in DispatchQueue.main.async { self?.hud.level(v) } }))
-        micOwner = thisPress
+
+        // Replay the first tap and gap before attaching the ongoing stream, in capture order.
+        guard capture.audio.activate({ s.push($0) }) else { failStart("Talk again. The start took too long."); return }
+        StartTrace.note(.firstSampleKept, gesture: capture.id, count: 0)
+        capture.activated = true
+        capture.activate = nil
+        pendingStart = nil
         Log.note("recording from \(recorder.inputName)")
-        escapePresses = EscapeTwice()
-        busy = false
+        if capture.endRequested { end() }
+    }
+
+    /// Media actions need a confirmed physical hold or hands-free latch, regardless of slow setup callbacks.
+    private func whenMediaConfirmed(session s: Transcriber.Session, press token: Int, played: SoundTap.Recording,
+                                    action: @escaping () -> Void) {
+        guard session === s, press == token else { played.stop(); s.mediaSettled(); return }
+        if keys.mediaAllowed, pendingStart == nil { action(); return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self, weak s] in
+            guard let self, let s else { played.stop(); return }
+            self.whenMediaConfirmed(session: s, press: token, played: played, action: action)
+        }
+    }
+
+    private func startMedia(_ players: [Media.Player], session s: Transcriber.Session, pending: PendingMedia,
+                            capture: PendingStart, press thisPress: Int) {
+        if resumeWork != nil { resumeWork?.cancel(); resumeWork = nil }
+        if pausedMedia {
+            // Invalidate an older resume listen, even if this press ends before its callback arrives.
+            pausedMedia = true
+            Log.note("media: still paused from the last press")
+        } else if config.pauseMedia {
+            if players.isEmpty { Log.note("media: no app playing") }
+            else {
+                // Capture the app reference early; only a confirmed hold or hands-free latch can pause it.
+                let pressedAt = startedAt
+                let mine = pending
+                // What the app plays from here until it goes quiet is kept, so its words can come off the start.
+                let played = SoundTap.Recording(continuous: true)
+                capture.mediaRecording = played
+                SoundTap.loudness(of: players.map(\.object), for: 0.25, record: played) { [weak self] peak in
+                    DispatchQueue.main.async { [weak self] in
+                        StartTrace.note(.mediaEnd, gesture: capture.id, value: MediaGate.isPlaying(peak: peak) ? 1 : 0)
+                        let wait = max(0, TalkKeyState.tapLength - Date().timeIntervalSince(pressedAt))
+                        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+                            guard let self else { played.stop(); return }
+                            self.whenMediaConfirmed(session: s, press: thisPress, played: played) { [weak self] in
+                                guard let self, let s = mine.session else { played.stop(); return }
+                                // Let go (or pressed again) before Voice could decide: this dictation still gets a decision,
+                                // so the video's words can't slip through. A press that short was all video if anything played.
+                                guard self.press == thisPress, self.session === s, !self.pausedMedia else {
+                                    played.stop()
+                                    // D-1400: keep original audio and normal delivery. A cancelled tap stays cancelled.
+                                    if MediaGate.isPlaying(peak: peak) { s.mediaUnchecked(reason: "pressEndedBeforeMediaDecision") }
+                                    s.mediaSettled(); return
+                                }
+                                let playing = MediaGate.isPlaying(peak: peak)
+                                let askChrome = MediaGate.askChromeWhenQuiet(peak: peak, chromePlaying: players.contains { Media.isChrome($0) })
+                                Log.note("media: apps [\(players.map(\.name).joined(separator: ", "))], loudness \(peak.map { String(format: "%.4f", $0) } ?? "no tap"), paused \(playing)\(askChrome ? ", quiet, asking Chrome" : "")")
+                                guard playing || askChrome else { played.stop(); s.mediaSettled(); return }  // nothing playing: every word kept
+                                self.pausedMedia = true
+                                // The last pause's watch would see this video still playing while Chrome answers and give
+                                // the new pause up (Nov 2 2026). It starts again, for this pause, once the pause is made.
+                                self.mediaPauseMonitor.stop()
+                                let pauseToken = self.mediaPause.generation
+                                // Until Chrome answers, a resume has nothing to put back, so it presses nothing.
+                                self.pausedHow = .chrome(token: "", tabs: [])
+                                Media.pause(players, chromeOnly: !playing, stillPaused: { [weak self] in self?.mediaPause.owns(pauseToken) == true }) { how, outcome in
+                                    StartTrace.note(.chromeAnswer, gesture: capture.id, value: how == nil ? 0 : 1)
+                                    self.chromeAnswer(outcome)
+                                    guard let how else {
+                                        played.stop()
+                                        if playing { s.mediaUnchecked(reason: "chromePauseFailed") }
+                                        // Asked only because the listen was quiet, and Chrome had nothing playing: nothing was
+                                        // paused, so nothing is held to resume later.
+                                        else if self.mediaPause.owns(pauseToken) { self.pausedMedia = false; Log.note("media: Chrome had nothing playing, left alone") }
+                                        s.mediaSettled(); return
+                                    }
+                                    self.pausedHow = how
+                                    let pauseWatch = self.mediaPauseMonitor.start(players)
+                                    let pausedAt = Date()
+                                    // Listen until the app goes quiet. Its words can then come off the opening transcript
+                                    // without deleting the user's microphone audio, including speech before the pause.
+                                    played.waitForQuiet { quietAt in
+                                        DispatchQueue.main.async {
+                                            StartTrace.note(.quietResult, gesture: capture.id, value: played.truncated ? 0 : 1)
+                                            self.mediaPauseMonitor.didSettle(pauseWatch)
+                                            // Every word you said is kept and the video's words come off the start (D-817),
+                                            // by removing a measured copy of app sound before Whisper/Parakeet hear the
+                                            // opening. Drafts and checks wait for that audio. Other engines retain
+                                            // original mic audio instead of blanking the speaker's opening.
+                                            let audio = played.mono16k()
+                                            let canTakeOff = ["whisper", "parakeet"].contains(self.config.engine)
+                                            if canTakeOff, !played.truncated, played.peak > 0, audio.count > 1600 {
+                                                s.mediaEcho(audio, through: s.sampleAt(quietAt.addingTimeInterval(0.15)), unreferencedPrefix: mine.preRoll)
+                                                s.mediaSettled()
+                                                Log.note("media: kept the microphone opening; checking \(String(format: "%.1f", Double(audio.count) / 16000)) s of app sound, quiet \(Log.ms(quietAt.timeIntervalSince(pausedAt)))ms after the pause")
+                                                return
+                                            }
+                                            if canTakeOff {
+                                                // No usable reference is not permission to erase the user's opening words.
+                                                s.mediaUnchecked(reason: "unusableVideoReference"); s.mediaSettled()
+                                                return
+                                            }
+                                            s.mediaUnchecked(reason: "engineKeepsOpeningAudio")
+                                            s.mediaSettled()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if players.isEmpty || !config.pauseMedia || pausedMedia { s.mediaSettled() }
+    }
+
+    private func failStart(_ message: String) {
+        StartTrace.note(.cancelled, gesture: keys.gestureID, capture: keys.captureID, value: 3)
+        keys.discard()
+        cancel(reason: .startFailure)
+        hud.flash(message)
     }
 
     /// Fn was a shortcut, not talking: drop the audio, put the music back, no words written.
-    private func cancel() {
-        guard let s = session else { return }
+    private func cancel(reason: TalkKeyState.CancelReason = .otherKey) {
+        let pending = pendingStart
+        pendingStart = nil
+        pending?.audio.discard(); pending?.mediaRecording?.stop(); pending?.activate = nil
+        let s = session
+        guard s != nil || pending != nil else { return }
         escapePresses = nil
         // Drafts already typed: finish and keep this dictation (no more edits to the box) rather than drop it with
         // words already on screen and nothing in history.
-        if let d = drafting, d.owner === s, d.typedAny { d.checksStopped = true; d.draftsStopped = true; end(); return }
+        if let d = drafting, let s, d.owner === s, d.typedAny { d.checksStopped = true; d.draftsStopped = true; end(); return }
         wasHandsFree = false
         session = nil
-        settleWork?.cancel()
         recorder.end()
-        s.cancel()
+        s?.cancel()
         liveWordsDictation?.end(); liveWordsDictation = nil
-        let ignoredTap = deliveries.cancel()
+        let ignoredTap = deliveries.cancel(disposableTap: reason != .otherKey)
         if ignoredTap, let (d, checks, drafts) = interruptedDrafting, finishingDrafting === d {
             d.checksStopped = checks; d.draftsStopped = drafts
         }
         interruptedDrafting = nil
         hud.hide()
+        DispatchQueue.main.async { [weak self] in self?.remicIfDefaultMoved(reason: "input moved during a cancelled press") }
         resumeMedia()
-        if ignoredTap, writing > 0 { Log.note("hold key: tap after stop ignored; finishing dictation keeps its insertion") }
-        else { Log.note(ignoredTap ? "cancelled: quick tap" : "cancelled: another key while holding") }
+        if reason == .startFailure { Log.note("cancelled: start failed") }
+        else if ignoredTap, writing > 0 { Log.note("hold key: tap after stop ignored; finishing dictation keeps its insertion") }
+        else { Log.note(reason == .tapTimeout ? "cancelled: quick tap" : "cancelled: another key while holding") }
     }
 
     /// Escape twice while you talk: the dictation is thrown away, nothing goes into history or onto the clipboard, and
@@ -1076,7 +1195,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// their way it covers the whole ending, which can keep this thread busy typing for seconds. Meeting notes, the
     /// switch off, or nothing happening: Enter is ordinary.
     private func refreshEnterArm() {
-        guard config.enterSends ?? true, meeting == nil, testFile == nil, session != nil || writing > 0 else {
+        guard config.enterSends ?? true, meeting == nil, testFile == nil, session != nil || pendingStart != nil || writing > 0 else {
             enterTap.disarm(); return
         }
         enterTap.arm(for: writing > 0 ? EnterSend.endingArmLength : EnterSend.armLength)
@@ -1090,7 +1209,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard config.enterSends ?? true, meeting == nil, textBox else {
             enterTap.release(id, why: textBox ? "not dictating" : "not a text box"); return
         }
-        if session != nil {
+        if session != nil || pendingStart != nil {
             let seconds = Date().timeIntervalSince(startedAt)
             let long = LongTalk.isLong(seconds: seconds)
             enterWait = (id, delivery, long)
@@ -1144,12 +1263,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func discard() {
+        if let capture = pendingStart {
+            pendingStart = nil; capture.audio.discard(); capture.mediaRecording?.stop(); capture.activate = nil
+            keys.discard(); recorder.end(); session?.cancel(); session = nil
+            liveWordsDictation?.end(); liveWordsDictation = nil; escapePresses = nil
+            _ = deliveries.cancel(disposableTap: true)
+            hud.flash("Thrown away. Talk again when you're ready.", for: 2.5)
+            return
+        }
         guard let s = session else { escapePresses = nil; return }
         escapePresses = nil
         keys.discard()
         wasHandsFree = false
         session = nil
-        settleWork?.cancel()
         recorder.end()
         s.cancel()
         liveWordsDictation?.end(); liveWordsDictation = nil
@@ -1172,7 +1298,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// normal and the recording goes on; a second press within half a second throws it away. Returns false when
     /// nothing is recording, so the key is ordinary.
     private func escapePressed(at time: Double, repeated: Bool) -> Bool {
-        guard session != nil, var presses = escapePresses else { return false }
+        guard session != nil || pendingStart != nil, var presses = escapePresses else { return false }
         let twice = presses.press(at: time, repeated: repeated)
         escapePresses = presses
         if twice { DispatchQueue.main.async { [weak self] in self?.discard() } }
@@ -1310,17 +1436,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The second tap: the bar shows straight away and says hands-free, so you can see it's still listening with no
     /// key held. It stays until you tap again.
     private func handsFreeOn() {
-        guard session != nil else { return }
+        guard session != nil || pendingStart != nil else { return }
         deliveries.confirm()
         interruptedDrafting = nil
-        settleWork?.cancel()
-        hud.style = config.levelLook == "off" ? "pen" : config.levelLook; hud.micName = recorder.inputName
-        hud.show("", level: true)
+        // The first down already showed this bar. Preserve its meter, timer and first-tap capture.
         hud.caption("Hands-free · tap \(talkKeyName) to stop")
+        wasHandsFree = true
+        guard pendingStart == nil else { return }
         if let d = drafting, d.draftsStopped { hud.stoppedTyping(TalkingWords.stoppedLine(d.stopWhy, words: d.heard)) }
         else if liveStopped { hud.stoppedTyping(TalkingWords.stoppedLine(liveStop, words: TalkingWords.words(liveShown))) }
         else if onBar, !barText.isEmpty { hud.caption(barText) }
-        wasHandsFree = true
     }
     private var wasHandsFree = false
 
@@ -1331,8 +1456,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     final class Drafting {
         struct Run { var drafts: Range<Int>; var text: String; var checked: Bool }
         let owner: Transcriber.Session
-        let startedAt = Date()
-        let startedUptime = ProcessInfo.processInfo.systemUptime
+        let startedAt: Date
+        let startedUptime: Double
         let input: DraftInput
         var hardwareSample: DraftSafety.HardwareSample?
         var reportedFailures: Set<DraftSafety.Failure> = []
@@ -1353,9 +1478,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var firstLag: Double?
         var checks = 0, changed = 0, words = 0
         let startBox: StartBox?
-        @MainActor init(owner: Transcriber.Session, startBox: StartBox?, keys: HoldKey) {
+        @MainActor init(owner: Transcriber.Session, startBox: StartBox?, keys: HoldKey, since: Date = Date(),
+                        uptime: Double? = nil, input: DraftInput? = nil) {
             self.owner = owner; self.startBox = startBox
-            input = keys.trackDraft(since: startedUptime)
+            startedAt = since
+            startedUptime = uptime ?? (ProcessInfo.processInfo.systemUptime - Date().timeIntervalSince(since))
+            self.input = input ?? keys.trackDraft(since: startedUptime)
         }
         /// Anything actually typed (empty drafts leave nothing in the box).
         var typedAny: Bool { runs.contains { !$0.text.isEmpty } }
@@ -2007,6 +2135,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func end() {
+        if let capture = pendingStart {
+            capture.confirmed = true; capture.endRequested = true
+            activateIfReady(capture)
+            return
+        }
         guard let s = session else { return }
         escapePresses = nil
         deliveries.confirm()
@@ -2015,7 +2148,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let seconds = Date().timeIntervalSince(startedAt)
         // A long talk (D-1023): its words go in with one paste and a held Enter waits for them.
         let long = LongTalk.isLong(seconds: seconds)
-        settleWork?.cancel()
         // Writing, until the words are in (D-972): beside it, all your words go in now when typing had stopped, or
         // your newest words when they were on the bar.
         hud.writing(long ? LongTalk.writingNote(seconds: seconds)
@@ -2051,6 +2183,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if self.micOwner == owner {
                 Log.note("audio: \(self.recorder.pushedFrames) frames (\(String(format: "%.1f", Double(self.recorder.pushedFrames) / 16000))s), peak \(String(format: "%.3f", self.recorder.peak))")
                 self.recorder.end()
+                // A device move noticed during capture waits until its release tail is safely detached.
+                self.remicIfDefaultMoved(reason: "input moved while talking")
             } else {
                 Log.note("audio: a new press started, its recording kept going")
             }
