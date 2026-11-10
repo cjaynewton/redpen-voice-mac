@@ -1364,7 +1364,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func removeDrafts(_ d: Drafting) async -> Bool {
         // The queued draft has now finished bookkeeping, including any cancelled partial post.
         if d.deliveryUncertain {
+            // A browser or Electron box can show its new text a moment after the keys were posted. Give the exact
+            // match a few short tries (about 200 ms in all) before keeping the words, and stop if a newer press begins.
+            let gen = delivery
             reconcileLateDraft(d)
+            var tries = 0
+            while d.lateDraft != nil, tries < 4, delivery == gen, session == nil {
+                try? await Task.sleep(for: .milliseconds(50))
+                reconcileLateDraft(d); tries += 1
+            }
             guard d.lateDraft == nil else { return false }
         }
         let typed = d.runs.map(\.text).joined()

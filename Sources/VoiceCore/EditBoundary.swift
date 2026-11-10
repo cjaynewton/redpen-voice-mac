@@ -8,6 +8,8 @@ public final class EditBoundary: @unchecked Sendable {
     private var active = false
     private var pending: [() -> Void] = []
     private var hurry = false
+    /// Each Return gets its own token, so an older Return's 300 ms timer can't hurry a later edit.
+    private var token = 0
     public init() {}
 
     public func begin() -> Bool {
@@ -30,18 +32,19 @@ public final class EditBoundary: @unchecked Sendable {
         }
     }
     public func sendWhenSafe(_ send: @escaping () -> Void) {
-        let immediate = lock.withLock {
+        let (immediate, mine): (Bool, Int) = lock.withLock {
             pending.append(send)
-            if active { return false }
+            token += 1
+            if active { return (false, token) }
             active = true
-            return true
+            return (true, token)
         }
         if immediate { end() }
         else {
             // At 300 ms, drop only artificial pacing. Focus/input guards still run for every post.
             // Never force Return into a half replacement if an external AX call is stalled.
             DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { [self] in
-                lock.withLock { if !pending.isEmpty { hurry = true } }
+                lock.withLock { if !pending.isEmpty, token == mine { hurry = true } }
             }
         }
     }
