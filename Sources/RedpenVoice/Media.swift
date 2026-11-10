@@ -56,11 +56,15 @@ enum Media {
     /// key as before. Chrome taking too long presses nothing, since some of its tabs may already be paused.
     /// `stillPaused` is asked once Chrome answers: a pause let go of meanwhile (a quit) presses nothing, puts back
     /// what Chrome paused, and hands back nil.
-    static func pause(_ players: [Player], stillPaused: @escaping () -> Bool,
+    /// `chromeOnly` is the pause asked for when the quick listen heard silence: Chrome is asked whether a video is
+    /// playing out loud and pauses only that. Nothing found, or Chrome unable to say, presses nothing and hands back
+    /// nil, since the key on a quiet Mac would start music or a paused video.
+    static func pause(_ players: [Player], chromeOnly: Bool = false, stillPaused: @escaping () -> Bool,
                       done: @escaping (Paused?, BrowserMedia.Outcome?) -> Void) {
         // Chrome said no a moment ago: the key at once, so the wait for Chrome never lengthens the cut at the start
         // of the dictation (it added about 0.6 s to every cut on Nov 2 2026).
         guard players.contains(where: { BrowserMedia.isChrome(path: path($0.pid)) }), Date() >= keyUntil else {
+            if chromeOnly { done(nil, nil); return }
             pressPlayPause(); done(.key, nil); return
         }
         let token = BrowserMedia.token()
@@ -80,7 +84,9 @@ enum Media {
                 case .handled(let tabs, _): done(.chrome(token: token, tabs: tabs), result)
                 // Too slow to know what paused: press nothing, and the resume looks in every tab for this pause's marks.
                 case .failed("timed out"), .failed("slow"): done(.chrome(token: token, tabs: []), result)
-                default: pressPlayPause(); done(.key, result)
+                default:
+                    if BrowserMedia.keyAfterQuietCheck(result, chromeOnly: chromeOnly) { pressPlayPause(); done(.key, result) }
+                    else { done(nil, result) }
                 }
             }
         }
@@ -128,6 +134,9 @@ enum Media {
         let e = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         return BrowserMedia.outcome(status: p.terminationStatus, output: o, error: e)
     }
+
+    /// True when this sound comes from Chrome, so its tabs can be asked what is playing.
+    static func isChrome(_ player: Player) -> Bool { BrowserMedia.isChrome(path: path(player.pid)) }
 
     private static func path(_ pid: pid_t) -> String {
         var buf = [CChar](repeating: 0, count: 4096)

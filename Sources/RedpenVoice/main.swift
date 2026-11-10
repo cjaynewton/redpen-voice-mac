@@ -924,8 +924,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 s.mediaSettled(); return
                             }
                             let playing = MediaGate.isPlaying(peak: peak)
-                            Log.note("media: apps [\(players.map(\.name).joined(separator: ", "))], loudness \(peak.map { String(format: "%.4f", $0) } ?? "no tap"), paused \(playing)")
-                            guard playing else { played.stop(); s.mediaSettled(); return }  // nothing playing: every word kept
+                            let askChrome = MediaGate.askChromeWhenQuiet(peak: peak, chromePlaying: players.contains { Media.isChrome($0) })
+                            Log.note("media: apps [\(players.map(\.name).joined(separator: ", "))], loudness \(peak.map { String(format: "%.4f", $0) } ?? "no tap"), paused \(playing)\(askChrome ? ", quiet, asking Chrome" : "")")
+                            guard playing || askChrome else { played.stop(); s.mediaSettled(); return }  // nothing playing: every word kept
                             self.pausedMedia = true
                             // The last pause's watch would see this video still playing while Chrome answers and give
                             // the new pause up (Nov 2 2026). It starts again, for this pause, once the pause is made.
@@ -933,9 +934,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             let pauseToken = self.mediaPause.generation
                             // Until Chrome answers, a resume has nothing to put back, so it presses nothing.
                             self.pausedHow = .chrome(token: "", tabs: [])
-                            Media.pause(players, stillPaused: { [weak self] in self?.mediaPause.owns(pauseToken) == true }) { how, outcome in
+                            Media.pause(players, chromeOnly: !playing, stillPaused: { [weak self] in self?.mediaPause.owns(pauseToken) == true }) { how, outcome in
                                 self.chromeAnswer(outcome)
-                                guard let how else { played.stop(); s.mediaUnchecked(reason: "chromePauseFailed"); s.mediaSettled(); return }
+                                guard let how else {
+                                    played.stop()
+                                    if playing { s.mediaUnchecked(reason: "chromePauseFailed") }
+                                    // Asked only because the listen was quiet, and Chrome had nothing playing: nothing was
+                                    // paused, so nothing is held to resume later.
+                                    else if self.mediaPause.owns(pauseToken) { self.pausedMedia = false; Log.note("media: Chrome had nothing playing, left alone") }
+                                    s.mediaSettled(); return
+                                }
                                 self.pausedHow = how
                                 let pauseWatch = self.mediaPauseMonitor.start(players)
                                 let pausedAt = Date()

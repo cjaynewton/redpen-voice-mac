@@ -146,6 +146,15 @@ public enum BrowserMedia {
         case failed(String)
     }
 
+    /// Whether a Chrome answer that paused nothing falls back to the play/pause key. Only when Voice heard sound: after
+    /// a quiet listen the key would land on a quiet Mac and start music or a paused video (Nov 9 2026, three misses
+    /// in a quiet moment of a video, loudness 0.0000 to 0.0012).
+    public static func keyAfterQuietCheck(_ outcome: Outcome, chromeOnly: Bool) -> Bool {
+        if chromeOnly { return false }
+        if case .handled = outcome { return false }
+        return true
+    }
+
     /// Reads what osascript printed. Chrome's error for scripts turned off says "Allow JavaScript from Apple Events";
     /// -1743 is the Mac refusing Automation.
     public static func outcome(status: Int32, output: String, error: String) -> Outcome {

@@ -7,6 +7,10 @@ public enum MediaGate {
     /// Sound louder than this, heard for a fifth of a second, means something is really playing (about -54 dB).
     public static let audible: Float = 0.002
     public static func isPlaying(peak: Float?) -> Bool { (peak ?? 0) > audible }
+    /// Heard nothing, but Chrome holds the speakers open: a video can sit in a quiet moment for that quarter second
+    /// (Nov 9 2026), so Chrome is asked directly. Chrome holds the speakers open when paused too, so its answer, not
+    /// the open speakers, decides.
+    public static func askChromeWhenQuiet(peak: Float?, chromePlaying: Bool) -> Bool { !isPlaying(peak: peak) && chromePlaying }
     /// Resume only what we paused, only once no new recording has taken over the pause, and never when something
     /// is already playing: the play/pause key is a switch, so pressing it then would pause that sound, or start a
     /// second video beside it when the Mac has picked another player.
