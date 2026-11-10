@@ -79,6 +79,20 @@ wiring_checks = [
     ("first draft trace carries no text length", "StartTrace.note(.firstDraftReady, gesture: traceID)" in session and "firstDraftReady, gesture: traceID, count:" not in session),
     ("non-text key downs and modifier changes invalidate target", 'draftInputMonitor.record(talkKey: false, at: e.timestamp)' in block(hold_source, "private func key(") and 'draftInputMonitor.record(talkKey: false, at: e.timestamp)' in block(hold_source, "private func flagsChanged(") and "guard talk, modifierCodes" not in (ROOT / "Sources/RedpenVoice/DraftInputMonitor.swift").read_text()),
 ]
+media_adapter = (ROOT / "Sources/RedpenVoice/Media.swift").read_text()
+resume_media = block(app_source, "private func resumeNow()")
+wiring_checks += [
+    ("browser pause has separate lifecycle and recording gate", "BrowserPauseOperation" in media_adapter and "needsPause:" in media and "self?.session === s" in media),
+    ("old browser completion cannot mutate new hold", media.index("guard self.mediaPause.owns(pauseToken), self.session === s") < media.index("self.pausedHow = how")),
+    ("browser operation stops when recording ends", "browserPause?.stop()" in block(app_source, "private func end()")),
+    ("browser cancellation stops future pauses", "browserPause?.stop(cancelled: true)" in cancel),
+    ("accepted down transfers browser marks", "browserPause?.transfer(to: mediaPause.generation)" in begin),
+    ("resume waits for in-flight browser answer", "operation.onSettled" in resume_media and "!operation.finished" in resume_media),
+    ("pause-only reconciliation never plays", "releaseBrowserPause(play: false)" in resume_media and "play: play" in media_adapter),
+    ("resume rechecks owner before each browser action", "guard allowed() else" in media_adapter[media_adapter.index("static func resume("):media_adapter.index("    /// Until when")] and "DispatchQueue.main.sync(execute: allowed)" in media_adapter),
+    ("recovery never uses old key fallback", "!operation.recovery && BrowserMedia.keyAfterQuietCheck" in media_adapter),
+    ("browser reference and audio deadlines unchanged", "private var mediaOpening = MediaOpening()" in session and "MediaOpening.timeout" not in media_adapter and "SoundTap" not in media_adapter),
+]
 insert_source = (ROOT / "Sources/RedpenVoice/Insert.swift").read_text()
 replace_source = block(insert_source, "static func replaceDraft(")
 finish_source = block(session, "func finish()")
@@ -963,9 +977,11 @@ with tempfile.TemporaryDirectory(prefix="first-words-", dir=ROOT / ".build") as 
     reasons += ["middleBand", "futureUnknownReason"]
     tests = tests.replace("__WIRING_CHECKS__", str(len(wiring_checks)))
     tests = tests.replace("__UNSURE_REASONS__", ", ".join(json.dumps(reason) for reason in reasons))
-    source.write_text(stubs.replace("__PRODUCTION_GATE__", gate) + session + "\n}\n" + recording + insert_stubs + replacement_adapter + "\n" + text_adapter + "\n}\n" + tests)
+    pause_checks = (ROOT / "Sources/redpen-voice-test/BrowserPauseChecks.swift").read_text().replace("import VoiceCore", "")
+    tests = tests.replace('        print("quick tap:', '        browserPauseChecks { name, ok, detail in check(name + detail, ok) }\n        print("quick tap:')
+    source.write_text(pause_checks + "\n" + stubs.replace("__PRODUCTION_GATE__", gate) + session + "\n}\n" + recording + insert_stubs + replacement_adapter + "\n" + text_adapter + "\n}\n" + tests)
     core = ROOT / "Sources/VoiceCore"
-    files = [core / name for name in ["MediaEcho.swift", "MediaAudio.swift", "MediaOpening.swift", "MediaGate.swift", "Chunker.swift",
+    files = [core / name for name in ["BrowserMedia.swift", "BrowserPauseOperation.swift", "MediaPauseOwnership.swift", "MediaEcho.swift", "MediaAudio.swift", "MediaOpening.swift", "MediaGate.swift", "Chunker.swift",
                                     "Silence.swift", "FocusGate.swift", "CheckedTail.swift", "BoxText.swift", "EnterSend.swift", "LongTalk.swift", "BoxMatch.swift", "DictationEnding.swift", "TalkKeyState.swift", "DictationDelivery.swift", "TalkTimingTrace.swift", "TalkCapture.swift", "StartTargetWait.swift", "FastFinish.swift", "EditWait.swift", "SerialEdits.swift", "EditBoundary.swift", "DraftSafety.swift", "DraftInput.swift", "Names.swift", "Fillers.swift"]]
     subprocess.run(["xcrun", "swiftc", "-O", "-parse-as-library", "-swift-version", "5", str(source),
                     *map(str, files), "-o", str(tmp / "check")], cwd=ROOT, check=True)

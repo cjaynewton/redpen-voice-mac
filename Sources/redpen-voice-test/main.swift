@@ -9,6 +9,8 @@ func check(_ name: String, _ ok: Bool, _ detail: String = "") {
     if ok { pass += 1 } else { fail += 1; print("FAIL \(name) \(detail)") }
 }
 
+browserPauseChecks(check)
+
 // Fn start repair: one bounded capture through both taps; no ASR/media permission for a disposable gesture.
 do {
     var key = TalkKeyState()
@@ -755,8 +757,8 @@ check("media.resume.ours", MediaGate.shouldResume(paused: true))
 let bmTok = BrowserMedia.token()
 check("browser.token", !bmTok.isEmpty && bmTok.allSatisfy { $0.isLetter || $0.isNumber })
 check("browser.pause.loud", BrowserMedia.pauseScript(token: "abc").contains("!m.paused&&!m.ended&&!m.muted&&m.volume>0"))
-check("browser.pause.mark", BrowserMedia.pauseScript(token: "abc").contains("setAttribute('data-redpen-paused','abc')"))
-check("browser.resume.ours", BrowserMedia.resumeScript(token: "abc").contains("[data-redpen-paused=\"abc\"]"))
+check("browser.pause.mark", BrowserMedia.pauseScript(token: "abc").contains("owners.push('abc')"))
+check("browser.resume.ours", BrowserMedia.resumeScript(token: "abc").contains("[data-redpen-paused~=\"abc\"]"))
 check("browser.token.clean", !BrowserMedia.pauseScript(token: "a'b);x(").contains("'b);"))
 check("browser.chrome", BrowserMedia.isChrome(path: "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/142/Helpers/Google Chrome Helper (Aperitif).app/Contents/MacOS/Google Chrome Helper (Aperitif)"))
 check("browser.notchrome", !BrowserMedia.isChrome(path: "/System/Applications/Music.app/Contents/MacOS/Music"))
