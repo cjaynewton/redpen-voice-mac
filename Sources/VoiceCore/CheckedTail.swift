@@ -1,7 +1,8 @@
 import Foundation
 
-/// Identity of checked audio, never a visible draft. A session owns its own key and discards it on
-/// a newer press or Escape. Quiet capture buffers may extend coverage; any new sound invalidates it.
+/// Identity of staged tail PCM, never a visible draft or a checked result. Inference waits until stop.
+/// A session owns its key across other presses. Escape, changed audio or boundaries invalidate it.
+/// Quiet capture buffers may extend coverage; any new sound invalidates it.
 public struct CheckedTail: Equatable, Sendable {
     public let generation: Int
     public let start: Int

@@ -43,8 +43,9 @@ final class Transcriber {
 
     /// `prompt`: words Whisper should expect (names from your list and the screen, the words just before), passed as
     /// Whisper's own "previous text" so it spells them the same way. Never typed out.
+    /// Ending outcome numbers: 0 no stage, 2 stale stage, 4 staged PCM checked and awaited at stop.
     static func whisperText(_ whisper: WhisperKit, _ audio: [Float], prompt: String? = nil,
-                            speculative: Bool = false, preempt: (@Sendable () -> Void)? = nil) async throws -> String {
+                            endingOutcome: Int? = nil) async throws -> String {
         guard !audio.isEmpty else { return "" }
         let seconds = Double(audio.count) / 16000
         let peak = audio.map { abs($0) }.max() ?? 0
@@ -55,7 +56,8 @@ final class Transcriber {
         // One job at a time: two dictations close together (a double tap right after talking) asked Whisper at once
         // and both crawled (41 s on a busy Mac, Oct 25). They now wait in line.
         let queued = Date()
-        try await gate.acquire(speculative: speculative, preempt: preempt)
+        let inLine = try await gate.acquire()
+        if let endingOutcome { Log.note("ending check: in line \(inLine)ms outcome=\(endingOutcome)") }
         do { try Task.checkCancellation() } catch { await gate.release(); throw error }
         let started = Date()
         let results: [TranscriptionResult]
@@ -88,7 +90,8 @@ final class Transcriber {
         retry.logProbThreshold = nil
         retry.firstTokenLogProbThreshold = nil
         Log.note("engine: whisper heard nothing in sound, asked again")
-        try await gate.acquire(speculative: speculative, preempt: preempt)
+        let retryInLine = try await gate.acquire()
+        if let endingOutcome { Log.note("ending check retry: in line \(retryInLine)ms outcome=\(endingOutcome)") }
         do {
             try Task.checkCancellation()
             let again = try await whisper.transcribe(audioArray: audio, decodeOptions: retry)
@@ -317,18 +320,16 @@ final class Transcriber {
     }
 
     /// Whisper's queue: one job at a time, first come first served.
-    /// A cancelled job (a guess thrown away when you let go) leaves the line at once instead of holding up the ending.
+    /// Cancelled waiters leave the line. Running inference owns the gate until the engine returns.
+    /// No draft-tail speculative inference enters this queue, since accelerator cancellation is not bounded.
     actor Gate {
         private var busy = false
-        private var preempt: (@Sendable () -> Void)?
         private var waiting: [(id: UUID, turn: CheckedContinuation<Bool, Never>)] = []
-        func acquire(speculative: Bool = false, preempt: (@Sendable () -> Void)? = nil) async throws {
+        @discardableResult
+        func acquire() async throws -> Int {
             try Task.checkCancellation()
-            // Guesses never queue ahead of a draft check or final tail. A foreground request
-            // cancels the current guess, including an empty-result retry, before taking its turn.
-            if !busy { busy = true; self.preempt = preempt; return }
-            if speculative { throw CancellationError() }
-            self.preempt?()
+            if !busy { busy = true; return 0 }
+            let queued = ProcessInfo.processInfo.systemUptime
             let id = UUID()
             let got = await withTaskCancellationHandler {
                 await withCheckedContinuation { c in
@@ -337,12 +338,12 @@ final class Transcriber {
                 }
             } onCancel: { Task { await self.drop(id) } }
             if !got { throw CancellationError() }
+            return Log.ms(ProcessInfo.processInfo.systemUptime - queued)
         }
         private func drop(_ id: UUID) {
             if let i = waiting.firstIndex(where: { $0.id == id }) { waiting.remove(at: i).turn.resume(returning: false) }
         }
         func release() {
-            preempt = nil
             if waiting.isEmpty { busy = false } else { waiting.removeFirst().turn.resume(returning: true) }
         }
     }
@@ -391,75 +392,45 @@ final class Transcriber {
         private var early: (end: Int, text: String)?
         private var napping: Task<Void, Error>?
         private var guessing: Task<String, Error>?
-        private var draftTailTask: Task<Void, Never>?
         private var draftTailKey: CheckedTail?
-        private var draftTailID: UUID?
         private var draftTailAudio: [Float] = []
         private var draftTailQuiet: Float = 0.003
-        private var draftTailText: String?
-        private var draftTailRevoked = false
+        private var draftTailStale = false
 
-        /// Caller holds the sample lock. A failed/cancelled guess never becomes checked text.
+        /// Caller holds the sample lock. Staging never runs inference or seals media cleanup.
         private func clearDraftTailLocked() {
-            draftTailTask?.cancel(); draftTailTask = nil
-            draftTailKey = nil; draftTailID = nil; draftTailText = nil; draftTailAudio = []
-        }
-        func invalidateTail() {
-            lock.withLock { draftTailRevoked = true; clearDraftTailLocked() }
+            if draftTailKey != nil { draftTailStale = true }
+            draftTailKey = nil; draftTailAudio = []
         }
 
         private func tailMatchesLocked(_ key: CheckedTail, audio: [Float]) -> Bool {
             key.matches(generation: audioGeneration, start: cut, checkedUpTo: checkedUpTo,
                         pieces: pieces.count, available: audio.count,
                         newerSpeech: CheckedTail.newerSpeech(audio, after: key.end, quiet: draftTailQuiet),
-                        revoked: cancelled || draftTailRevoked)
+                        revoked: cancelled)
                 && audio[key.start..<key.end].elementsEqual(draftTailAudio)
         }
 
-        /// Runs only in a pause when no ordinary check is due. It never calls onCheck/onDraft or
-        /// advances the checked boundary. A valid in-flight check can finish during the capture tail.
-        private func prepareDraftTail(_ whisper: WhisperKit, audio: [Float]) async {
-            guard lock.withLock({ !stopped && !cancelled && !draftTailRevoked && draftTailKey == nil }) else { return }
+        /// Stage only the PCM during a pause. Starting Whisper here cannot meet the no-added-wait
+        /// rule: new speech can make a running, non-cooperative encode useless to every foreground
+        /// caller. Idle admission, longer pauses and equal priority cannot bound that delay.
+        /// Defer inference until finish, where the one required final check is awaited directly.
+        private func prepareDraftTail(audio: [Float]) {
+            guard lock.withLock({ !stopped && !cancelled && draftTailKey == nil }) else { return }
             guard Transcriber.lastJob < 2, audio.count - cut > Chunker.rate / 2,
                   Chunker.endsQuiet(audio, from: cut) else { return }
             let key = CheckedTail(generation: lock.withLock { audioGeneration }, start: cut,
                                   end: audio.count, checkedUpTo: checkedUpTo, pieces: pieces.count)
             let quiet = Chunker.quietLevel(Chunker.levels(audio, from: cut))
             let tailAudio = Array(audio[key.start...])
-            let id = UUID()
-            let accepted = lock.withLock { () -> Bool in
-                guard !stopped, !cancelled, !draftTailRevoked, mediaReadyLocked() else { return false }
-                if let old = draftTailKey, tailMatchesLocked(old, audio: samples) { return false }
-                clearDraftTailLocked()
-                guard key.generation == audioGeneration,
-                      samples.count >= key.end, samples[key.start..<key.end].elementsEqual(tailAudio),
-                      !CheckedTail.newerSpeech(samples, after: audio.count, quiet: quiet) else { return false }
-                cleanupSealed = true
-                draftTailKey = key; draftTailID = id; draftTailAudio = tailAudio; draftTailQuiet = quiet
-                return true
-            }
-            guard accepted else { return }
-            let prompt = Transcriber.prompt(hints, carry ? pieces.last : nil)
-            let task = Task.detached(priority: .utility) { [self] in
-                guard lock.withLock({ draftTailID == id && draftTailKey == key && !cancelled && !draftTailRevoked }) else { return }
-                let text = try? await Transcriber.whisperText(whisper, tailAudio, prompt: prompt,
-                    speculative: true, preempt: { [weak self] in
-                        self?.lock.withLock { if self?.draftTailID == id { self?.clearDraftTailLocked() } }
-                    })
-                lock.withLock {
-                    guard draftTailID == id, draftTailKey == key, !Task.isCancelled, let text,
-                          tailMatchesLocked(key, audio: samples) else {
-                        if draftTailID == id { clearDraftTailLocked() }
-                        return
-                    }
-                    draftTailTask = nil; draftTailText = text
-                    Log.note("ending tail ready: mono_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime)) start=\(key.start) end=\(key.end) checked=\(key.checkedUpTo) pieces=\(key.pieces)")
-                    StartTrace.note(.tailReady, gesture: traceID, count: key.end, value: key.checkedUpTo)
-                }
-            }
             lock.withLock {
-                guard draftTailID == id, draftTailKey == key, !stopped, !cancelled, !draftTailRevoked else { task.cancel(); return }
-                draftTailTask = task
+                guard !stopped, !cancelled, mediaReadyLocked(), draftTailKey == nil,
+                      key.generation == audioGeneration,
+                      samples.count >= key.end, samples[key.start..<key.end].elementsEqual(tailAudio),
+                      !CheckedTail.newerSpeech(samples, after: audio.count, quiet: quiet) else { return }
+                draftTailKey = key; draftTailAudio = tailAudio; draftTailQuiet = quiet
+                draftTailStale = false
+                Log.note("ending tail staged: mono_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime)) start=\(key.start) end=\(key.end) checked=\(key.checkedUpTo) pieces=\(key.pieces)")
             }
         }
 
@@ -619,10 +590,10 @@ final class Transcriber {
                     if done { break }
                     if !ready { continue }
                     if drafter != nil {
-                        // Ordinary checks always win over a speculative tail.
+                        // Staged PCM never owns the engine, so ordinary checks cannot queue behind it.
                         // Audio and drafts are read in one step, so a draft can't end past the audio in hand.
                         guard let d = draftCheckCut(ds, from: cut), d.end <= audio.count, d.end > cut else {
-                            await prepareDraftTail(whisper, audio: audio)
+                            prepareDraftTail(audio: audio)
                             continue
                         }
                         lock.withLock { clearDraftTailLocked() }
@@ -995,29 +966,29 @@ final class Transcriber {
                 let f0 = Date()
                 await draftLoop?.value
                 await loop?.value  // a piece being written finishes first, so the order holds
-                let tailWork = lock.withLock { draftTailTask }
-                await tailWork?.value
                 let loopWait = Log.ms(Date().timeIntervalSince(f0))
                 let t0 = Date()
-                let audio = lock.withLock { samples }
-                let tail: String
-                let cached: String? = lock.withLock {
-                    guard let key = draftTailKey, let text = draftTailText,
-                          tailMatchesLocked(key, audio: audio) else { return nil }
-                    return text
-                }
                 guard !lock.withLock({ cancelled }) else { throw CancellationError() }
-                if let cached {
-                    tail = cached
-                    Log.note("ending tail: reused=1 mono_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime))")
-                    StartTrace.note(.tailReuse, gesture: traceID, value: 1)
-                } else if let e = early, e.end <= audio.count, !Chunker.hasSpeech(audio, from: e.end, reference: cut) {
+                let (audio, finalAudio, outcome) = lock.withLock { () -> ([Float], [Float], Int) in
+                    let audio = samples
+                    // Only the foreground final check consumes this audio. A stage must leave
+                    // confirmed media cleanup free to change it until this point.
+                    cleanupSealed = true
+                    if let key = draftTailKey, tailMatchesLocked(key, audio: audio) {
+                        var tailAudio = draftTailAudio
+                        tailAudio.append(contentsOf: audio[key.end...])
+                        return (audio, tailAudio, 4) // staged and awaited at stop, no pre-stop inference
+                    }
+                    return (audio, Array(audio[min(cut, audio.count)...]), draftTailStale ? 2 : 0)
+                }
+                let tail: String
+                if let e = early, e.end <= audio.count, !Chunker.hasSpeech(audio, from: e.end, reference: cut) {
                     tail = e.text  // nothing said after the head start: it is the ending
                     Log.note("engine: ending was written ahead of release")
                 } else {
-                    Log.note("ending tail: reused=0 mono_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime))")
+                    Log.note("ending tail: reused=0 outcome=\(outcome) mono_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime))")
                     StartTrace.note(.tailReuse, gesture: traceID)
-                    do { tail = try await Transcriber.whisperText(whisper, Array(audio[min(cut, audio.count)...]), prompt: Transcriber.prompt(hints, carry ? pieces.last : nil)) }
+                    do { tail = try await Transcriber.whisperText(whisper, finalAudio, prompt: Transcriber.prompt(hints, carry ? pieces.last : nil), endingOutcome: outcome) }
                     catch {
                         // Keep what was already written and say the ending is missing, so it is never lost quietly.
                         Log.note("engine: the ending failed, \(pieces.count) pieces kept")

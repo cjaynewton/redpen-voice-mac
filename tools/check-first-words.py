@@ -86,13 +86,18 @@ wiring_checks += [
     ("prefix adapter types only planned suffix", "type(edit.replacement, while: safe)" in replace_source and "type(replacement," not in replace_source),
     ("prefix adapter keeps full-box and cursor evidence", all(term in replace_source for term in ["DraftReplacement(expectedBox: expectedBox, actual: value, cursor: cursor", "guard still()", "confirm(edit.expected, in: element, while: safe)"])),
     ("prefix adapter never retries uncertain edit", replace_source.count("backspace(") == 1 and replace_source.count("type(edit.replacement,") == 1),
-    ("new press revokes old checked-tail cache after capture attaches", "finishingDrafting?.owner.invalidateTail()" in begin and begin.index("recorder.begin(") < begin.index("finishingDrafting?.owner.invalidateTail()")),
+    ("new press preserves finishing session tail", "invalidateTail" not in begin and "clearDraftTailLocked" not in begin),
     ("Escape cancels cache and tasks", "clearDraftTailLocked()" in block(session, "func cancel()") and "session?.cancel()" in block(app_source, "private func discard()")),
     ("ending waits for capture before finish", block(app_source, "private func end()").index("self.recorder.end()") < block(app_source, "private func end()").index("s.finish()")),
     ("Enter waits for checked finish and confirmed delivery", block(app_source, "private func end()").index("s.finish()") < block(app_source, "private func end()").index("self.finishEnter(gen: gen, wordsIn: inserted && !(long && s.endingLost))")),
     ("tail work never publishes draft or check", all(term not in block(session, "private func prepareDraftTail(") for term in ["onDraft?", "onCheck?", "pieces.append("])),
-    ("speculation lower priority and no ordinary-loop await", ".utility" in block(session, "private func prepareDraftTail(") and "await task.value" not in block(session, "private func prepareDraftTail(")),
-    ("ordinary checks cancel speculation before inference", "lock.withLock { clearDraftTailLocked() }" in block(session, "func stream(_ chunker:")),
+    ("tail staging never starts inference or an asynchronous job", all(term not in block(session, "private func prepareDraftTail(") for term in ["whisperText", "Task.detached", "Task {", "gate.acquire"])),
+    ("tail staging never seals cleanup", "cleanupSealed = true" not in block(session, "private func prepareDraftTail(")),
+    ("no speculative task can be orphaned at stop", all(term not in session for term in ["draftTailTask", "draftTailID", "draftTailText", "priority: .utility", "preempt:"])),
+    ("final check is awaited directly", "tail = try await Transcriber.whisperText(whisper, finalAudio" in finish_source),
+    ("final gate wait and outcome logged including retry", 'ending check: in line \(inLine)ms outcome=\(endingOutcome)' in transcriber_source and 'ending check retry: in line \(retryInLine)ms outcome=\(endingOutcome)' in transcriber_source),
+    ("foreground audio selection seals cleanup", "cleanupSealed = true" in finish_source),
+    ("ordinary checks clear staged audio before inference", "lock.withLock { clearDraftTailLocked() }" in block(session, "func stream(_ chunker:")),
     ("cleanup clears cached audio identity", "clearDraftTailLocked()" in block(session, "fileprivate func acceptMediaResult(") and "audioGeneration += 1" in block(session, "func silence(")),
 ]
 for name, passed in wiring_checks:
@@ -138,6 +143,7 @@ enum StartTrace {
 enum FakeASR {
     static let lock = NSLock()
     static var calls = 0
+    static var whisperAudio: [[Float]] = []
     static var delay = 0
     static var ignoreCancellation = false
     static var count: Int { lock.withLock { calls } }
@@ -156,13 +162,18 @@ enum Transcriber {
     static var lastJob = 10.0
     static func prompt(_ hints: String, _ previous: String?) -> String { hints }
     static func whisperText(_ w: WhisperKit, _ a: [Float], prompt: String? = nil,
-                            speculative: Bool = false, preempt: (@Sendable () -> Void)? = nil) async throws -> String {
-        try await gate.acquire(speculative: speculative, preempt: preempt)
+                            endingOutcome: Int? = nil) async throws -> String {
+        let inLine = try await gate.acquire()
+        if let endingOutcome { Log.note("ending check: in line \(inLine)ms outcome=\(endingOutcome)") }
         do {
             try Task.checkCancellation()
-            FakeASR.lock.withLock { FakeASR.calls += 1 }
+            FakeASR.lock.withLock { FakeASR.calls += 1; FakeASR.whisperAudio.append(a) }
             if FakeASR.delay > 0 {
-                if FakeASR.ignoreCancellation { try? await Task.sleep(for: .milliseconds(FakeASR.delay)) }
+                if FakeASR.ignoreCancellation {
+                    let delay = FakeASR.delay
+                    // A detached wait really ignores cancellation of the calling engine task.
+                    await Task.detached { try? await Task.sleep(for: .milliseconds(delay)) }.value
+                }
                 else { try await Task.sleep(for: .milliseconds(FakeASR.delay)) }
             }
             if !FakeASR.ignoreCancellation { try Task.checkCancellation() }
@@ -333,107 +344,170 @@ final class Calls: @unchecked Sendable {
         Insert.canConfirm = false
         check("actual adapter needs confirmation and never retries", !Insert.replaceDraft("Keep words", with: "Keep words.", expectedBox: Insert.box, in: Insert.element, while: { true }) && Insert.attempts == 1 && Insert.typed == ".")
 
-        // Synthetic ending regressions. Short speech stays below the ordinary four-second check.
+        // Tail staging must never put non-cooperative inference ahead of foreground work.
         Transcriber.lastJob = 0
         let tailAudio = noise(992, 8000) + [Float](repeating: 0, count: 8000)
-        func ready(_ session: Transcriber.Session) async throws -> Bool {
+        func staged(_ session: Transcriber.Session) async throws -> Bool {
             let logStart = Log.recorded.count
             session.drafter = AsrManager()
             push(tailAudio, to: session)
-            session.streamDrafts(); session.stream(Chunker())
-            return try await until { Log.recorded.dropFirst(logStart).contains { $0.hasPrefix("ending tail ready:") } }
+            session.stream(Chunker())
+            return try await until { Log.recorded.dropFirst(logStart).contains { $0.hasPrefix("ending tail staged:") } }
         }
         FakeASR.text = "Checked synthetic tail."
-        FakeASR.delay = 40
-        let cached = Transcriber.Session(whisper: WhisperKit())
-        check("draft tail ready before stop", try await ready(cached))
-        let beforeFinish = FakeASR.count
-        push([Float](repeating: 0, count: 1600), to: cached) // capture tail
-        let cachedResult = try await cached.finish()
-        check("checked cache reused through quiet capture tail", cachedResult == "Checked synthetic tail." && FakeASR.count == beforeFinish)
-        check("cache reuse logged numerically", Log.recorded.contains { $0.hasPrefix("ending tail: reused=1 ") })
-        let cachedAudio = cached.recorded
-        cached.silence(upTo: cachedAudio.count)
-        check("late cleanup cannot rewrite cached audio", cached.recorded == cachedAudio)
-        cached.cancel()
+        FakeASR.delay = 300
+        FakeASR.ignoreCancellation = true
+        let prepared = Transcriber.Session(whisper: WhisperKit())
+        let beforeStage = FakeASR.count
+        check("tail PCM staged before stop", try await staged(prepared))
+        check("staging starts no non-cooperative engine job", FakeASR.count == beforeStage)
+        check("staging cannot hold gate", try await Transcriber.gate.acquire() == 0)
+        await Transcriber.gate.release()
+        let quietTail = [Float](repeating: 0, count: 1600)
+        push(quietTail, to: prepared)
+        let finalStart = FakeASR.count
+        let finalTask = Task { try await prepared.finish() }
+        check("foreground check starts at stop", try await until { FakeASR.count == finalStart + 1 })
+        check("foreground running at stop has not published", prepared.lastTail.isEmpty)
+        let preparedResult = try await finalTask.value
+        check("running foreground check awaited once", preparedResult == "Checked synthetic tail." && FakeASR.count == finalStart + 1)
+        check("quiet capture extension included byte for byte", FakeASR.lock.withLock { FakeASR.whisperAudio.last == tailAudio + quietTail })
+        check("awaited outcome and zero line wait logged", Log.recorded.contains { $0 == "ending check: in line 0ms outcome=4" })
+        check("staged PCM never reported as checked result reuse", !Log.recorded.contains { $0.hasPrefix("ending tail: reused=1") })
+        let preparedAudio = prepared.recorded
+        prepared.silence(upTo: preparedAudio.count)
+        check("foreground consumption seals later cleanup", prepared.recorded == preparedAudio)
+        prepared.cancel()
 
-        let newer = Transcriber.Session(whisper: WhisperKit())
-        check("second checked tail ready", try await ready(newer))
-        let oldCount = FakeASR.count
+        let resumed = Transcriber.Session(whisper: WhisperKit())
+        let resumedStart = FakeASR.count
+        check("tail staged before partial-frame resumption", try await staged(resumed))
+        push([0.1] + [Float](repeating: 0, count: 16), to: resumed)
         FakeASR.text = "Checked new syllable."
-        push([0.1] + [Float](repeating: 0, count: 16), to: newer)
-        check("partial-frame speech forces fresh checked tail", try await newer.finish() == "Checked new syllable." && FakeASR.count == oldCount + 1)
-        newer.cancel()
+        check("new speech starts no stale inference", FakeASR.count == resumedStart)
+        check("resumed speech checked exactly once", try await resumed.finish() == "Checked new syllable." && FakeASR.count == resumedStart + 1)
+        check("new syllable present in final engine input", FakeASR.lock.withLock { FakeASR.whisperAudio.last == tailAudio + [0.1] + [Float](repeating: 0, count: 16) })
+        check("stale outcome and zero line wait logged", Log.recorded.contains { $0 == "ending check: in line 0ms outcome=2" })
+        resumed.cancel()
 
-        let pressed = Transcriber.Session(whisper: WhisperKit())
-        check("tail ready before new press", try await ready(pressed))
+        // Another accepted press creates its own Session. It must leave the finishing one intact.
+        let finishing = Transcriber.Session(whisper: WhisperKit())
+        check("tail staged before another session", try await staged(finishing))
+        let anotherPress = Transcriber.Session(whisper: WhisperKit())
+        push([0.2], to: anotherPress)
+        anotherPress.cancel() // a disposable new tap, with no real keys
+        let pressLog = Log.recorded.count
         let pressCount = FakeASR.count
-        pressed.invalidateTail()
-        check("new press rejects ready cache", try await pressed.finish() == "Checked new syllable." && FakeASR.count == pressCount + 1)
-        pressed.cancel()
+        check("other press leaves ending check intact", try await finishing.finish() == "Checked new syllable." && FakeASR.count == pressCount + 1)
+        check("other press preserves staged identity", Log.recorded.dropFirst(pressLog).contains { $0 == "ending check: in line 0ms outcome=4" })
+        finishing.cancel()
+
+        // Speculation cannot seal cleanup, even without a foreground draft having consumed audio.
+        let cleaned = Transcriber.Session(whisper: WhisperKit())
+        check("tail staged before confirmed cleanup", try await staged(cleaned))
+        let cleanedStart = FakeASR.count
+        cleaned.silence(upTo: 100)
+        check("staged PCM does not seal confirmed cleanup", cleaned.recorded.prefix(100).allSatisfy { $0 == 0 } && cleaned.recorded[100] == tailAudio[100])
+        check("cleanup generation starts no stale inference", FakeASR.count == cleanedStart)
+        check("cleanup invalidation gets one foreground check", try await cleaned.finish() == "Checked new syllable." && FakeASR.count == cleanedStart + 1)
+        check("engine consumes cleaned generation", FakeASR.lock.withLock { FakeASR.whisperAudio.last == cleaned.recorded })
+        cleaned.cancel()
+
+        let echoCleaned = Transcriber.Session(whisper: WhisperKit())
+        check("tail staged before measured media result", try await staged(echoCleaned))
+        var cleanedPCM = tailAudio
+        for i in 0..<100 { cleanedPCM[i] = 0 }
+        let echoCount = FakeASR.count
+        let mediaResult = MediaAudio.Result(samples: cleanedPCM, certain: true, cleaned: true, match: 1,
+                                            diagnostics: MediaAudio.Diagnostics())
+        check("measured cleanup accepted after staging", echoCleaned.acceptMediaResult(mediaResult, replacing: tailAudio.count))
+        check("measured cleanup replaced staged generation", echoCleaned.recorded == cleanedPCM)
+        check("measured cleanup final check runs once", try await echoCleaned.finish() == "Checked new syllable." && FakeASR.count == echoCount + 1)
+        check("measured cleanup checked byte for byte", FakeASR.lock.withLock { FakeASR.whisperAudio.last == cleanedPCM })
+        check("measured cleanup sealed by foreground consumption", !echoCleaned.acceptMediaResult(mediaResult, replacing: tailAudio.count))
+        echoCleaned.cancel()
 
         let escaped = Transcriber.Session(whisper: WhisperKit())
-        check("tail ready before Escape", try await ready(escaped))
+        check("tail staged before Escape", try await staged(escaped))
         let escapeCount = FakeASR.count
         escaped.cancel()
         do { _ = try await escaped.finish(); check("Escape cannot finish", false) }
         catch { check("Escape cannot publish or run fresh ASR", FakeASR.count == escapeCount && escaped.lastTail.isEmpty) }
 
-        // A speculative check already running at stop is awaited once, without cancelling and redoing it.
-        FakeASR.delay = 300
-        let inflight = Transcriber.Session(whisper: WhisperKit())
-        inflight.drafter = AsrManager(); push(tailAudio, to: inflight)
-        let inCount = FakeASR.count
-        inflight.stream(Chunker())
-        check("speculative job starts in pause", try await until { FakeASR.count > inCount })
-        check("inflight matching check reused once", try await inflight.finish() == "Checked new syllable." && FakeASR.count == inCount + 1)
-        inflight.cancel()
-
-        let resuming = Transcriber.Session(whisper: WhisperKit())
-        resuming.drafter = AsrManager(); push(tailAudio, to: resuming)
-        let resumeCount = FakeASR.count
-        resuming.stream(Chunker())
-        check("guess running before resumed speech", try await until { FakeASR.count > resumeCount })
-        push([0.1], to: resuming)
-        FakeASR.text = "Fresh checked resumption."
-        check("new speech cancels inflight stale check", try await resuming.finish() == "Fresh checked resumption." && FakeASR.count == resumeCount + 2)
-        resuming.cancel()
-
-        FakeASR.ignoreCancellation = true
         let discarding = Transcriber.Session(whisper: WhisperKit())
-        discarding.drafter = AsrManager(); push(tailAudio, to: discarding)
+        check("tail staged before foreground discard", try await staged(discarding))
         let discardCount = FakeASR.count
-        discarding.stream(Chunker())
-        check("guess running before discard", try await until { FakeASR.count > discardCount })
-        discarding.cancel()
-        do { _ = try await discarding.finish(); check("inflight Escape cannot finish", false) }
-        catch { check("inflight Escape cannot publish", discarding.lastTail.isEmpty) }
-        // Acquire/release the real gate to prove a cancelled guess does not leave it occupied.
-        try await Transcriber.gate.acquire()
+        let discardingTask = Task { try await discarding.finish() }
+        check("foreground engine running before Escape", try await until { FakeASR.count == discardCount + 1 })
+        discarding.cancel(); discardingTask.cancel()
+        do { _ = try await discardingTask.value; check("inflight Escape cannot finish", false) }
+        catch { check("non-cooperative foreground cannot publish after Escape", discarding.lastTail.isEmpty) }
+        check("discarded foreground was awaited without duplicate job", FakeASR.count == discardCount + 1)
+        check("discarded foreground releases gate", try await Transcriber.gate.acquire() == 0)
         await Transcriber.gate.release()
-        check("discarded guess leaves gate usable", discarding.lastTail.isEmpty)
-        FakeASR.ignoreCancellation = false
-        FakeASR.text = "Checked new syllable."
 
-        // A different foreground Session preempts the production Whisper gate's speculative owner.
-        let preempted = Transcriber.Session(whisper: WhisperKit())
-        preempted.drafter = AsrManager(); push(tailAudio, to: preempted)
-        let preemptCount = FakeASR.count
-        preempted.stream(Chunker())
-        check("preemptible guess started", try await until { FakeASR.count > preemptCount })
-        let preemptLog = Log.recorded.count
+        // A separate foreground request cannot queue behind staged tail work, even with a slow engine.
+        let waitingTail = Transcriber.Session(whisper: WhisperKit())
+        check("another session tail staged", try await staged(waitingTail))
+        let foregroundLog = Log.recorded.count
+        let foregroundCount = FakeASR.count
         let foreground = Transcriber.Session(whisper: WhisperKit())
         push(tailAudio, to: foreground)
-        check("foreground tail completes through production gate", try await foreground.finish() == "Checked new syllable.")
-        preempted.invalidateTail()
-        check("preempted guess never publishes", preempted.lastTail.isEmpty && !Log.recorded.dropFirst(preemptLog).contains { $0.hasPrefix("ending tail ready:") })
-        foreground.cancel(); preempted.cancel()
+        check("separate foreground completes", try await foreground.finish() == "Checked new syllable.")
+        check("staged tail did not add an inference ahead of foreground", FakeASR.count == foregroundCount + 1)
+        check("separate foreground has zero added gate wait", Log.recorded.dropFirst(foregroundLog).contains { $0 == "ending check: in line 0ms outcome=0" })
+        foreground.cancel(); waitingTail.cancel()
+
+        // A four-second ordinary draft check becomes due after a stage. No speculative job may precede it.
+        let drafting = Transcriber.Session(whisper: WhisperKit())
+        check("tail staged before ordinary draft check", try await staged(drafting))
+        let draftChecks = FakeASR.count
+        let checkLock = NSLock()
+        var checkedRanges: [Range<Int>] = []
+        drafting.onCheck = { range, _ in checkLock.withLock { checkedRanges.append(range) } }
+        push(noise(993, 4 * Chunker.rate) + [Float](repeating: 0, count: 8000), to: drafting)
+        drafting.streamDrafts()
+        check("ordinary draft check completes after resumed speech", try await until { checkLock.withLock { !checkedRanges.isEmpty } })
+        check("ordinary draft never queued behind a speculative inference", FakeASR.count == draftChecks + 1)
+        check("ordinary check advances checked boundary", drafting.checkedUpTo > 0)
+        drafting.cancel()
+        // Wait for the existing normal loop to leave, without running real ASR.
+        try await Transcriber.gate.acquire(); await Transcriber.gate.release()
+
+        // Paired baseline and staged paths use the same slow cancellation-ignoring engine and PCM.
+        for resumedSpeech in [false, true] {
+            for repetition in 0..<3 {
+                Transcriber.lastJob = 10 // no staging, otherwise the same draft-mode Session path
+                let baseline = Transcriber.Session(whisper: WhisperKit())
+                baseline.drafter = AsrManager(); push(tailAudio, to: baseline)
+                baseline.stream(Chunker())
+                if resumedSpeech { push([0.1], to: baseline) }
+                let baseLog = Log.recorded.count, baseCalls = FakeASR.count
+                let baseStart = ProcessInfo.processInfo.systemUptime
+                let baseResult = try await baseline.finish()
+                let baselineMS = Log.ms(ProcessInfo.processInfo.systemUptime - baseStart)
+                check("baseline one slow check", FakeASR.count == baseCalls + 1)
+                check("baseline zero line wait", Log.recorded.dropFirst(baseLog).contains { $0 == "ending check: in line 0ms outcome=0" })
+                baseline.cancel()
+                Transcriber.lastJob = 0
+                let candidate = Transcriber.Session(whisper: WhisperKit())
+                check("paired tail staged", try await staged(candidate))
+                if resumedSpeech { push([0.1], to: candidate) }
+                let candidateLog = Log.recorded.count, candidateCalls = FakeASR.count
+                let candidateStart = ProcessInfo.processInfo.systemUptime
+                let candidateResult = try await candidate.finish()
+                let candidateMS = Log.ms(ProcessInfo.processInfo.systemUptime - candidateStart)
+                check("paired output equals baseline", candidateResult == baseResult)
+                check("paired final exactly one slow check", FakeASR.count == candidateCalls + 1)
+                check("paired foreground queue wait no longer than baseline", Log.recorded.dropFirst(candidateLog).contains { $0.hasPrefix("ending check: in line 0ms outcome=") })
+                // Allow scheduling jitter, not another 300 ms engine job. Queue-wait equality is exact above.
+                check("paired finish has no extra slow engine duration", candidateMS <= baselineMS + 80)
+                print("slow-engine control: resumed=\(resumedSpeech ? 1 : 0) run=\(repetition) baseline_ms=\(baselineMS) staged_ms=\(candidateMS) added_line_ms=0")
+                candidate.cancel()
+            }
+        }
         let priorityGate = Transcriber.Gate()
-        try await priorityGate.acquire()
-        do {
-            try await priorityGate.acquire(speculative: true)
-            check("speculation never queues behind foreground", false)
-        } catch { check("busy gate skips speculation", true) }
+        check("idle foreground gate wait is zero", try await priorityGate.acquire() == 0)
         let cancelledWaiter = Task {
             do { try await priorityGate.acquire(); await priorityGate.release(); return false }
             catch { return true }
@@ -441,9 +515,9 @@ final class Calls: @unchecked Sendable {
         cancelledWaiter.cancel()
         check("cancelled waiter leaves foreground queue", await cancelledWaiter.value)
         await priorityGate.release()
-        try await priorityGate.acquire()
+        check("cancelled waiter never strands gate", try await priorityGate.acquire() == 0)
         await priorityGate.release()
-        check("cancelled waiter never strands gate", true)
+        FakeASR.ignoreCancellation = false
         FakeASR.delay = 0
         Transcriber.lastJob = 10
 

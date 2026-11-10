@@ -1052,12 +1052,16 @@ do {
     check("tail.newPieceRejected", !matches(pieces: 3))
     check("tail.truncatedAudioRejected", !matches(available: 999))
     check("tail.newSpeechRejected", !matches(speech: true))
-    check("tail.newPressRevoked", !matches(revoked: true))
+    check("tail.otherPressDoesNotChangeIdentity", matches())
     check("tail.escapeRevoked", !matches(revoked: true))
     check("tail.quietSamplesAllowed", !CheckedTail.newerSpeech([0.1, 0, 0.001], after: 1, quiet: 0.003))
     check("tail.partialFrameSpeechRejected", CheckedTail.newerSpeech([0.1, 0, 0.02], after: 1, quiet: 0.003))
     check("tail.nonFiniteRejected", CheckedTail.newerSpeech([0.1, .nan], after: 1, quiet: 0.003))
     check("tail.invalidCoverageRejected", CheckedTail.newerSpeech([], after: 1, quiet: 0.003))
+    check("tail.sameLengthCleanupRejected", !matches(generation: 4, available: 1200))
+    check("tail.zeroLengthRejected", !CheckedTail(generation: 3, start: 100, end: 100, checkedUpTo: 2, pieces: 2)
+        .matches(generation: 3, start: 100, checkedUpTo: 2, pieces: 2, available: 100, newerSpeech: false, revoked: false))
+    check("tail.emptyExtensionAllowed", !CheckedTail.newerSpeech([0.1], after: 1, quiet: 0.003))
 }
 
 do {
