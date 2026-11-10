@@ -10,23 +10,95 @@ public enum BrowserMedia {
 
     /// Letters and digits only, so the token can sit inside the page script as plain text.
     public static func token() -> String { UUID().uuidString.replacingOccurrences(of: "-", with: "") }
+    public static func cleanIdentity(_ value: String) -> String { clean(value) }
     static func clean(_ token: String) -> String { token.filter { $0.isASCII && ($0.isLetter || $0.isNumber) } }
 
-    /// Pauses every video and song on the page that is playing out loud (muted previews are left alone), marks each
-    /// with the token, and returns how many. Marks left from an earlier pause are cleared first.
-    public static func pauseScript(token: String) -> String {
-        let t = clean(token)
-        return "(function(){var n=0;document.querySelectorAll('[\(mark)]').forEach(function(m){m.removeAttribute('\(mark)')});"
-            + "document.querySelectorAll('video,audio').forEach(function(m){if(!m.paused&&!m.ended&&!m.muted&&m.volume>0)"
-            + "{m.pause();m.setAttribute('\(mark)','\(t)');n++}});return n})()"
+    /// Probe and pause are separate bounded actions. Document identity and element references never leave the page.
+    /// Navigation loses this registry, so a retry cannot act on a replacement document in the same tab.
+    public static func probeScript(token: String, document: String, expires: Double) -> String {
+        let t = clean(token), d = clean(document)
+        return "(function(){if(Date.now()>\(expires)){return ''}var r=window.__redpenMedia||(window.__redpenMedia=Object.create(null));"
+            + "if(r['\(t)']&&r['\(t)'].cancelled)return '';var items=Array.from(document.querySelectorAll('video,audio')).filter(function(m){return !m.paused&&!m.ended&&!m.muted&&m.volume>0});"
+            + "if(!items.length)return '';r['\(t)']={doc:'\(d)',items:items,cancelled:false};return '\(d)'})()"
     }
 
-    /// Plays back only what the pause with this token marked, if it is still paused, and returns how many.
-    public static func resumeScript(token: String) -> String {
+    /// Repeating a pause preserves every operation's marks. Count only elements actually paused by this operation.
+    public static func pauseScript(token: String, document: String? = nil, expires: Double = 9e15) -> String {
         let t = clean(token)
-        return "(function(){var n=0;document.querySelectorAll('[\(mark)=\"\(t)\"]').forEach(function(m){m.removeAttribute('\(mark)');"
-            + "if(m.paused){var p=m.play();if(p&&p.catch)p.catch(function(){});n++}});return n})()"
+        let selection: String
+        if let document {
+            selection = "var r=window.__redpenMedia&&window.__redpenMedia['\(t)'];if(!r||r.cancelled||r.doc!='\(clean(document))')return -1;var items=r.items;"
+        } else { selection = "var items=Array.from(document.querySelectorAll('video,audio'));" }
+        return "(function(){if(Date.now()>\(expires))return -1;var n=0;" + selection
+            + "items.forEach(function(m){if(!m.isConnected)return;var owners=(m.getAttribute('\(mark)')||'').split(' ').filter(Boolean);"
+            + "if(!m.paused&&!m.ended&&!m.muted&&m.volume>0){try{m.pause()}catch(e){}if(m.paused){if(owners.indexOf('\(t)')<0)owners.push('\(t)');m.setAttribute('\(mark)',owners.join(' '))}}"
+            + "if(m.paused&&owners.indexOf('\(t)')>=0)n++});return n})()"
     }
+
+    /// Seal the token before reconciling, so an already-delivered, delayed pause cannot act after this script.
+    /// Never start marked media while anything on this page is already audible. Pause-only clears marks without play.
+    public static func resumeScript(token: String, play: Bool = true) -> String {
+        let t = clean(token)
+        return "(function(){var n=0;var r=window.__redpenMedia||(window.__redpenMedia=Object.create(null));r['\(t)']={cancelled:true};"
+            + "var audible=Array.from(document.querySelectorAll('video,audio')).some(function(m){return !m.paused&&!m.ended&&!m.muted&&m.volume>0});"
+            + "document.querySelectorAll('[\(mark)~=\"\(t)\"]').forEach(function(m){var rest=(m.getAttribute('\(mark)')||'').split(' ').filter(function(v){return v&&v!='\(t)'});if(rest.length)m.setAttribute('\(mark)',rest.join(' '));else m.removeAttribute('\(mark)');"
+            + "if(\(play ? "true" : "false")&&!rest.length&&!audible&&m.paused){var p=m.play();if(p&&p.catch)p.catch(function(){});n++}});return n})()"
+    }
+
+    /// One bounded phase per process. Site URLs order background candidates inside AppleScript only.
+    /// Only opaque IDs, a generated document identity or a count leave the runner. No page text or titles.
+    public static let actionRunner = """
+    on run argv
+        set phase to item 1 of argv
+        tell application id "\(chromeBundleID)"
+            with timeout of 1 second
+                if phase is "windows" then
+                    return (id of windows) as list
+                else if phase is "tabs" or phase is "front" then
+                    set wid to item 2 of argv
+                    set sites to {\(mediaSites.map { "\"\($0)\"" }.joined(separator: ", "))}
+                    repeat with w in windows
+                        if ((id of w) as text) is wid then
+                            set frontID to (id of active tab of w) as text
+                            if phase is "front" then return frontID
+                            set found to {frontID}
+                            set others to {}
+                            set tids to id of tabs of w
+                            set urls to URL of tabs of w
+                            repeat with i from 1 to count of tids
+                                set tid to (item i of tids) as text
+                                if tid is not frontID then
+                                    set likely to false
+                                    repeat with site in sites
+                                        if (item i of urls) contains (contents of site) then set likely to true
+                                    end repeat
+                                    if likely then
+                                        set end of found to tid
+                                    else
+                                        set end of others to tid
+                                    end if
+                                end if
+                            end repeat
+                            set found to found & others
+                            set AppleScript's text item delimiters to ","
+                            return found as text
+                        end if
+                    end repeat
+                    return ""
+                else
+                    set tid to item 2 of argv
+                    set js to item 3 of argv
+                    repeat with w in windows
+                        repeat with t in tabs of w
+                            if ((id of t) as text) is tid then return execute t javascript js
+                        end repeat
+                    end repeat
+                    return ""
+                end if
+            end timeout
+        end tell
+    end run
+    """
 
     /// Runs a page script in Chrome tabs and prints "tab id:count" for each tab where the count is above zero.
     /// Arguments: the script, then "first" or "every". The tabs go in three rounds: the tab showing in each window,

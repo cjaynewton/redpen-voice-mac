@@ -59,56 +59,158 @@ enum Media {
     /// `chromeOnly` is the pause asked for when the quick listen heard silence: Chrome is asked whether a video is
     /// playing out loud and pauses only that. Nothing found, or Chrome unable to say, presses nothing and hands back
     /// nil, since the key on a quiet Mac would start music or a paused video.
-    static func pause(_ players: [Player], chromeOnly: Bool = false, stillPaused: @escaping () -> Bool,
-                      done: @escaping (Paused?, BrowserMedia.Outcome?) -> Void) {
-        // Chrome said no a moment ago: the key at once, so the wait for Chrome never lengthens the cut at the start
-        // of the dictation (it added about 0.6 s to every cut on Nov 2 2026).
+    @discardableResult
+    static func pause(_ players: [Player], chromeOnly: Bool = false, owner: Int,
+                      stillPaused: @escaping () -> Bool, needsPause: @escaping () -> Bool,
+                      done: @escaping (Paused?, BrowserMedia.Outcome?) -> Void) -> BrowserPauseOperation? {
+        guard stillPaused(), needsPause() else { return nil }
+        // Keep the existing non-timeout, loud-Chrome fallback. Recovery never enters this branch again.
         guard players.contains(where: { BrowserMedia.isChrome(path: path($0.pid)) }), Date() >= keyUntil else {
-            if chromeOnly { done(nil, nil); return }
-            pressPlayPause(); done(.key, nil); return
+            if chromeOnly { done(nil, nil); return nil }
+            pressPlayPause(); done(.key, nil); return nil
         }
         let token = BrowserMedia.token()
-        let js = BrowserMedia.pauseScript(token: token)
-        chrome.async {
-            let started = Date()
-            let result = run(BrowserMedia.pauseRunner, [js, "first"], limit: 4)
-            Log.note("media: Chrome answered in \(Log.ms(Date().timeIntervalSince(started)))ms")
-            DispatchQueue.main.async {
-                if result == .scriptsOff || result == .notAllowed { keyUntil = Date().addingTimeInterval(600) }
-                guard stillPaused() else {
-                    if case .handled(let tabs, _) = result { resume(.chrome(token: token, tabs: tabs)) }
-                    Log.note("media: pause let go of while Chrome answered, \(result)")
-                    done(nil, result); return
+        let entered = ProcessInfo.processInfo.systemUptime
+        let epochEnd = Date().addingTimeInterval(BrowserPauseOperation.totalBudget).timeIntervalSince1970 * 1000
+        let operation = BrowserPauseOperation(token: token, owner: owner, preferredTab: recentTab, now: { ProcessInfo.processInfo.systemUptime }) { action, limit, reply in
+            chrome.async {
+                // Queue time is inside the transaction budget. Recheck on the owning queue immediately before launch.
+                let allowed = DispatchQueue.main.sync { stillPaused() && needsPause() }
+                guard allowed else { DispatchQueue.main.async { reply(.empty) }; return }
+                let args: [String]
+                switch action {
+                case .windows: args = ["windows"]
+                case .front(let id): args = ["front", String(id)]
+                case .tabs(let id): args = ["tabs", String(id)]
+                case .probe(let id): args = ["page", String(id), BrowserMedia.probeScript(token: token, document: BrowserMedia.token(), expires: epochEnd)]
+                case .pause(let id, let document, _):
+                    args = ["page", String(id), BrowserMedia.pauseScript(token: token, document: document, expires: epochEnd)]
                 }
-                switch result {
-                case .handled(let tabs, _): done(.chrome(token: token, tabs: tabs), result)
-                // Too slow to know what paused: press nothing, and the resume looks in every tab for this pause's marks.
-                case .failed("timed out"), .failed("slow"): done(.chrome(token: token, tabs: []), result)
-                default:
-                    if BrowserMedia.keyAfterQuietCheck(result, chromeOnly: chromeOnly) { pressPlayPause(); done(.key, result) }
-                    else { done(nil, result) }
-                }
+                let remaining = BrowserPauseOperation.totalBudget - (ProcessInfo.processInfo.systemUptime - entered)
+                guard remaining > 0 else { DispatchQueue.main.async { reply(.timeout) }; return }
+                Log.note("media browser: token=\(token) phase=\(action.phase) process_start elapsed_ms=\(Log.ms(BrowserPauseOperation.totalBudget - remaining))")
+                let r = runAction(args, limit: min(limit, remaining))
+                DispatchQueue.main.async { reply(actionReply(action, r)) }
             }
+        }
+        operation.onProgress = { phase, tab, elapsed, count in
+            Log.note("media browser: token=\(token) phase=\(phase) tab=\(tab.map(String.init) ?? "0") count=\(count) elapsed_ms=\(Log.ms(elapsed))")
+        }
+        operation.onSlow = { Log.note("media browser: token=\(token) slow=1 elapsed_ms=4000") }
+        operation.onFinish = { [weak operation] in
+            guard let operation else { return }
+            let result = operation.outcome
+            if let tab = operation.counts.keys.sorted().first { recentTab = tab }
+            Log.note("media browser: token=\(token) finished state=\(operation.state) count=\(operation.counts.values.reduce(0, +)) elapsed_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime - operation.entered))")
+            guard stillPaused(), needsPause() else { done(nil, result); return }
+            if result == .scriptsOff || result == .notAllowed { keyUntil = Date().addingTimeInterval(600) }
+            switch result {
+            case .handled, .failed("slow"):
+                // Every dispatched candidate is reconciled, including any unacknowledged first pause.
+                done(.chrome(token: token, tabs: operation.touched.sorted()), result)
+            default:
+                if !operation.recovery && BrowserMedia.keyAfterQuietCheck(result, chromeOnly: chromeOnly) {
+                    pressPlayPause(); done(.key, result)
+                } else { done(nil, result) }
+            }
+        }
+        Log.note("media browser: token=\(token) queue_enter elapsed_ms=0")
+        DispatchQueue.main.async { operation.start() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + BrowserPauseOperation.slowAfter) { [weak operation] in
+            guard let operation, !operation.finished else { return }; operation.tick()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + BrowserPauseOperation.totalBudget) { [weak operation] in
+            guard let operation, !operation.finished else { return }; operation.tick()
+        }
+        return operation
+    }
+
+    struct ActionOutput { let status: Int32; let output: String; let error: String; let timedOut: Bool }
+    /// The runner returns only IDs, a generated identity or a count. Errors are classified, never logged verbatim.
+    private static func runAction(_ args: [String], limit: Double) -> ActionOutput {
+        let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        p.arguments = ["-e", BrowserMedia.actionRunner] + args
+        let out = Pipe(), err = Pipe(); p.standardOutput = out; p.standardError = err
+        let finished = DispatchSemaphore(value: 0)
+        p.terminationHandler = { _ in finished.signal() }
+        do { try p.run() } catch { return ActionOutput(status: 1, output: "", error: "", timedOut: false) }
+        if finished.wait(timeout: .now() + limit) == .timedOut {
+            p.terminate()
+            // Do not wait on an unresponsive interpreter or treat termination as AppleEvent cancellation.
+            return ActionOutput(status: 1, output: "", error: "", timedOut: true)
+        }
+        return ActionOutput(status: p.terminationStatus,
+                            output: String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "",
+                            error: String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "", timedOut: false)
+    }
+    static func actionReply(_ action: BrowserPauseOperation.Action, _ r: ActionOutput) -> BrowserPauseOperation.Reply {
+        if r.timedOut || r.error.contains("-1712") { return .timeout }
+        if r.status != 0 {
+            if r.error.contains("-1743") || r.error.lowercased().contains("not authorized") { return .notAllowed }
+            if r.error.contains("Apple Events") || r.error.contains("turned off") { return .refused }
+            return .failed
+        }
+        let output = r.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch action {
+        case .windows, .front, .tabs: return .ids(output.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) })
+        case .probe: return output.isEmpty ? .empty : .candidate(BrowserMedia.cleanIdentity(output))
+        case .pause:
+            guard let count = Int(output) else { return .empty }
+            return count < 0 ? .navigated : .paused(count)
         }
     }
 
     /// Plays back what `pause` paused. Chrome tabs get their own videos back and nothing else. A Chrome pause that was
     /// too slow to say which tabs looks in every tab for its marks, so a pause that landed late still comes back; one
     /// that never got an answer at all (no token yet) presses nothing.
-    static func resume(_ paused: Paused, wait: Bool = false) {
-        guard case .chrome(let token, let tabs) = paused else { pressPlayPause(); return }
-        guard !token.isEmpty else { return }
-        let js = BrowserMedia.resumeScript(token: token)
-        let work = {
-            let r = tabs.isEmpty ? run(BrowserMedia.pauseRunner, [js, "every"], limit: 4)
-                                 : run(BrowserMedia.resumeRunner, [js] + tabs.map(String.init))
-            Log.note("media: Chrome resume\(tabs.isEmpty ? " (every tab)" : ""), \(r)")
+    static func resume(_ paused: Paused, wait: Bool = false, play: Bool = true,
+                       allowed: @escaping () -> Bool = { true }, done: @escaping () -> Void = {}) {
+        guard case .chrome(let token, let tabs) = paused else {
+            if allowed() { if play { pressPlayPause() }; done() }; return
         }
-        // Quitting: finish before the app goes, but never hold the quit longer than the run's own time limit.
-        if wait { chrome.sync(execute: work) } else { chrome.async(execute: work) }
+        guard !token.isEmpty else { done(); return }
+        let js = BrowserMedia.resumeScript(token: token, play: play)
+        // Preserve the bounded synchronous quit path. Ordinary reconciliation checks ownership before every action.
+        if wait {
+            guard allowed() else { return }
+            // Do not join the worker here. A queued action may be waiting for this main queue's owner check.
+            _ = tabs.isEmpty ? run(BrowserMedia.pauseRunner, [js, "every"], limit: 4)
+                             : run(BrowserMedia.resumeRunner, [js] + tabs.map(String.init))
+            done(); return
+        }
+        let end = ProcessInfo.processInfo.systemUptime + 4
+        func step(_ remainingActions: [BrowserPauseOperation.Action]) {
+            guard allowed() else { return }
+            guard let action = remainingActions.first, ProcessInfo.processInfo.systemUptime < end else { done(); return }
+            let rest = Array(remainingActions.dropFirst())
+            chrome.async {
+                guard DispatchQueue.main.sync(execute: allowed) else { return }
+                let left = end - ProcessInfo.processInfo.systemUptime
+                guard left > 0 else { DispatchQueue.main.async { if allowed() { done() } }; return }
+                let args: [String]
+                switch action {
+                case .windows: args = ["windows"]
+                case .tabs(let id): args = ["tabs", String(id)]
+                default:
+                    guard case .probe(let id) = action else { return }
+                    args = ["page", String(id), js]
+                }
+                let result = actionReply(action, runAction(args, limit: min(left, BrowserPauseOperation.actionBudget)))
+                DispatchQueue.main.async {
+                    guard allowed() else { return }
+                    switch (action, result) {
+                    case (.windows, .ids(let ids)): step(ids.map(BrowserPauseOperation.Action.tabs) + rest)
+                    case (.tabs, .ids(let ids)): step(ids.map(BrowserPauseOperation.Action.probe) + rest)
+                    default: step(rest)
+                    }
+                }
+            }
+        }
+        step(tabs.isEmpty ? [.windows] : tabs.map(BrowserPauseOperation.Action.probe))
     }
 
     /// Until when to skip asking Chrome, after it said no: ten minutes, so turning the switch on is picked up soon.
+    nonisolated(unsafe) private static var recentTab: Int?
     nonisolated(unsafe) private static var keyUntil = Date.distantPast
 
     /// One Chrome run at a time, off the main thread: Chrome can take a moment to answer.
