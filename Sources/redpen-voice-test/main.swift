@@ -981,7 +981,7 @@ check("box.emptyWhitespaceEquivalent", BoxText.same(" \n", ""))
 let stoppedDraft = DraftReplacement(expectedBox: "Prefix. My draft ", actual: "Prefix. My draft",
                                     cursor: NSRange(location: 16, length: 0), draft: "My draft ",
                                     replacement: "My checked words and the rest.")
-check("draft.trimmedSuffixActualRange", stoppedDraft?.range == NSRange(location: 8, length: 8))
+check("draft.trimmedSuffixActualRange", stoppedDraft?.range == NSRange(location: 11, length: 5))
 check("draft.completeEndingAfterStop", stoppedDraft?.expected == "Prefix. My checked words and the rest.")
 check("draft.completeEndingConfirmed", stoppedDraft?.landed("Prefix. My checked words and the rest.\n") == true)
 check("draft.postedButUnchangedNotConfirmed", stoppedDraft?.landed("Prefix. My draft") == false)
@@ -991,7 +991,7 @@ let middleNormalized = DraftReplacement(expectedBox: "🎉 Mine.  Draft  later. 
                                          actual: "🎉 Mine. Draft later. Tail stays.",
                                          cursor: NSRange(location: 22, length: 0), draft: " Draft  later. \n",
                                          replacement: " Checked words. ")
-check("draft.normalizedMiddleRange", middleNormalized?.range == NSRange(location: 8, length: 14))
+check("draft.normalizedMiddleRange", middleNormalized?.range == NSRange(location: 9, length: 13))
 check("draft.normalizedMiddleKeepsBothSides", middleNormalized?.expected == "🎉 Mine. Checked words. Tail stays.")
 check("draft.normalizedFullBoxEditRejected", DraftReplacement(expectedBox: "Prefix. My draft ", actual: "Edited. My draft", cursor: NSRange(location: 16, length: 0), draft: "My draft ", replacement: "Checked.") == nil)
 check("draft.selectionRejected", DraftReplacement(expectedBox: "My draft", actual: "My draft", cursor: NSRange(location: 0, length: 8), draft: "My draft", replacement: "Checked.") == nil)
@@ -1003,6 +1003,75 @@ check("draft.normalizedAlreadyPresent", normalizedOnly?.landed("My words") == tr
 let emptyChecked = DraftReplacement(expectedBox: "Prefix. draft", actual: "Prefix. draft", cursor: NSRange(location: 13, length: 0), draft: " draft", replacement: "")
 check("draft.checkedEmptyPreservesPrefix", emptyChecked?.expected == "Prefix.")
 check("draft.checkedDeletionNeedsEvidence", emptyChecked?.landed("Prefix. draft") == false && emptyChecked?.landed("Prefix.") == true)
+
+// Ending surgery keeps only an exact common prefix, at complete grapheme boundaries.
+do {
+    func edit(_ actual: String, _ replacement: String) -> DraftReplacement? {
+        DraftReplacement(expectedBox: actual, actual: actual,
+                         cursor: NSRange(location: actual.utf16.count, length: 0), draft: actual, replacement: replacement)
+    }
+    for (draft, checked, kept, deleted, retyped) in [
+        ("Keep these words", "Keep these words", 16, "", ""),
+        ("Keep these words", "Keep these words.", 16, "", "."),
+        ("Keep the wrong ending", "Keep the right ending", 9, "wrong ending", "right ending"),
+        ("👨‍👩‍👧‍👦 says yes", "👨‍👩‍👧‍👦 says no", 7, "yes", "no"),
+        ("👍🏽 yes", "👍🏻 yes", 0, "👍🏽 yes", "👍🏻 yes"),
+        ("Cafe\u{301} yes", "Cafe\u{301} no", 5, "yes", "no"),
+        ("Cafe\u{301} yes", "Café no", 3, "e\u{301} yes", "é no"),
+        ("words  joined", "words joined.", 6, " joined", "joined."),
+        ("hello", "hello there", 5, "", " there"),
+        ("hello there", "hello", 5, " there", ""),
+        ("keep 👩🏽‍🚀 old", "keep 👩🏽‍🚀 new", 7, "old", "new")
+    ] {
+        let plan = edit(draft, checked)
+        check("endingPrefix.kept.\(draft)", plan?.keptCharacters == kept)
+        check("endingPrefix.deleted.\(draft)", plan.map { (draft as NSString).substring(with: $0.range) } == deleted)
+        check("endingPrefix.retyped.\(draft)", plan?.replacement == retyped)
+        check("endingPrefix.fullResult.\(draft)", plan?.expected.utf8.elementsEqual(checked.utf8) == true)
+    }
+    check("endingPrefix.changedBoxRefused", DraftReplacement(expectedBox: "keep old", actual: "mine old",
+          cursor: NSRange(location: 8, length: 0), draft: "old", replacement: "new") == nil)
+    check("endingPrefix.cursorInsideEmojiRefused", DraftReplacement(expectedBox: "👍🏽", actual: "👍🏽",
+          cursor: NSRange(location: 2, length: 0), draft: "👍", replacement: "new") == nil)
+    check("endingPrefix.joinWhitespacePreserved", edit("one two", "one three")?.expected == "one three")
+}
+
+// Checked tails require the same audio revision and the same committed-piece boundary.
+do {
+    let key = CheckedTail(generation: 3, start: 100, end: 1000, checkedUpTo: 2, pieces: 2)
+    func matches(generation: Int = 3, start: Int = 100, checked: Int = 2, pieces: Int = 2,
+                 available: Int = 1200, speech: Bool = false, revoked: Bool = false) -> Bool {
+        key.matches(generation: generation, start: start, checkedUpTo: checked, pieces: pieces,
+                    available: available, newerSpeech: speech, revoked: revoked)
+    }
+    check("tail.exactIdentityReused", matches())
+    check("tail.quietCaptureExtensionAllowed", matches(available: 2000))
+    check("tail.cleanupGenerationRejected", !matches(generation: 4))
+    check("tail.movedStartRejected", !matches(start: 101))
+    check("tail.newCheckedBoundaryRejected", !matches(checked: 3))
+    check("tail.newPieceRejected", !matches(pieces: 3))
+    check("tail.truncatedAudioRejected", !matches(available: 999))
+    check("tail.newSpeechRejected", !matches(speech: true))
+    check("tail.newPressRevoked", !matches(revoked: true))
+    check("tail.escapeRevoked", !matches(revoked: true))
+    check("tail.quietSamplesAllowed", !CheckedTail.newerSpeech([0.1, 0, 0.001], after: 1, quiet: 0.003))
+    check("tail.partialFrameSpeechRejected", CheckedTail.newerSpeech([0.1, 0, 0.02], after: 1, quiet: 0.003))
+    check("tail.nonFiniteRejected", CheckedTail.newerSpeech([0.1, .nan], after: 1, quiet: 0.003))
+    check("tail.invalidCoverageRejected", CheckedTail.newerSpeech([], after: 1, quiet: 0.003))
+}
+
+do {
+    let checked = "Matching draft with a checked ending."
+    let sentPlan = DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: true, inStartBox: true, sent: true)
+    check("endingPrefix.sentBoxCannotCorrect", sentPlan == .keep)
+    let moved = DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: false, inStartBox: false, sent: false)
+    check("endingPrefix.movedBoxGetsWholeCheckedDictation", moved == .deliver && checked.hasPrefix("Matching draft"))
+    var enter = EnterSend()
+    enter.arm(now: 10)
+    check("endingPrefix.EnterHeldForCheckedWords", enter.keyDown(code: 36, flags: 0, own: false, repeated: false, now: 10) == .hold(id: 1))
+    check("endingPrefix.readyCacheDoesNotReleaseEnter", enter.isWaiting && enter.capReached(id: 1, now: 10.1) == nil)
+    check("endingPrefix.confirmedDeliveryReleasesEnterOnce", enter.release(id: 1) == 36 && enter.release(id: 1) == nil)
+}
 
 // Where a finished dictation goes (D-965): the box you are in at the end. The first box is swapped in place, emptied
 // of Voice's words, or left alone. No AX edits, keys or windows: the planner and the box checks only.

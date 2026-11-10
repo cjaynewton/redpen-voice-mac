@@ -19,10 +19,12 @@ public struct DraftReplacement {
     public let range: NSRange
     public let replacement: String
     public let expected: String
+    public let keptCharacters: Int
 
     public init?(expectedBox: String, actual: String, cursor: NSRange, draft: String, replacement: String) {
         guard BoxText.same(expectedBox, actual), cursor.length == 0, cursor.location >= 0,
-              cursor.location <= actual.utf16.count else { return nil }
+              cursor.location <= actual.utf16.count,
+              cursor.location == actual.utf16.count || actual.indices.contains(where: { $0.utf16Offset(in: actual) == cursor.location }) else { return nil }
         let prefix = (actual as NSString).substring(to: cursor.location)
         let words = prefix.split(whereSeparator: \.isWhitespace)
         let wanted = draft.split(whereSeparator: \.isWhitespace)
@@ -38,9 +40,21 @@ public struct DraftReplacement {
         }
         let offset = start.utf16Offset(in: prefix)
         self.before = actual
-        range = NSRange(location: offset, length: cursor.location - offset)
-        self.replacement = replacement
-        expected = (actual as NSString).replacingCharacters(in: range, with: replacement)
+        let wholeRange = NSRange(location: offset, length: cursor.location - offset)
+        let suffix = (actual as NSString).substring(with: wholeRange)
+        // Compare exact encodings, not Swift's canonically equivalent Character equality. Keep only
+        // complete graphemes shared by the actual editor suffix and the checked replacement.
+        var a = suffix.startIndex, b = replacement.startIndex, kept = 0
+        while a < suffix.endIndex, b < replacement.endIndex {
+            let nextA = suffix.index(after: a), nextB = replacement.index(after: b)
+            guard suffix[a..<nextA].utf8.elementsEqual(replacement[b..<nextB].utf8) else { break }
+            a = nextA; b = nextB; kept += 1
+        }
+        let units = a.utf16Offset(in: suffix)
+        range = NSRange(location: offset + units, length: wholeRange.length - units)
+        self.replacement = String(replacement[b...])
+        keptCharacters = kept
+        expected = (actual as NSString).replacingCharacters(in: wholeRange, with: replacement)
     }
 
     public func landed(_ value: String?) -> Bool {

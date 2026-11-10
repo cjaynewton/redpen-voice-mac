@@ -5,7 +5,8 @@ public struct TalkTimingTrace {
     public enum Event: Int, CaseIterable {
         case keyDown = 1, keyUp, barRequested, barOrdered, captureAttached, firstMicBuffer,
              firstSampleKept, handsFree, mediaStart, mediaEnd, chromeAnswer, quietResult,
-             firstDraftReady, pendingTap, resumedTap, confirmedHold, cancelled, targetResult
+             firstDraftReady, pendingTap, resumedTap, confirmedHold, cancelled, targetResult,
+             stopEvent, stopHandler, tailReady, tailReuse, replacement, replacementPost, replacementConfirmed
     }
     public static let duration = 600.0
     private let began: Double

@@ -100,13 +100,18 @@ enum Insert {
               let value = value(element), let cursor = selectedRange(element),
               let edit = DraftReplacement(expectedBox: expectedBox, actual: value, cursor: cursor,
                                           draft: draft, replacement: replacement) else { return false }
+        let began = ProcessInfo.processInfo.systemUptime
+        Log.note("ending replace: kept=\(edit.keptCharacters) deleted=\(((value as NSString).substring(with: edit.range)).count) retyped=\(edit.replacement.count)")
+        StartTrace.note(.replacement, gesture: 0, count: edit.keptCharacters, value: edit.replacement.count)
         if edit.landed(value) { return true }
         let count = ((value as NSString).substring(with: edit.range)).count
         let safe: () -> Bool = {
             still() && focusedElement().map { CFEqual($0.0, element) } == true
         }
+        StartTrace.note(.replacementPost, gesture: 0)
         let deleted = backspace(count, while: safe)
-        let retyped = deleted == count && (replacement.isEmpty || type(replacement, while: safe))
+        let retyped = deleted == count && (edit.replacement.isEmpty || type(edit.replacement, while: safe))
+        Log.note("ending replace post: elapsed_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime - began)) deleted=\(deleted) retyped=\(retyped ? 1 : 0)")
         guard retyped, confirm(edit.expected, in: element, while: safe) else {
             forgetLast()
             // Which step failed, in counts only (D-972): the 124 s dictation at 03:54 Oct 31 couldn't be told apart.
@@ -115,7 +120,9 @@ enum Insert {
             Log.note("draft: replacement not confirmed (deleted \(deleted) of \(count), retyped \(retyped), box \(now) of \(want) expected); checked words kept for Paste last")
             return false
         }
-        lastEdit = (element, edit.before, edit.range, replacement)
+        Log.note("ending replace confirm: elapsed_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime - began)) confirmed=1")
+        StartTrace.note(.replacementConfirmed, gesture: 0)
+        lastEdit = (element, edit.before, edit.range, edit.replacement)
         forgetLast()
         return true
     }
