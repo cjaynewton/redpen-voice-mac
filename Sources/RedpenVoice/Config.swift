@@ -48,6 +48,8 @@ struct Config: Codable {
     /// Fast draft, Whisper checks (D-764): Parakeet types a draft as you talk and Whisper quietly fixes it a moment
     /// later. Whisper only; off when missing, so Whisper alone stays as it was.
     var draftMode: Bool?
+    /// Use Parakeet for the remaining cleaned audio of talks up to 20 seconds. On when missing.
+    var fasterFinish: Bool?
     /// Point out words to check (D-817, a test): where a second engine hears a "not", a number, a name or the first
     /// or last words differently, the bar shows it and ⌃⌥S swaps. Off when missing.
     var riskMarks: Bool?

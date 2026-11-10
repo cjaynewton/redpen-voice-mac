@@ -3214,5 +3214,23 @@ do {
     check("draftSafety.unresolvedStillRefused", sample.failure(since: 1) == .hardwareKey)
 }
 
+// Short finishing uses the whole speech span, including internal pauses and partial frames.
+for (seconds, expected) in [(0.0, false), (0.01, true), (19.999, true), (20.0, true), (20.001, false), (60.0, false)] {
+    check("fastFinish.boundary.\(seconds)", FastFinish.usesFast(enabled: true, available: true, speechSeconds: seconds) == expected)
+    check("fastFinish.off.\(seconds)", !FastFinish.usesFast(enabled: false, available: true, speechSeconds: seconds))
+    check("fastFinish.missingEngine.\(seconds)", !FastFinish.usesFast(enabled: true, available: false, speechSeconds: seconds))
+}
+check("fastFinish.nan", !FastFinish.usesFast(enabled: true, available: true, speechSeconds: .nan))
+check("fastFinish.infinity", !FastFinish.usesFast(enabled: true, available: true, speechSeconds: .infinity))
+check("fastFinish.noAudio", FastFinish.speechSeconds([]) == 0)
+check("fastFinish.silence", FastFinish.speechSeconds([Float](repeating: 0, count: 16000)) == 0)
+let activeFast = [Float](repeating: 0.1, count: 20 * 16000)
+check("fastFinish.exactAudioBoundary", FastFinish.speechSeconds(activeFast) == 20)
+let paddedFast = [Float](repeating: 0, count: 9600) + activeFast + [Float](repeating: 0, count: 9600)
+check("fastFinish.paddingExcluded", FastFinish.speechSeconds(paddedFast) == 20)
+let pausedFast = [Float](repeating: 0.1, count: 16000) + [Float](repeating: 0, count: 19 * 16000) + [Float](repeating: 0.1, count: 16000)
+check("fastFinish.internalPausesIncluded", FastFinish.speechSeconds(pausedFast) == 21)
+check("fastFinish.partialFrame", FastFinish.speechSeconds([Float](repeating: 0.1, count: 320001)) > 20)
+
 print("\(pass) passed, \(fail) failed")
 exit(fail == 0 ? 0 : 1)

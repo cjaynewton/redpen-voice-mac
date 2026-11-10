@@ -297,6 +297,10 @@ struct SettingsView: View {
                     Toggle("", isOn: Binding(get: { model.config.riskMarks ?? false }, set: { model.config.riskMarks = $0 }))
                         .labelsHidden().toggleStyle(.switch).tint(Ink.red)
                 }
+                row("Faster finish for short talks", "Talks up to 20 seconds finish with the fast engine on your Mac. A little less accurate, but less waiting after you stop.") {
+                    Toggle("", isOn: Binding(get: { model.config.fasterFinish ?? true }, set: { model.config.fasterFinish = $0 }))
+                        .labelsHidden().toggleStyle(.switch).tint(Ink.red)
+                }
                 // The draft goes where your words go while you talk (D-972).
                 row("Quick draft while Whisper works", model.config.whileTalking == .bar
                     ? "A rough draft shows on the bar as you talk; a moment later Whisper fixes any words it heard differently, and the checked text goes in when you finish."

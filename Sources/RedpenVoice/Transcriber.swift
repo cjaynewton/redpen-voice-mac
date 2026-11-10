@@ -113,7 +113,7 @@ final class Transcriber {
         set(.checking)
         if config.engine == "whisper" {
             await prepareWhisper()
-            if config.draftMode == true || config.riskMarks == true { await loadDraftEngine() }
+            if config.draftMode == true || config.riskMarks == true || config.fasterFinish != false { await loadDraftEngine() }
             return
         }
         if config.engine == "parakeet" { await prepareParakeet(); return }
@@ -440,6 +440,8 @@ final class Transcriber {
         /// The draft engine (Parakeet). When set, drafts are written at every short pause and Whisper rereads whole
         /// runs of drafts (4 s or more, cut where a draft ended), so each check covers drafts exactly.
         var drafter: AsrManager?
+        /// Separate from drafts, so the setting also works when words only appear at the end.
+        var fastFinisher: AsrManager?
         var onDraft: ((Int, String) -> Void)?
         /// Whisper's text for drafts `range`, to replace what the draft typed.
         var onCheck: ((Range<Int>, String) -> Void)?
@@ -982,25 +984,48 @@ final class Transcriber {
                     }
                     return (audio, Array(audio[min(cut, audio.count)...]), draftTailStale ? 2 : 0)
                 }
-                let tail: String
-                if let e = early, e.end <= audio.count, !Chunker.hasSpeech(audio, from: e.end, reference: cut) {
-                    tail = e.text  // nothing said after the head start: it is the ending
-                    Log.note("engine: ending was written ahead of release")
-                } else {
-                    Log.note("ending tail: reused=0 outcome=\(outcome) mono_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime))")
-                    StartTrace.note(.tailReuse, gesture: traceID)
-                    do { tail = try await Transcriber.whisperText(whisper, finalAudio, prompt: Transcriber.prompt(hints, carry ? pieces.last : nil), endingOutcome: outcome) }
-                    catch {
-                        // Keep what was already written and say the ending is missing, so it is never lost quietly.
-                        Log.note("engine: the ending failed, \(pieces.count) pieces kept")
-                        if pieces.isEmpty { throw error }
-                        tail = ""
-                        endingLost = true
+                let speechSeconds = FastFinish.speechSeconds(audio)
+                let useFast = FastFinish.usesFast(enabled: fastFinisher != nil, available: fastFinisher != nil,
+                                                   speechSeconds: speechSeconds)
+                var tail: String?
+                var finishEngine = 0 // 0 Whisper, 1 Parakeet, 2 already checked Whisper
+                if useFast, let fastFinisher {
+                    do {
+                        // Same sealed, cleaned PCM and exact checked boundary as Whisper would consume.
+                        // Keep every already checked piece. Only the uncommitted tail changes engine.
+                        tail = finalAudio.isEmpty ? "" : try await Transcriber.parakeetText(fastFinisher, finalAudio)
+                        if tail?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true,
+                           FastFinish.speechSeconds(finalAudio) > 0 {
+                            tail = nil
+                            Log.note("ending fast fallback: reason=2")
+                        } else { finishEngine = 1 }
+                    } catch {
+                        // Failure cannot discard the remaining speech. Use the ordinary Whisper check once.
+                        guard !lock.withLock({ cancelled }) else { throw CancellationError() }
+                        Log.note("ending fast fallback: reason=1")
                     }
                 }
+                if tail == nil {
+                    if let e = early, e.end <= audio.count, !Chunker.hasSpeech(audio, from: e.end, reference: cut) {
+                        tail = e.text
+                        finishEngine = 2
+                        Log.note("engine: ending was written ahead of release")
+                    } else {
+                        Log.note("ending tail: reused=0 outcome=\(outcome) mono_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime))")
+                        StartTrace.note(.tailReuse, gesture: traceID)
+                        do { tail = try await Transcriber.whisperText(whisper, finalAudio, prompt: Transcriber.prompt(hints, carry ? pieces.last : nil), endingOutcome: outcome) }
+                        catch {
+                            Log.note("engine: the ending failed, \(pieces.count) pieces kept")
+                            if pieces.isEmpty { throw error }
+                            tail = ""
+                            endingLost = true
+                        }
+                    }
+                }
+                Log.note("ending finish: engine=\(finishEngine) ms=\(Log.ms(Date().timeIntervalSince(t0))) audio_s=\(String(format: "%.3f", Double(finalAudio.count) / Double(Chunker.rate))) speech_s=\(String(format: "%.3f", speechSeconds))")
                 // Escape can arrive while a non-cooperative engine is completing. It cannot publish.
                 guard !lock.withLock({ cancelled }) else { throw CancellationError() }
-                let ending = await echoStripped(tail, from: cut)
+                let ending = await echoStripped(tail ?? "", from: cut)
                 if !ending.isEmpty { pieces.append(ending) }
                 lastTail = ending
                 onPiece = nil; onDraft = nil; onCheck = nil
@@ -1046,6 +1071,7 @@ final class Transcriber {
         if config.engine == "whisper" {
             let s = Session(whisper: whisper)
             if config.draftMode == true { s.drafter = parakeet }
+            if config.fasterFinish != false { s.fastFinisher = parakeet }
             return (s, nil)
         }
         if config.engine == "parakeet" { return (Session(parakeet: parakeet), nil) }

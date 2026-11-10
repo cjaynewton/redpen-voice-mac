@@ -101,6 +101,10 @@ wiring_checks += [
     ("cleanup clears cached audio identity", "clearDraftTailLocked()" in block(session, "fileprivate func acceptMediaResult(") and "audioGeneration += 1" in block(session, "func silence(")),
 ]
 wiring_checks += [
+    ("default-on setting passed independently of draft mode", 'config.fasterFinish != false { s.fastFinisher = parakeet }' in transcriber_source),
+    ("fast engine loads for default-on finish", 'config.fasterFinish != false { await loadDraftEngine() }' in transcriber_source),
+    ("fast finish shares sealed final audio", 'Transcriber.parakeetText(fastFinisher, finalAudio)' in finish_source),
+    ("same names and ums pipeline after either engine", all(term in block(app_source, "private func end()") for term in ['raw = self.names.apply(raw)', 'Fillers.strip(raw)', 's.finish()'])),
     ("draft callbacks serialize edit and bookkeeping", 'self.edits.enqueue { await self.draft(i, t, from: s) }' in app_source and 'self.edits.enqueue { await self.check(r, t, from: s) }' in app_source),
     ("capture stops independently of edit queue", block(app_source, "private func end()").index('self.recorder.end()') < block(app_source, "private func end()").index('await self.edits.enqueue')),
     ("confirmed edits await off-main reads", 'await EditWait.confirm' in insert_source and 'Task.detached(priority: .userInitiated)' in block(insert_source, 'private static func confirm(')),
@@ -406,6 +410,75 @@ final class Calls: @unchecked Sendable {
         let invalidFocus = await EditWait.confirm(attempts: 20, while: { true }, read: { nil })
         check("changed focus ends confirmation immediately", !invalidFocus)
         print("simulated Enter handler delay \(Int(response.0 * 1000))ms during 1300ms fake AX read")
+
+        // Actual Session routing, cleaned PCM, fallback, word processing and Escape.
+        FakeASR.text = "um monika sends two reports"
+        for (seconds, enabled, expectedFast) in [(19.99, true, true), (20.0, true, true), (20.01, true, false), (3.0, false, false)] {
+            let short = Transcriber.Session(whisper: WhisperKit())
+            if enabled { short.fastFinisher = AsrManager() }
+            let audio = [Float](repeating: 0.1, count: Int(seconds * 16000))
+            push(audio, to: short)
+            let fastBefore = FakeASR.lock.withLock { FakeASR.fastAudio.count }
+            let whisperBefore = FakeASR.count
+            let text = try await short.finish()
+            check("actual Session short/long/off engine route", (FakeASR.lock.withLock { FakeASR.fastAudio.count } > fastBefore) == expectedFast)
+            check("fast finish avoids Whisper tail inference", FakeASR.count - whisperBefore == (expectedFast ? 0 : 1))
+            check("fast result uses unchanged names then ums processing", Fillers.strip(Names(text: "monika = Monica").apply(text)) == "Monica sends two reports")
+            short.cancel()
+        }
+        let cleanedFast = Transcriber.Session(whisper: WhisperKit())
+        cleanedFast.fastFinisher = AsrManager()
+        let fastPCM = noise(333, 32000)
+        push(fastPCM, to: cleanedFast)
+        cleanedFast.silence(upTo: 8000)
+        let fastCleanedPCM = cleanedFast.recorded
+        _ = try await cleanedFast.finish()
+        check("fast final gets cleaned PCM byte for byte", FakeASR.lock.withLock { FakeASR.fastAudio.last == fastCleanedPCM } && fastCleanedPCM.prefix(8000).allSatisfy { $0 == 0 })
+        cleanedFast.silence(upTo: 16000)
+        check("fast consumption seals cleanup", cleanedFast.recorded == fastCleanedPCM)
+        cleanedFast.cancel()
+        let failedFast = Transcriber.Session(whisper: WhisperKit())
+        failedFast.fastFinisher = AsrManager(); push(fastPCM, to: failedFast)
+        FakeASR.fastFails = true
+        let beforeFallback = FakeASR.count
+        _ = try await failedFast.finish()
+        check("fast failure checks remaining speech once with Whisper", FakeASR.count == beforeFallback + 1)
+        FakeASR.fastFails = false
+        failedFast.cancel()
+        let emptyFast = Transcriber.Session(whisper: WhisperKit())
+        emptyFast.fastFinisher = AsrManager(); push(fastPCM, to: emptyFast)
+        FakeASR.fastEmpty = true
+        let beforeEmptyFallback = FakeASR.count
+        let emptyRecovered = try await emptyFast.finish()
+        check("empty fast result cannot lose nonempty speech", !emptyRecovered.isEmpty && FakeASR.count == beforeEmptyFallback + 1)
+        FakeASR.fastEmpty = false
+        emptyFast.cancel()
+
+        let joinedFast = Transcriber.Session(whisper: WhisperKit())
+        joinedFast.drafter = AsrManager(); joinedFast.fastFinisher = AsrManager()
+        let headAudio = noise(334, 96000) + [Float](repeating: 0, count: 16000)
+        FakeASR.text = "Whisper checked head."
+        joinedFast.streamDrafts(); joinedFast.stream(Chunker())
+        push(headAudio, to: joinedFast)
+        check("ordinary Whisper head commits before fast ending", try await until { joinedFast.written.count == 1 })
+        let checkedSamples = FakeASR.lock.withLock { FakeASR.whisperAudio.last!.count }
+        let newTail = noise(335, 8000)
+        push(newTail, to: joinedFast)
+        FakeASR.text = "Fast complete tail."
+        let joinedResult = try await joinedFast.finish()
+        check("fast ending preserves checked head and joins new tail", joinedResult == "Whisper checked head. Fast complete tail.")
+        check("fast input starts at exact committed boundary", FakeASR.lock.withLock { FakeASR.fastAudio.last == Array((headAudio + newTail).dropFirst(checkedSamples)) })
+        joinedFast.cancel()
+        let cancelledFast = Transcriber.Session(whisper: WhisperKit())
+        cancelledFast.fastFinisher = AsrManager(); push(fastPCM, to: cancelledFast)
+        FakeASR.fastDelay = 100
+        let fastCount = FakeASR.lock.withLock { FakeASR.fastAudio.count }
+        let cancelledRun = Task { try await cancelledFast.finish() }
+        check("fast inference started before Escape", try await until { FakeASR.lock.withLock { FakeASR.fastAudio.count > fastCount } })
+        cancelledFast.cancel()
+        do { _ = try await cancelledRun.value; check("Escape must suppress fast result", false) }
+        catch { check("Escape suppresses fast result", error is CancellationError) }
+        FakeASR.fastDelay = 0
 
         // Tail staging must never put non-cooperative inference ahead of foreground work.
         Transcriber.lastJob = 0
@@ -757,7 +830,7 @@ with tempfile.TemporaryDirectory(prefix="first-words-", dir=ROOT / ".build") as 
     source.write_text(stubs.replace("__PRODUCTION_GATE__", gate) + session + "\n}\n" + recording + insert_stubs + replacement_adapter + "\n}\n" + tests)
     core = ROOT / "Sources/VoiceCore"
     files = [core / name for name in ["MediaEcho.swift", "MediaAudio.swift", "MediaOpening.swift", "MediaGate.swift", "Chunker.swift",
-                                    "Silence.swift", "FocusGate.swift", "CheckedTail.swift", "BoxText.swift", "EnterSend.swift", "LongTalk.swift", "BoxMatch.swift", "DictationEnding.swift", "TalkKeyState.swift", "DictationDelivery.swift", "TalkTimingTrace.swift", "TalkCapture.swift", "StartTargetWait.swift", "EditWait.swift", "SerialEdits.swift", "Names.swift", "Fillers.swift"]]
+                                    "Silence.swift", "FocusGate.swift", "CheckedTail.swift", "BoxText.swift", "EnterSend.swift", "LongTalk.swift", "BoxMatch.swift", "DictationEnding.swift", "TalkKeyState.swift", "DictationDelivery.swift", "TalkTimingTrace.swift", "TalkCapture.swift", "StartTargetWait.swift", "FastFinish.swift", "EditWait.swift", "SerialEdits.swift", "Names.swift", "Fillers.swift"]]
     subprocess.run(["xcrun", "swiftc", "-O", "-parse-as-library", "-swift-version", "5", str(source),
                     *map(str, files), "-o", str(tmp / "check")], cwd=ROOT, check=True)
     subprocess.run([str(tmp / "check")], cwd=ROOT, check=True, env=os.environ)

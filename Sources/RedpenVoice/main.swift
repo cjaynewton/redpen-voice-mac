@@ -3206,7 +3206,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             config = Config.load()  // the saved file as it is now, with any change made in the first window
             let model = SettingsModel(config: config, engine: engine) { [weak self] c in
                 guard let self else { return }
-                let engineChanged = c.engine != self.config.engine || c.locale != self.config.locale || c.draftMode != self.config.draftMode || c.riskMarks != self.config.riskMarks
+                let engineChanged = c.engine != self.config.engine || c.locale != self.config.locale || c.draftMode != self.config.draftMode || c.fasterFinish != self.config.fasterFinish || c.riskMarks != self.config.riskMarks
                 let micChanged = c.inputDevice != self.config.inputDevice
                 self.config = c
                 if c.historyKeep == "none" { self.wordSuggestions.clear() }
