@@ -9,6 +9,80 @@ func check(_ name: String, _ ok: Bool, _ detail: String = "") {
     if ok { pass += 1 } else { fail += 1; print("FAIL \(name) \(detail)") }
 }
 
+// Fn start repair: one bounded capture through both taps; no ASR/media permission for a disposable gesture.
+do {
+    var key = TalkKeyState()
+    var barShows = 0, deliveries = 0
+    let capture = TalkCapture<[Int]>(maxFrames: 48_000)
+    var heard: [Int] = []
+    if key.event(key: 63, down: true, at: 0) == .begin { barShows += 1 }
+    capture.append([1, 2], frames: 2)
+    check("start.barOnFirstDown", barShows == 1 && heard.isEmpty)
+    check("start.noMediaBeforeHold", !key.canPauseMedia(at: 0.399))
+    check("start.firstReleasePending", key.event(key: 63, down: false, at: 0.1) == .pendingTap)
+    capture.append([3], frames: 1) // Audio between taps belongs to the same capture.
+    check("start.pendingKeepsAudioAndBar", capture.bufferedFrames == 3 && barShows == 1 && deliveries == 0)
+    check("start.pendingCannotPause", !key.canPauseMedia(at: 0.5))
+    check("start.timeoutCannotRunEarly", key.expireTap(at: 0.599) == nil)
+    check("start.secondDownResumesBusyCapture", key.event(key: 63, down: true, canBegin: false, at: 0.4) == .resume)
+    capture.append([4], frames: 1)
+    check("start.oldTimeoutCannotCancelSecondPress", key.expireTap(at: 0.6) == nil)
+    check("start.secondReleaseLatches", key.event(key: 63, down: false, at: 0.65) == .handsFree)
+    check("start.latchAllowsMedia", key.canPauseMedia(at: 0.65))
+    check("start.promotesSameAudio", capture.activate { heard += $0 } && heard == [1, 2, 3, 4])
+    capture.append([5], frames: 1)
+    check("start.liveFollowsFirstTapInOrder", heard == [1, 2, 3, 4, 5])
+    check("start.cannotReplayTwice", !capture.activate { heard += $0 })
+    if key.event(key: 63, down: true, at: 1) == .end { deliveries += 1 }
+    check("start.onlyStopDelivers", deliveries == 1)
+
+    for duration in [0.001, 0.15, 0.299, 0.399] {
+        var tap = TalkKeyState()
+        let audio = TalkCapture<Int>(maxFrames: 48_000)
+        _ = tap.event(key: 63, down: true, at: 0)
+        audio.append(9, frames: 100)
+        check("start.tapNeverPauses.\(duration)", tap.confirmHold(hardwareDown: true, at: duration) == nil && !tap.canPauseMedia(at: duration))
+        _ = tap.event(key: 63, down: false, at: duration)
+        check("start.releasedTapNeverBecomesHold.\(duration)", tap.confirmHold(hardwareDown: false, at: duration + 0.45) == nil)
+        check("start.singleTapTimesOut.\(duration)", tap.expireTap(at: duration + 0.5) == .cancel && tap.cancelReason == .tapTimeout)
+        audio.discard()
+        check("start.singleTapDeliversNothing.\(duration)", !audio.activate { _ in deliveries += 1 } && audio.bufferedFrames == 0 && deliveries == 1)
+    }
+    var hold = TalkKeyState()
+    _ = hold.event(key: 63, down: true, at: 0)
+    check("start.holdNeedsHardware", hold.confirmHold(hardwareDown: false, at: 0.5) == nil)
+    check("start.holdConfirmsOnce", hold.confirmHold(hardwareDown: true, at: 0.4) == .confirmHold && hold.confirmHold(hardwareDown: true, at: 0.5) == nil)
+    check("start.confirmedHoldAllowsMedia", hold.canPauseMedia(at: 0.4))
+    check("start.realOtherKeyCancelsHold", hold.otherKey(at: 0.5) == .cancel && hold.cancelReason == .otherKey && !hold.canPauseMedia(at: 0.6))
+    var pending = TalkKeyState()
+    _ = pending.event(key: 63, down: true, at: 0); _ = pending.event(key: 63, down: false, at: 0.1)
+    check("start.otherKeyBetweenTapsCancels", pending.otherKey(at: 0.2) == .cancel && pending.cancelReason == .otherKey)
+    check("start.cancelCannotLatchNextTap", pending.event(key: 63, down: true, at: 0.25) == .begin && pending.event(key: 63, down: false, at: 0.3) == .pendingTap && !pending.handsFree)
+    var late = DictationDelivery()
+    late.begin(at: Date(timeIntervalSince1970: 0))
+    check("start.eventClassifiedTapIgnoresHandlerDelay", late.cancel(disposableTap: true) && late.current == 0)
+    let bounded = TalkCapture<Int>(maxFrames: 3)
+    bounded.append(1, frames: 3); bounded.append(2, frames: 1)
+    check("start.pendingMemoryBound", bounded.overflowed && bounded.bufferedFrames == 0 && !bounded.activate { _ in deliveries += 1 })
+    let discarded = TalkCapture<Int>(maxFrames: 3)
+    discarded.append(1, frames: 1); discarded.discard(); discarded.append(2, frames: 1)
+    check("start.cancelCannotRefillOrTranscribe", discarded.bufferedFrames == 0 && !discarded.activate { _ in deliveries += 1 })
+}
+
+do {
+    let trace = TalkTimingTrace(at: 1000)
+    check("start.traceEnabledAtLaunch", trace.line(.keyDown, gesture: 1, capture: 1, eventAt: 1000, at: 1000) != nil)
+    check("start.traceBeforeExpiry", trace.line(.barOrdered, gesture: 1, capture: 1, at: 1599.999) != nil)
+    check("start.traceExpiresAtTenMinutes", trace.line(.firstDraftReady, gesture: 1, capture: 1, at: 1600) == nil)
+    check("start.traceStaysExpired", trace.line(.keyDown, gesture: 2, capture: 2, at: 3600) == nil)
+    check("start.traceRejectsClockBeforeLaunch", trace.line(.keyDown, gesture: 2, capture: 2, at: 999) == nil)
+    for event in TalkTimingTrace.Event.allCases {
+        let line = trace.line(event, gesture: 2, capture: 1, eventAt: 1000.123, count: 456, value: -1, at: 1001) ?? ""
+        let pattern = #"^fn-start: event=[0-9]+ gesture=2 capture=1 mono_ms=1001000 event_ms=1000123 count=456 value=-1$"#
+        check("start.traceNumericFieldsOnly.\(event.rawValue)", line.range(of: pattern, options: .regularExpression) != nil)
+    }
+}
+
 // Names: whole word, case-insensitive, longest first, punctuation kept, no clipboard, no partial words.
 let names = Names(text: """
 # names
@@ -299,8 +373,8 @@ do {
     }
     check("talk.firstDownBegins", event(true, 1) == .begin)
     check("talk.duplicateDownIgnored", event(true, 1.02) == nil)
-    check("talk.firstTapCancelled", event(false, 1.1) == .cancel && !key.active)
-    check("talk.secondDownBegins", event(true, 1.25) == .begin)
+    check("talk.firstTapCancelled", event(false, 1.1) == .pendingTap && !key.active)
+    check("talk.secondDownBegins", event(true, 1.25) == .resume)
     check("talk.secondTapLatches", event(false, 1.35) == .handsFree && key.handsFree)
     check("talk.typingWhileHandsFreeIgnored", key.otherKey() == nil && key.handsFree)
     check("talk.ownDownCannotStop", event(true, 2, own: true) == nil && key.handsFree)
@@ -314,8 +388,8 @@ do {
     check("talk.finishingBeyondGuardBlocks", event(true, 5, ready: false) == nil)
     check("talk.releaseAfterFinishingCannotLatch", event(false, 5.1) == nil && !key.handsFree)
     check("talk.newIdleTapBegins", event(true, 6) == .begin)
-    check("talk.newIdleTapDropped", event(false, 6.1) == .cancel)
-    check("talk.newIdleDoubleTapBegins", event(true, 6.25) == .begin)
+    check("talk.newIdleTapDropped", event(false, 6.1) == .pendingTap)
+    check("talk.newIdleDoubleTapBegins", event(true, 6.25) == .resume)
     check("talk.newIdleDoubleTapLatches", event(false, 6.35) == .handsFree)
     check("talk.eitherTalkKeyStops", event(true, 7, code: 61, ready: false) == .end)
     check("talk.eitherTalkKeyReleaseSwallowed", event(false, 7.1, code: 61) == nil && key.owner == nil)
@@ -328,26 +402,26 @@ do {
     check("talk.holdReleaseEnds", event(false, 10.6) == .end && !key.active)
     check("talk.holdStopGuard", event(true, 10.7) == nil)
     check("talk.holdStopGuardRelease", event(false, 10.8) == nil)
-    check("talk.holdClearedTapHistory", event(true, 12) == .begin && event(false, 12.1) == .cancel && !key.handsFree)
+    check("talk.holdClearedTapHistory", event(true, 12) == .begin && event(false, 12.1) == .pendingTap && !key.handsFree)
 
     key = TalkKeyState()
     check("talk.idleHasNoOwner", !key.active && !key.held && key.owner == nil)
     check("talk.ownDownNoBegin", event(true, 20.1, own: true) == nil && key.owner == nil)
     check("talk.realAfterOwnEventBegins", event(true, 21) == .begin)
-    check("talk.veryFastTapStillCounts", event(false, 21.01) == .cancel)
-    check("talk.veryFastSecondDownStillBegins", event(true, 21.02) == .begin && key.active)
+    check("talk.veryFastTapStillCounts", event(false, 21.01) == .pendingTap)
+    check("talk.veryFastSecondDownStillBegins", event(true, 21.02) == .resume && key.active)
     check("talk.veryFastSecondReleaseLatches", event(false, 21.03) == .handsFree && key.handsFree)
     key = TalkKeyState()
-    check("talk.newFirstTap", event(true, 22) == .begin && event(false, 22.1) == .cancel)
-    check("talk.doubleTapOtherKeyNotSecond", event(true, 22.25, code: 61) == .begin && event(false, 22.35, code: 61) == .cancel)
-    check("talk.expiredTapNotSecond", event(true, 23, code: 61) == .begin && event(false, 23.1, code: 61) == .cancel)
+    check("talk.newFirstTap", event(true, 22) == .begin && event(false, 22.1) == .pendingTap)
+    check("talk.doubleTapOtherKeyNotSecond", event(true, 22.25, code: 61) == .begin && event(false, 22.35, code: 61) == .pendingTap)
+    check("talk.expiredTapNotSecond", event(true, 23, code: 61) == .begin && event(false, 23.1, code: 61) == .pendingTap)
 
     key = TalkKeyState()
     check("talk.shortcutBegins", event(true, 30) == .begin)
     check("talk.otherKeyCancels", key.otherKey() == .cancel && !key.active)
     check("talk.shortcutReleaseIgnored", event(false, 30.1) == nil)
-    check("talk.shortcutCannotSeedDoubleTap", event(true, 30.25) == .begin && event(false, 30.35) == .cancel && !key.handsFree)
-    check("talk.rejectedBegin", event(true, 30.5) == .begin)
+    check("talk.shortcutCannotSeedDoubleTap", event(true, 30.25) == .begin && event(false, 30.35) == .pendingTap && !key.handsFree)
+    check("talk.rejectedBegin", event(true, 30.5) == .resume)
     key.rejectBegin()
     check("talk.rejectedBeginCannotLatch", event(false, 30.6) == nil && !key.handsFree)
     key = TalkKeyState(); key.doubleTap = false
@@ -395,9 +469,9 @@ do {
 
     key = TalkKeyState()
     _ = key.event(key: 63, down: true, at: 30)
-    check("talk.missedQuickReleaseCancelsNormally", key.checkRelease(key: 63, hardwareDown: false, at: 30.1) == .cancel
+    check("talk.missedQuickReleaseCancelsNormally", key.checkRelease(key: 63, hardwareDown: false, at: 30.1) == .pendingTap
           && !key.active && !key.held)
-    check("talk.missedTapCanBeginSecond", key.event(key: 63, down: true, at: 30.25) == .begin)
+    check("talk.missedTapCanBeginSecond", key.event(key: 63, down: true, at: 30.25) == .resume)
     check("talk.secondMissedTapLatchesNormally", key.checkRelease(key: 63, hardwareDown: false, at: 30.35) == .handsFree
           && key.handsFree && key.active && !key.held)
     check("talk.releaseCheckNeverEndsHandsFree", key.checkRelease(key: 63, hardwareDown: false, at: 40) == nil
@@ -429,7 +503,7 @@ do {
         (true, 877537.400087, 877537.600064), (false, 877537.510938, 877537.600817)
     ]
     let actions = trace.compactMap { down, event, _ in key.event(key: 63, down: down, at: event) }
-    check("talk.delayedReleasedDoubleTap", actions == [.begin, .cancel, .begin, .handsFree] && key.handsFree)
+    check("talk.delayedReleasedDoubleTap", actions == [.begin, .pendingTap, .resume, .handsFree] && key.handsFree)
     _ = key.event(key: 63, down: true, at: 877538)
     _ = key.event(key: 63, down: false, at: 877538.1)
     check("talk.delayedExtraStopTapBlocked", key.event(key: 63, down: true, at: 877538.2) == nil && !key.active)
@@ -440,17 +514,17 @@ do {
     let cancel = key.event(key: 63, down: false, at: 877568.533444)
     let second = key.event(key: 63, down: true, at: 877568.594213)
     let latch = key.event(key: 63, down: false, at: 877568.728678)
-    check("talk.logged26msHandlerGapStillLatches", [first, cancel, second, latch] == [.begin, .cancel, .begin, .handsFree])
+    check("talk.logged26msHandlerGapStillLatches", [first, cancel, second, latch] == [.begin, .pendingTap, .resume, .handsFree])
 
     key = TalkKeyState()
     _ = key.event(key: 63, down: true, at: 877540.094132)
-    check("talk.upAcceptedEvenIfHardwareAlreadyDownAgain", key.event(key: 63, down: false, at: 877540.184299) == .cancel)
+    check("talk.upAcceptedEvenIfHardwareAlreadyDownAgain", key.event(key: 63, down: false, at: 877540.184299) == .pendingTap)
     _ = key.event(key: 63, down: true, at: 877540.243950)
     check("talk.nextPhysicalPressLatches", key.event(key: 63, down: false, at: 877540.363864) == .handsFree)
 
     key = TalkKeyState()
     check("talk.releasedDownStillBegins", key.event(key: 63, down: true, at: 1) == .begin)
-    check("talk.releasedDownWithNoUpCompletesQuickTap", key.recoverReleasedDown(key: 63, eventAt: 1) == .cancel && !key.held)
+    check("talk.releasedDownWithNoUpCompletesQuickTap", key.recoverReleasedDown(key: 63, eventAt: 1) == .pendingTap && !key.held)
     check("talk.recoveredTapOnlyCompletesOnce", key.recoverReleasedDown(key: 63, eventAt: 1) == nil)
     check("talk.lateQueuedUpIgnored", key.event(key: 63, down: false, at: 1.1) == nil)
     _ = key.event(key: 63, down: true, at: 1.2)
@@ -471,7 +545,7 @@ do {
     // Finishing ends at 15. The first tap can begin immediately, with no stale tap/guard from the old dictation.
     check("talk.firstTapImmediatelyAfterFinishBegins", key.event(key: 63, down: true, at: 15) == .begin)
     _ = key.event(key: 63, down: false, at: 15.08)
-    check("talk.secondTapImmediatelyAfterFinishBegins", key.event(key: 63, down: true, at: 15.15) == .begin)
+    check("talk.secondTapImmediatelyAfterFinishBegins", key.event(key: 63, down: true, at: 15.15) == .resume)
     check("talk.doubleTapImmediatelyAfterFinishLatches", key.event(key: 63, down: false, at: 15.25) == .handsFree)
 
     key = TalkKeyState()
@@ -1501,7 +1575,7 @@ do {
     for duration in [0.05, 0.1, 0.2, 0.299] {
         var key = TalkKeyState()
         _ = key.event(key: 63, down: true, at: 10)
-        check("media.quickTap.cancelled.\(duration)", key.event(key: 63, down: false, at: 10 + duration) == .cancel)
+        check("media.quickTap.cancelled.\(duration)", key.event(key: 63, down: false, at: 10 + duration) == .pendingTap)
         check("media.quickTap.noSessionToPause.\(duration)", !key.active && !key.handsFree)
     }
 }

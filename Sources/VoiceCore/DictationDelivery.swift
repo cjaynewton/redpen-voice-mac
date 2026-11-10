@@ -27,6 +27,15 @@ public struct DictationDelivery {
         return true
     }
 
+    /// The key state already classified the gesture using event timestamps. Handler delays cannot change it.
+    @discardableResult
+    public mutating func cancel(disposableTap: Bool) -> Bool {
+        defer { pending = nil }
+        guard disposableTap, let p = pending else { return false }
+        current = p.previous
+        return true
+    }
+
     /// Paste last also takes insertion ownership, and must never be undone by a later cancelled tap.
     public mutating func supersede() { pending = nil; advance() }
 
