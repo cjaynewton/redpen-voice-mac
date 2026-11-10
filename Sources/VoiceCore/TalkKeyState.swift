@@ -45,10 +45,19 @@ public struct TalkKeyState {
                 return .end
             }
             guard !active else { return nil }
+            // The timer can be behind this queued down. End the old pending capture here, before
+            // the blocked-start branch clears its lastTap and leaves the timer with nothing to expire.
+            if let until = pendingTapUntil, now >= until {
+                lastTap = nil; secondTap = false; confirmed = false; swallowed = true
+                cancelReason = .tapTimeout
+                return .cancel
+            }
             // Block before beginning audio, including a press whose release arrives after finishing ends.
             let continuing = doubleTap && lastTap.map { $0.key == key && now - $0.at < Self.tapGap } == true
             guard canBegin || continuing, now >= guardedUntil else {
+                let hadPendingTap = lastTap != nil
                 swallowed = true; lastTap = nil; secondTap = false
+                if hadPendingTap { cancelReason = .tapTimeout; return .cancel }
                 return nil
             }
             secondTap = continuing

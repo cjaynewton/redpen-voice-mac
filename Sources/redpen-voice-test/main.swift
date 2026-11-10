@@ -69,6 +69,86 @@ do {
     check("start.cancelCannotRefillOrTranscribe", discarded.bufferedFrames == 0 && !discarded.activate { _ in deliveries += 1 })
 }
 
+// Review regressions use the production gesture, delivery and target-wait policies with delayed event ordering.
+do {
+    for otherKey in [true, false] {
+        var key = TalkKeyState()
+        var delivery = DictationDelivery()
+        delivery.begin(); delivery.confirm()
+        let finishingA = delivery.current
+        _ = key.event(key: 63, down: true, at: 10)
+        delivery.begin()
+        _ = key.event(key: 63, down: false, at: 10.1)
+        check("startR2.pendingTapCancels.\(otherKey)", (otherKey ? key.otherKey(at: 10.2) : key.expireTap(at: 10.6)) == .cancel)
+        check("startR2.pendingCancelRestoresFinishingA.\(otherKey)", delivery.cancel(disposableTap: true) && delivery.current == finishingA)
+        check("startR2.finishingANoLongerWaits.\(otherKey)", delivery.waitForTap(after: finishingA) == 0)
+    }
+    for secondDown in [10.6, 10.601, 11.0] {
+        var key = TalkKeyState()
+        var delivery = DictationDelivery()
+        delivery.begin(); delivery.confirm()
+        let a = delivery.current
+        _ = key.event(key: 63, down: true, at: 10)
+        delivery.begin()
+        _ = key.event(key: 63, down: false, at: 10.1)
+        let audio = TalkCapture<Int>(maxFrames: 48_000)
+        audio.append(1, frames: 10)
+        // The second down is handled before the overdue expiry work. canBegin is false while capture is pending.
+        check("startR2.overdueDownCancels.\(secondDown)", key.event(key: 63, down: true, canBegin: false, at: secondDown) == .cancel && key.cancelReason == .tapTimeout)
+        audio.discard()
+        check("startR2.overdueDownRestoresA.\(secondDown)", delivery.cancel(disposableTap: true) && delivery.current == a)
+        check("startR2.overdueTimerCannotCancelAgain.\(secondDown)", key.expireTap(at: secondDown + 0.1) == nil)
+        check("startR2.overdueCaptureIsGone.\(secondDown)", !audio.activate { _ in } && audio.bufferedFrames == 0)
+        check("startR2.overdueReleaseSwallowed.\(secondDown)", key.event(key: 63, down: false, at: secondDown + 0.2) == nil && !key.active && !key.handsFree)
+        check("startR2.fnRecoversAfterOverdueDown.\(secondDown)", key.event(key: 63, down: true, at: secondDown + 0.8) == .begin)
+    }
+    var wait = StartTargetWait(at: 100)
+    var differentKey = TalkKeyState()
+    _ = differentKey.event(key: 63, down: true, at: 10)
+    _ = differentKey.event(key: 63, down: false, at: 10.1)
+    check("startR2.blockedOtherTalkKeyEndsPendingCapture", differentKey.event(key: 61, down: true, canBegin: false, at: 10.2) == .cancel && differentKey.cancelReason == .tapTimeout)
+    check("startR2.blockedOtherTalkKeyCannotStrandTimer", differentKey.pendingTapUntil == nil && differentKey.event(key: 61, down: false, at: 10.3) == nil && !differentKey.active)
+    var finishing = DictationDelivery()
+    let zero = Date(timeIntervalSince1970: 0)
+    finishing.begin(at: zero); finishing.confirm()
+    let finishingA = finishing.current
+    finishing.begin(at: zero.addingTimeInterval(1))
+    finishing.deferTap(until: zero.addingTimeInterval(1.6))
+    check("startR2.endingWaitsThroughoutPendingTap", finishing.waitForTap(after: finishingA, at: zero.addingTimeInterval(1.5)) > 0)
+    check("startR2.endingYieldsToQueuedTapExpiry", finishing.waitForTap(after: finishingA, at: zero.addingTimeInterval(1.61)) > 0)
+    check("startR2.timeoutRestoresBeforeEndingChecksOwner", finishing.cancel(disposableTap: true) && finishing.current == finishingA && finishing.waitForTap(after: finishingA, at: zero.addingTimeInterval(2)) == 0)
+    finishing.begin(); finishing.deferTap(until: Date().addingTimeInterval(0.5)); finishing.confirm()
+    check("startR2.realHoldReleasesPreviousEnding", finishing.waitForTap(after: finishingA) == 0 && finishing.current != finishingA)
+    finishing.begin(); finishing.deferTap(until: Date().addingTimeInterval(0.5)); finishing.supersede()
+    check("startR2.pasteOwnershipCannotBeRestored", !finishing.cancel(disposableTap: true))
+    check("startR2.noEarlyNoBox", wait.result(found: false, unchanged: true, at: 100.025) == .wait)
+    check("startR2.no300msFallback", wait.result(found: false, unchanged: true, at: 100.3) == .wait)
+    check("startR2.slowBoxStillAdopted", wait.result(found: true, unchanged: true, at: 101.4) == .adopt)
+    check("startR2.adoptedBoxCannotBeReplaced", wait.result(found: true, unchanged: true, at: 101.5) == .wait)
+    var capped = StartTargetWait(at: 0)
+    check("startR2.noFallbackBeforeCap", capped.result(found: false, unchanged: true, at: 1.799) == .wait)
+    check("startR2.fallbackAtCap", capped.result(found: true, unchanged: true, at: 1.8) == .fallback)
+    check("startR2.lateReplyCannotBypassFallback", capped.result(found: true, unchanged: true, at: 2) == .wait)
+    for event in ["Tab", "arrow", "Cmd-L", "modifier", "click", "app switch", "send"] {
+        var moved = StartTargetWait(at: 0)
+        check("startR2.changedTargetKeptForPaste.\(event)", moved.result(found: true, unchanged: false, at: 0.6) == .keepForPaste)
+        check("startR2.changedTargetNotReclaimed.\(event)", moved.result(found: true, unchanged: true, at: 1) == .wait)
+    }
+    for event in ["Tab", "arrow", "Cmd-L", "modifier"] {
+        let input = DraftInput(since: 0)
+        input.record(talkKey: false, at: 0.4)
+        input.record(talkKey: true, at: 0.5)
+        check("startR2.nonTextInputInvalidatesTarget.\(event)", input.snapshot().typingAt == 0.4)
+    }
+    var pause = MediaPauseOwnership()
+    pause.hold()
+    let oldResume = pause.generation
+    pause.hold() // Accepted down, before delayed media discovery.
+    check("startR2.acceptedDownInvalidatesOldResume", !pause.owns(oldResume) && pause.paused)
+    check("startR2.pendingCaptureKeepsPause", !MediaGate.shouldResume(paused: pause.paused, recordingAgain: true))
+    check("startR2.discardedTapAllowsResume", MediaGate.shouldResume(paused: pause.paused, recordingAgain: false))
+}
+
 do {
     let trace = TalkTimingTrace(at: 1000)
     check("start.traceEnabledAtLaunch", trace.line(.keyDown, gesture: 1, capture: 1, eventAt: 1000, at: 1000) != nil)
@@ -414,7 +494,7 @@ do {
     key = TalkKeyState()
     check("talk.newFirstTap", event(true, 22) == .begin && event(false, 22.1) == .pendingTap)
     check("talk.doubleTapOtherKeyNotSecond", event(true, 22.25, code: 61) == .begin && event(false, 22.35, code: 61) == .pendingTap)
-    check("talk.expiredTapNotSecond", event(true, 23, code: 61) == .begin && event(false, 23.1, code: 61) == .pendingTap)
+    check("talk.expiredTapCancelsBeforeTimer", event(true, 23, code: 61) == .cancel && event(false, 23.1, code: 61) == nil && !key.active && !key.handsFree)
 
     key = TalkKeyState()
     check("talk.shortcutBegins", event(true, 30) == .begin)

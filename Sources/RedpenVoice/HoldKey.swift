@@ -21,6 +21,7 @@ final class HoldKey {
     var onUp: () -> Void = {}
     var onCancel: (TalkKeyState.CancelReason) -> Void = { _ in }
     var onConfirm: () -> Void = {}
+    var onPendingTap: (Double) -> Void = { _ in }
     /// Hands-free just started (second tap), so the bar can say so.
     var onHandsFree: () -> Void = {}
     /// An Escape key-down (event time, repeat), seen without taking it from the app in front (D-987). True when a
@@ -127,7 +128,10 @@ final class HoldKey {
     private func flagsChanged(_ e: NSEvent) {
         let code = Int(e.keyCode)
         guard isTalkKey(code), let flag = Self.modifiers[code] else {
-            if !isOwn(e) { apply(state.otherKey(at: e.timestamp)) }
+            if !isOwn(e) {
+                draftInputMonitor.record(talkKey: false, at: e.timestamp)
+                apply(state.otherKey(at: e.timestamp))
+            }
             return
         }
         receive(e, down: e.modifierFlags.contains(flag))
@@ -238,6 +242,7 @@ final class HoldKey {
             StartTrace.note(.resumedTap, gesture: gestureID, capture: captureID)
         case .pendingTap:
             holdWork?.cancel()
+            if let until = state.pendingTapUntil { onPendingTap(until) }
             StartTrace.note(.pendingTap, gesture: gestureID, capture: captureID)
             let work = DispatchWorkItem { [weak self] in
                 guard let self else { return }

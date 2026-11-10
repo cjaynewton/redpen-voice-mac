@@ -68,7 +68,7 @@ final class DraftInputMonitor: @unchecked Sendable {
             // Both directions: the Mac's key-down counter moves on the Fn release too (Oct 30: every blocked
             // ending sat within 0.1 ms of the stop tap's release, 120 to 180 ms after its press).
             let modifierCodes: Set<Int> = [63, 61, 58, 54, 55, 62, 59, 60, 56]
-            guard talk, modifierCodes.contains(code) else { return }
+            guard modifierCodes.contains(code) else { return }
         } else if type != .keyDown { return }
         // Special keys only (codes above 127: never letters, digits or F-keys), to learn what the Fn key posts.
         if !talk, code > 127 { DispatchQueue.main.async { Log.note("draft input: special key code \(code)") } }

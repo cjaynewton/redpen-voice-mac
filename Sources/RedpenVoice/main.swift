@@ -634,6 +634,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         keys.onUp = { [weak self] in self?.end() }
         keys.onCancel = { [weak self] reason in self?.cancel(reason: reason) }
         keys.onConfirm = { [weak self] in self?.confirmStart() }
+        keys.onPendingTap = { [weak self] until in
+            self?.deliveries.deferTap(until: Date().addingTimeInterval(max(0, until - ProcessInfo.processInfo.systemUptime)))
+        }
         keys.onEscape = { [weak self] at, repeated in self?.escapePressed(at: at, repeated: repeated) ?? false }
         keys.heldByEnter = { [enterTap] at in enterTap.held(at: at) }
         enterTap.setTalkKeys(keys.keys.map(\.code))
@@ -850,7 +853,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do { try recorder.start(format: format) } catch { Log.note("mic warm failed: \(error.localizedDescription)") }
     }
 
-    /// The only synchronous start work is bar display and attaching the warm recorder to bounded memory.
+    /// The warm path shows the bar and attaches bounded memory. A cold mic starts on this same press.
     @MainActor private final class PendingStart {
         let id: Int
         let audio: TalkCapture<AVAudioPCMBuffer>
@@ -858,10 +861,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let targetStamp: StartTarget.Stamp
         let began = Date()
         let beganUptime = ProcessInfo.processInfo.systemUptime
+        var targetWait: StartTargetWait
         var input: DraftInput?
         var preRoll = 0
         var confirmed = false
         var targetDone = false
+        var targetUncertain = false
         var activated = false
         var endRequested = false
         var activate: (() -> Void)?
@@ -869,10 +874,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var previousEnterWait: (id: Int, gen: Int, long: Bool)?
         init(id: Int, format: AVAudioFormat, stamp: StartTarget.Stamp) {
             self.id = id; self.format = format; targetStamp = stamp
+            targetWait = StartTargetWait(at: beganUptime)
             audio = TalkCapture(maxFrames: Int(format.sampleRate * 3))
         }
     }
     private var pendingStart: PendingStart?
+    private var startTargetUncertain = false
+    private var slowTargets = 0, cappedTargets = 0
 
     private func begin() {
         if pendingStart != nil { cancel(reason: .tapTimeout) }
@@ -884,16 +892,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         capture.input = keys.trackDraft(since: capture.beganUptime)
         capture.previousEnterWait = enterWait; enterWait = nil
         pendingStart = capture
+        // Take over the existing pause on accepted down, before any asynchronous discovery can race its resume.
+        resumeWork?.cancel(); resumeWork = nil
+        if pausedMedia { pausedMedia = true } // Invalidate an older in-flight resume listen too.
         press += 1
         deliveries.begin()
         startedAt = capture.began
         startBox = nil
-        // No Accessibility, device discovery, names file or SoundTap setup before this show/attach pair.
+        startTargetUncertain = false
+        // No target, names file or media discovery before show/attach. A cold mic starts after ordering the bar.
         hud.traceID = capture.id
         hud.captureImmediately()
         hud.style = config.levelLook == "off" ? "pen" : config.levelLook
         hud.micName = recorder.inputName
         hud.show("", level: true)
+        if !recorder.isRunning {
+            hud.flushInitialDisplay()
+            do { try recorder.start(format: format) }
+            catch {
+                Log.note("mic failed: \(error.localizedDescription)"); failStart("No microphone"); return
+            }
+        }
         capture.preRoll = Int(recorder.begin(onBuffer: { capture.audio.append($0, frames: Int($0.frameLength)) },
             onLevel: { [weak self] v in DispatchQueue.main.async { self?.hud.level(v) } },
             onFirstLiveBuffer: { frames in StartTrace.note(.firstMicBuffer, gesture: capture.id, count: frames) }))
@@ -933,23 +952,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         StartTarget.discover(capture.targetStamp) { [weak self, weak capture] target in
             DispatchQueue.main.async {
                 guard let self, let capture, self.pendingStart === capture, !capture.targetDone else { return }
-                if StartTarget.stamp() == capture.targetStamp, capture.input?.snapshot().typingAt == nil, let target {
-                    self.startBox = StartBox(pid: capture.targetStamp.pid, element: target.element,
-                        app: NSRunningApplication(processIdentifier: capture.targetStamp.pid)?.localizedName ?? "that app",
-                        window: target.window, print: target.print)
-                    self.hud.refineCapture(textBox: target.print.frame, window: target.windowFrame)
-                }
-                capture.targetDone = true
-                StartTrace.note(.targetResult, gesture: capture.id, value: self.startBox == nil ? 0 : 1)
-                self.activateIfReady(capture)
+                self.resolveStartTarget(capture, target: target)
             }
         }
-        // A hung AX service never holds transcription. Late results cannot be adopted by another capture.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self, weak capture] in
+        // Keep audio buffered through the full discovery budget. Only then use the original synchronous path.
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, capture.beganUptime + StartTargetWait.cap - ProcessInfo.processInfo.systemUptime)) { [weak self, weak capture] in
             guard let self, let capture, self.pendingStart === capture, !capture.targetDone else { return }
-            capture.targetDone = true
-            StartTrace.note(.targetResult, gesture: capture.id, value: -1)
-            self.activateIfReady(capture)
+            self.resolveStartTarget(capture, target: nil)
         }
         let thisPress = press
         StartTrace.note(.mediaStart, gesture: capture.id)
@@ -967,9 +976,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         activateIfReady(capture)
     }
 
+    private func startTargetUnchanged(_ capture: PendingStart) -> Bool {
+        StartTarget.stamp() == capture.targetStamp && capture.input?.snapshot().typingAt == nil
+    }
+
+    /// The pre-change synchronous capture, used only after the background cap. The same full identity/input
+    /// checks apply before and after it; focus, window and fingerprint must also survive the blocking reads.
+    private func fallbackStartTarget(_ capture: PendingStart) -> StartTarget.Snapshot? {
+        guard startTargetUnchanged(capture), Insert.focus().kind == .text,
+              let (element, pid) = Insert.focusedElement(), pid == capture.targetStamp.pid else { return nil }
+        let window = Self.boxWindow(element)
+        let print = Self.boxPrint(element, withText: true)
+        guard let (current, currentPID) = Insert.focusedElement(), currentPID == pid, CFEqual(current, element),
+              let window, let currentWindow = Self.boxWindow(current), CFEqual(currentWindow, window),
+              print == Self.boxPrint(current, withText: true), startTargetUnchanged(capture) else { return nil }
+        return StartTarget.Snapshot(element: element, window: window, print: print, windowFrame: nil)
+    }
+
+    private func resolveStartTarget(_ capture: PendingStart, target: StartTarget.Snapshot?) {
+        guard pendingStart === capture, !capture.targetDone else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        let action = capture.targetWait.result(found: target != nil, unchanged: startTargetUnchanged(capture), at: now)
+        var accepted: StartTarget.Snapshot?
+        let capped = now >= capture.beganUptime + StartTargetWait.cap
+        switch action {
+        case .wait: return
+        case .adopt: accepted = target
+        case .fallback:
+            accepted = fallbackStartTarget(capture)
+        case .keepForPaste: break
+        }
+        if capped { cappedTargets += 1 }
+        if let target = accepted, startTargetUnchanged(capture) {
+            startBox = StartBox(pid: capture.targetStamp.pid, element: target.element,
+                app: NSRunningApplication(processIdentifier: capture.targetStamp.pid)?.localizedName ?? "that app",
+                window: target.window, print: target.print)
+            hud.refineCapture(textBox: target.print.frame, window: target.windowFrame)
+        }
+        capture.targetUncertain = startBox == nil
+        capture.targetDone = true
+        let elapsed = ProcessInfo.processInfo.systemUptime - capture.beganUptime
+        if elapsed >= 0.3 { slowTargets += 1 }
+        Log.note("start target: elapsed_ms=\(Log.ms(elapsed)) slow_count=\(slowTargets) capped_count=\(cappedTargets) capped=\(capped ? 1 : 0) accepted=\(startBox == nil ? 0 : 1)")
+        if capture.targetUncertain { Log.note("start target: unverified or changed; words will be kept for Paste last") }
+        StartTrace.note(.targetResult, gesture: capture.id, value: startBox == nil ? 0 : capped ? 2 : 1)
+        activateIfReady(capture)
+    }
+
     private func confirmStart() {
         guard let capture = pendingStart else { return }
         capture.confirmed = true
+        deliveries.confirm()
         activateIfReady(capture)
     }
 
@@ -981,20 +1038,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func activateStart(_ capture: PendingStart, session s: Transcriber.Session, module: (any SpeechModule)?) {
         guard pendingStart === capture, session === s, !capture.activated else { return }
         guard !capture.audio.overflowed else { failStart("Talk again. The start took too long."); return }
-        let format = capture.format
+        startTargetUncertain = capture.targetUncertain
         names = Names(text: Config.loadNames()); Insert.keepNames = Set(names.spellings)
         if config.sounds { NSSound(named: "Pop")?.play() }
-        if !recorder.isRunning {
-            do {
-                try recorder.start(format: format)
-                // A cold start clears Recorder's callback. Reattach this same pending capture afterwards.
-                recorder.begin(onBuffer: { capture.audio.append($0, frames: Int($0.frameLength)) },
-                    onLevel: { [weak self] v in DispatchQueue.main.async { self?.hud.level(v) } },
-                    onFirstLiveBuffer: { frames in StartTrace.note(.firstMicBuffer, gesture: capture.id, count: frames) })
-            } catch {
-                Log.note("mic failed: \(error.localizedDescription)"); failStart("No microphone"); return
-            }
-        }
         // The engine is listening before the pre-roll arrives, so nothing waits in a queue.
         s.start(module: module, vocabulary: names.vocabulary)
         // Whisper writes each stretch at a pause while you talk, so only the last few seconds are left at the end.
@@ -1061,10 +1107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startMedia(_ players: [Media.Player], session s: Transcriber.Session, pending: PendingMedia,
                             capture: PendingStart, press thisPress: Int) {
-        if resumeWork != nil { resumeWork?.cancel(); resumeWork = nil }
         if pausedMedia {
-            // Invalidate an older resume listen, even if this press ends before its callback arrives.
-            pausedMedia = true
             Log.note("media: still paused from the last press")
         } else if config.pauseMedia {
             if players.isEmpty { Log.note("media: no app playing") }
@@ -1176,7 +1219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         recorder.end()
         s?.cancel()
         liveWordsDictation?.end(); liveWordsDictation = nil
-        let ignoredTap = deliveries.cancel(disposableTap: reason != .otherKey)
+        let ignoredTap = deliveries.cancel(disposableTap: pending?.confirmed == false || reason != .otherKey)
         if ignoredTap, let (d, checks, drafts) = interruptedDrafting, finishingDrafting === d {
             d.checksStopped = checks; d.draftsStopped = drafts
         }
@@ -1269,6 +1312,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             liveWordsDictation?.end(); liveWordsDictation = nil; escapePresses = nil
             _ = deliveries.cancel(disposableTap: true)
             hud.flash("Thrown away. Talk again when you're ready.", for: 2.5)
+            resumeMedia()
             return
         }
         guard let s = session else { escapePresses = nil; return }
@@ -1372,6 +1416,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         livePieces += 1
         liveShown += (liveShown.isEmpty ? "" : " ") + text
         guard !onBar else { showBarWords(clean(liveShown)); return }
+        guard !startTargetUncertain else { showBarWords(clean(liveShown)); return }
         // Typed as you talk, holding the key or hands-free, but only into a text box (D-763). Holding the key needs a
         // box Accessibility names as text; hands-free also takes a box it can't name (Electron apps), as at release.
         let focus = config.mode == "rewrite" ? (kind: FocusKind.notText, role: "") : Insert.focus()
@@ -2071,7 +2116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Puts the video back a second after you finish, not at once: press again within that second and it simply stays
     /// paused. Play at once then pause two seconds later didn't stick on Oct 25 (the video was still starting up).
     private func resumeMedia() {
-        guard MediaGate.shouldResume(paused: pausedMedia, recordingAgain: session != nil || writing > 0) else { return }
+        guard MediaGate.shouldResume(paused: pausedMedia, recordingAgain: session != nil || pendingStart != nil || writing > 0) else { return }
         if quitting { resumeNow(); return }
         resumeWork?.cancel()
         let pauseToken = mediaPause.generation
@@ -2103,7 +2148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func resumeNow() {
         resumeWork = nil
         if let hint = chromeHint, session == nil { chromeHint = nil; hud.flash(hint, for: 5) }
-        guard MediaGate.shouldResume(paused: pausedMedia, recordingAgain: session != nil || writing > 0) else { return }
+        guard MediaGate.shouldResume(paused: pausedMedia, recordingAgain: session != nil || pendingStart != nil || writing > 0) else { return }
         let pauseToken = mediaPause.generation
         // "Play again when I stop talking" off: pause only, so nothing ever starts by itself.
         guard config.resumeMedia ?? true else { pausedMedia = false; Log.note("media: left paused, play again is off"); return }
@@ -2115,7 +2160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.mediaPause.owns(pauseToken) else { return }
                 let playing = MediaGate.isPlaying(peak: peak)
-                if self.session != nil || self.writing > 0 {
+                if self.session != nil || self.pendingStart != nil || self.writing > 0 {
                     // A new press started while this listened: it takes the pause over and puts it back later.
                     if playing { self.pausedMedia = false }
                     Log.note("media: new press while resuming, \(playing ? "already playing" : "still paused")")
@@ -2137,6 +2182,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func end() {
         if let capture = pendingStart {
             capture.confirmed = true; capture.endRequested = true
+            deliveries.confirm()
             activateIfReady(capture)
             return
         }
@@ -2160,6 +2206,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let myDrafting = drafting
         finishingDrafting = myDrafting
         let box = startBox
+        let targetUncertain = startTargetUncertain
         let leftover = liveLeftover
         let typedText = liveText
         writing += 1
@@ -2247,7 +2294,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Sent or switched conversation (D-998): nothing is typed again. A newer dictation has begun: nowhere either.
             // Paste last has the checked text in every case.
             var movedAwayNewer = false
-            var kept = false
+            // Missing/stale protection must never turn into an unguarded send to a new composer.
+            // Keep the complete result in lastSaid/History below, without discarding the opening audio.
+            var kept = targetUncertain && !(self.firstRun?.isOpen == true && Insert.ownWindowInFront)
+            if kept, !newer, !text.isEmpty {
+                self.hud.flash("Couldn't confirm the box. Press ⌃⌥V to paste your words", for: 5)
+                Log.note("insert: unverified start target, kept for Paste last")
+            }
             if !draftHandled, !text.isEmpty, typedLive > 0, let b = box, !self.isAt(b) {
                 if newer { movedAwayNewer = true }
                 else {

@@ -17,7 +17,7 @@ enum StartTarget {
         let print: BoxPrint
         let windowFrame: CGRect?
     }
-    private static let queue = DispatchQueue(label: "redpen.voice.start-target", qos: .userInitiated)
+    private static let queue = DispatchQueue(label: "redpen.voice.start-target", qos: .userInitiated, attributes: .concurrent)
     private static let lock = NSLock()
     private static var activation = 0
     private static var observer: NSObjectProtocol?
@@ -35,16 +35,25 @@ enum StartTarget {
                      counters: events.map { CGEventSource.counterForEventType(.hidSystemState, eventType: $0) })
     }
     static func discover(_ stamp: Stamp, done: @escaping (Snapshot?) -> Void) {
-        queue.async { done(read(stamp)) }
+        let deadline = ProcessInfo.processInfo.systemUptime + StartTargetWait.cap
+        queue.async {
+            // A single timed-out call is not evidence that there was no starting box. Retry within
+            // the full budget. A cancelled capture cannot make the next capture queue behind it.
+            repeat {
+                if let target = read(stamp, deadline: deadline) { done(target); return }
+                guard ProcessInfo.processInfo.systemUptime < deadline else { break }
+                Thread.sleep(forTimeInterval: min(0.02, max(0, deadline - ProcessInfo.processInfo.systemUptime)))
+            } while ProcessInfo.processInfo.systemUptime < deadline
+            done(nil)
+        }
     }
-    private static func read(_ stamp: Stamp) -> Snapshot? {
+    private static func read(_ stamp: Stamp, deadline: Double) -> Snapshot? {
         guard stamp.pid > 0, stamp.pid != ProcessInfo.processInfo.processIdentifier else { return nil }
-        let deadline = ProcessInfo.processInfo.systemUptime + 0.25
         var expired = false
         func attr(_ element: AXUIElement, _ key: String) -> CFTypeRef? {
             let left = deadline - ProcessInfo.processInfo.systemUptime
             guard left > 0 else { expired = true; return nil }
-            AXUIElementSetMessagingTimeout(element, Float(min(0.025, left)))
+            AXUIElementSetMessagingTimeout(element, Float(min(StartTargetWait.callTimeout, left)))
             var value: CFTypeRef?
             let result = AXUIElementCopyAttributeValue(element, key as CFString, &value)
             if ProcessInfo.processInfo.systemUptime >= deadline || result == .cannotComplete { expired = true }

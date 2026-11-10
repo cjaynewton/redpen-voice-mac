@@ -498,7 +498,7 @@ final class Transcriber {
                     lock.withLock {
                         if !tracedFirstDraft, !text.isEmpty {
                             tracedFirstDraft = true
-                            StartTrace.note(.firstDraftReady, gesture: traceID, count: text.utf16.count)
+                            StartTrace.note(.firstDraftReady, gesture: traceID)
                         }
                         drafts.append(Draft(start: from, end: c, text: text))
                         if !cancelled { onDraft?(drafts.count - 1, text) }

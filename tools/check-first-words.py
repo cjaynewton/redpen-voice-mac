@@ -37,22 +37,45 @@ confirmed = block(app_source, "private func whenMediaConfirmed(")
 hold_source = (ROOT / "Sources/RedpenVoice/HoldKey.swift").read_text()
 hud_source = (ROOT / "Sources/RedpenVoice/HUD.swift").read_text()
 recorder_source = (ROOT / "Sources/RedpenVoice/Recorder.swift").read_text()
+target_source = (ROOT / "Sources/RedpenVoice/StartTarget.swift").read_text()
+resolve_target = block(app_source, "private func resolveStartTarget(")
+fallback_target = block(app_source, "private func fallbackStartTarget(")
+prepare = block(app_source, "private func prepareStart(")
+cancel = block(app_source, "private func cancel(")
 wiring_checks = [
     ("bar on first accepted down before recorder attach", begin.index('hud.show("", level: true)') < begin.index("recorder.begin(")),
     ("capture attaches before yielding setup", begin.index("recorder.begin(") < begin.index("DispatchQueue.main.async { [weak self] in self?.prepareStart")),
-    ("no slow discovery or delayed HUD on start path", all(term not in begin for term in ["Insert.focus", "boxPrint", "playingApps()", "SoundTap.loudness", "recorder.start(", "asyncAfter", "loadNames", "engine.session("])),
+    ("no target/media discovery or delayed HUD on start path", all(term not in begin for term in ["Insert.focus", "boxPrint", "playingApps()", "SoundTap.loudness", "asyncAfter", "loadNames", "engine.session("])),
     ("HUD orders on initial show", "panel.orderFrontRegardless()" in block(hud_source, "func show(")),
     ("capture promotion needs confirmation and bounded target result", "capture.confirmed, capture.targetDone" in block(app_source, "private func activateIfReady(")),
     ("media action is gated by gesture not timer alone", "keys.mediaAllowed, pendingStart == nil" in confirmed and "whenMediaConfirmed(" in media),
     ("no blanket opening zeroing in app media path", "silence(upTo:" not in media),
     ("quiet Chrome guard survived conflict resolution", "askChromeWhenQuiet" in media and "chromeOnly: !playing" in media),
     ("SoundTap setup off caller", "setup.async { listen(next) }" in (ROOT / "Sources/RedpenVoice/SoundTap.swift").read_text()),
-    ("event-time cancel reason reaches app", "onCancel(state.cancelReason)" in hold_source and "cancel(disposableTap: reason != .otherKey)" in app_source),
+    ("pending tap disposable on every cancel reason", "onCancel(state.cancelReason)" in hold_source and "cancel(disposableTap: pending?.confirmed == false || reason != .otherKey)" in cancel),
+    ("old ending waits for entire pending tap window", "onPendingTap(until)" in hold_source and "keys.onPendingTap =" in app_source and "deliveries.deferTap(until:" in app_source and "deliveries.confirm()" in block(app_source, "private func confirmStart()")),
     ("recorder serializes pre-roll before live buffer", block(recorder_source, "func begin(").index("for b in pre { onBuffer(b) }") < block(recorder_source, "func begin(").index("lock.unlock()")),
     ("default mic moves after the release tail, never during pending capture", "pendingStart == nil" in block(app_source, "private func remicIfDefaultMoved(") and 'remicIfDefaultMoved(reason: "input moved while talking")' in block(app_source, "private func end()")),
     ("input tracking starts on first down and is carried into drafts", "keys.trackDraft(since: capture.beganUptime)" in begin and "input: capture.input" in activate),
-    ("late target cannot ignore real typing", "capture.input?.snapshot().typingAt == nil" in app_source),
+    ("late target cannot ignore real typing", "capture.input?.snapshot().typingAt == nil" in block(app_source, "private func startTargetUnchanged(")),
     ("missing start target cannot claim later box for drafts", "if startBox == nil { drafting?.draftsStopped = true; drafting?.checksStopped = true" in activate),
+    ("cold recorder starts on accepted down before attaching capture", begin.index("if !recorder.isRunning") < begin.index("recorder.start(format: format)") < begin.index("recorder.begin(")),
+    ("cold bar flushed before starting hardware", begin.index("hud.flushInitialDisplay()") < begin.index("recorder.start(format: format)")),
+    ("activation never starts cold mic late", "recorder.start(" not in activate and "recorder.begin(" not in activate),
+    ("accepted down cancels resume before deferred setup", begin.index("resumeWork?.cancel(); resumeWork = nil") < begin.index("recorder.begin(") and "resumeWork" not in media),
+    ("accepted down invalidates old resume callback", "if pausedMedia { pausedMedia = true }" in begin),
+    ("tap cancel permits held media to resume", "resumeMedia()" in cancel and "pendingStart = nil" in cancel),
+    ("pending Escape discard also releases media hold", "resumeMedia()" in block(block(app_source, "private func discard()"), "if let capture = pendingStart")),
+    ("pending capture blocks resume timer and callback", all("pendingStart != nil" in block(app_source, marker) for marker in ["private func resumeMedia()", "private func resumeNow()"])),
+    ("target discovery has full budget and retries", "StartTargetWait.cap" in target_source and "read(stamp, deadline: deadline)" in target_source and "repeat {" in target_source and "0.025" not in target_source),
+    ("slow AX calls get policy timeout", "min(StartTargetWait.callTimeout, left)" in target_source),
+    ("target cap runs synchronous fallback only after policy decision", "case .fallback:" in resolve_target and "accepted = fallbackStartTarget(capture)" in resolve_target and "StartTargetWait.cap" in prepare),
+    ("fallback retains old focus capture with identity rechecks", all(term in fallback_target for term in ["Insert.focus().kind == .text", "Insert.focusedElement()", "Self.boxPrint(element, withText: true)", "CFEqual(current, element)", "CFEqual(currentWindow, window)"]) and fallback_target.count("startTargetUnchanged(capture)") == 2),
+    ("unverified target keeps complete ending for explicit paste", "let targetUncertain = startTargetUncertain" in app_source and "var kept = targetUncertain" in app_source and "unverified start target, kept for Paste last" in app_source),
+    ("unverified target blocks legacy live typing", "guard !startTargetUncertain else" in block(app_source, "private func piece(")),
+    ("slow and capped counts and elapsed time logged", all(term in resolve_target for term in ["elapsed_ms=", "slow_count=", "capped_count=", "accepted="])),
+    ("first draft trace carries no text length", "StartTrace.note(.firstDraftReady, gesture: traceID)" in session and "firstDraftReady, gesture: traceID, count:" not in session),
+    ("non-text key downs and modifier changes invalidate target", 'draftInputMonitor.record(talkKey: false, at: e.timestamp)' in block(hold_source, "private func key(") and 'draftInputMonitor.record(talkKey: false, at: e.timestamp)' in block(hold_source, "private func flagsChanged(") and "guard talk, modifierCodes" not in (ROOT / "Sources/RedpenVoice/DraftInputMonitor.swift").read_text()),
 ]
 for name, passed in wiring_checks:
     if not passed:
@@ -336,6 +359,29 @@ final class Calls: @unchecked Sendable {
         check("double tap replays first samples once", pendingTap.activate { push($0, to: promoted) } && promoted.recorded == firstTap + gap + secondTap)
         promoted.cancel()
 
+        // A slow target must leave opening PCM buffered, not start a draft without its start-box protection.
+        var targetWait = StartTargetWait(at: 0)
+        let slowCapture = TalkCapture<[Float]>(maxFrames: 48_000)
+        let slowSession = Transcriber.Session(whisper: WhisperKit())
+        slowCapture.append(firstTap, frames: firstTap.count)
+        check("slow target holds transcription past 300ms", targetWait.result(found: false, unchanged: true, at: 0.3) == .wait && slowSession.recorded.isEmpty)
+        slowCapture.append(gap, frames: gap.count)
+        check("slow target accepted at 1.4 seconds", targetWait.result(found: true, unchanged: true, at: 1.4) == .adopt)
+        check("slow discovery retains all opening PCM once", slowCapture.activate { push($0, to: slowSession) } && slowSession.recorded == firstTap + gap)
+        check("late target cannot replay opening PCM", targetWait.result(found: true, unchanged: true, at: 2) == .wait && !slowCapture.activate { push($0, to: slowSession) })
+        slowSession.cancel()
+        for byOtherKey in [true, false] {
+            var delivery = DictationDelivery()
+            delivery.begin(); delivery.confirm()
+            let finishingA = delivery.current
+            var key = TalkKeyState()
+            _ = key.event(key: 63, down: true, at: 0)
+            delivery.begin()
+            _ = key.event(key: 63, down: false, at: 0.1)
+            check("finishing tap cancellation classified", (byOtherKey ? key.otherKey(at: 0.2) : key.expireTap(at: 0.6)) == .cancel)
+            check("finishing delivery survives pending tap", delivery.cancel(disposableTap: true) && delivery.current == finishingA)
+        }
+
         // Recording keeps everything between the loudness decision and Chrome's eventual answer.
         let recording = Recording(continuous: true)
         recording.add([Float](repeating: 0.1, count: 4000), rate: 16000)
@@ -367,7 +413,7 @@ with tempfile.TemporaryDirectory(prefix="first-words-", dir=ROOT / ".build") as 
     source.write_text(stubs + session + "\n}\n" + recording + tests)
     core = ROOT / "Sources/VoiceCore"
     files = [core / name for name in ["MediaEcho.swift", "MediaAudio.swift", "MediaOpening.swift", "MediaGate.swift", "Chunker.swift",
-                                    "Silence.swift", "TalkKeyState.swift", "DictationDelivery.swift", "TalkTimingTrace.swift", "TalkCapture.swift"]]
+                                    "Silence.swift", "TalkKeyState.swift", "DictationDelivery.swift", "TalkTimingTrace.swift", "TalkCapture.swift", "StartTargetWait.swift"]]
     subprocess.run(["xcrun", "swiftc", "-O", "-parse-as-library", "-swift-version", "5", str(source),
                     *map(str, files), "-o", str(tmp / "check")], cwd=ROOT, check=True)
     subprocess.run([str(tmp / "check")], cwd=ROOT, check=True, env=os.environ)
