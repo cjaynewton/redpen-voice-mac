@@ -917,6 +917,7 @@ final class Transcriber {
 
         /// What the microphone heard in this dictation, for learning the user's voice (D-1034). Only read in memory.
         func heard() -> [Float] { lock.withLock { samples } }
+        var isCancelled: Bool { lock.withLock { cancelled } }
 
         /// Ends the audio and waits for the last words. Never longer than ten seconds: a stuck engine is cancelled
         /// and whatever it had is returned, so the app never hangs on "Writing".

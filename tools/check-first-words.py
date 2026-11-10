@@ -84,7 +84,7 @@ replace_source = block(insert_source, "static func replaceDraft(")
 finish_source = block(session, "func finish()")
 wiring_checks += [
     ("prefix adapter types only planned suffix", "type(edit.replacement, while: safe)" in replace_source and "type(replacement," not in replace_source),
-    ("prefix adapter keeps full-box and cursor evidence", all(term in replace_source for term in ["DraftReplacement(expectedBox: expectedBox, actual: value, cursor: cursor", "guard still()", "confirm(edit.expected, in: element, while: safe)"])),
+    ("prefix adapter keeps full-box and cursor evidence", all(term in replace_source for term in ["DraftReplacement(expectedBox: expectedBox, actual: value, cursor: cursor", "guard still()", "confirm(edit.expected, in: element, while: still)"])),
     ("prefix adapter never retries uncertain edit", replace_source.count("backspace(") == 1 and replace_source.count("type(edit.replacement,") == 1),
     ("new press preserves finishing session tail", "invalidateTail" not in begin and "clearDraftTailLocked" not in begin),
     ("Escape cancels cache and tasks", "clearDraftTailLocked()" in block(session, "func cancel()") and "session?.cancel()" in block(app_source, "private func discard()")),
@@ -99,6 +99,15 @@ wiring_checks += [
     ("foreground audio selection seals cleanup", "cleanupSealed = true" in finish_source),
     ("ordinary checks clear staged audio before inference", "lock.withLock { clearDraftTailLocked() }" in block(session, "func stream(_ chunker:")),
     ("cleanup clears cached audio identity", "clearDraftTailLocked()" in block(session, "fileprivate func acceptMediaResult(") and "audioGeneration += 1" in block(session, "func silence(")),
+]
+wiring_checks += [
+    ("draft callbacks serialize edit and bookkeeping", 'self.edits.enqueue { await self.draft(i, t, from: s) }' in app_source and 'self.edits.enqueue { await self.check(r, t, from: s) }' in app_source),
+    ("capture stops independently of edit queue", block(app_source, "private func end()").index('self.recorder.end()') < block(app_source, "private func end()").index('await self.edits.enqueue')),
+    ("confirmed edits await off-main reads", 'await EditWait.confirm' in insert_source and 'Task.detached(priority: .userInitiated)' in block(insert_source, 'private static func confirm(')),
+    ("edit pacing never sleeps the main thread", 'usleep(' not in insert_source),
+    ("deferred correction revokes on send and newer press", all(term in block(app_source, "private func swapEnding(") for term in ['!start.sent', 'self.delivery == d.generation'])),
+    ("suspended final delivery revokes on a sent Enter", 'self.enterRevision == endingEnterRevision' in block(app_source, "private func end()")),
+    ("waiting short delivery cannot overlap new recording", 'self.session == nil && self.delivery == gen' in block(app_source, "private func checkWaiting(")),
 ]
 for name, passed in wiring_checks:
     if not passed:
@@ -144,6 +153,10 @@ enum FakeASR {
     static let lock = NSLock()
     static var calls = 0
     static var whisperAudio: [[Float]] = []
+    static var fastAudio: [[Float]] = []
+    static var fastDelay = 0
+    static var fastFails = false
+    static var fastEmpty = false
     static var delay = 0
     static var ignoreCancellation = false
     static var count: Int { lock.withLock { calls } }
@@ -182,7 +195,12 @@ enum Transcriber {
             return text
         } catch { await gate.release(); throw error }
     }
-    static func parakeetText(_ p: AsrManager, _ a: [Float]) async throws -> String { try FakeASR.read(a) }
+    static func parakeetText(_ p: AsrManager, _ a: [Float]) async throws -> String {
+        FakeASR.lock.withLock { FakeASR.fastAudio.append(a) }
+        if FakeASR.fastDelay > 0 { try await Task.sleep(for: .milliseconds(FakeASR.fastDelay)) }
+        if FakeASR.fastFails { throw NSError(domain: "synthetic-fast", code: 1) }
+        return FakeASR.fastEmpty ? "" : try FakeASR.read(a)
+    }
     __PRODUCTION_GATE__
     static let gate = Gate()
     final class Once {
@@ -200,23 +218,25 @@ enum Insert {
     static var box = ""
     static var deleted = 0, typed = "", attempts = 0
     static var canConfirm = true
+    static var onConfirm: (() -> Void)?
     static var lastEdit: (element: AXUIElement, before: String, range: NSRange, replacement: String)?
-    static func reset(_ value: String) { box = value; deleted = 0; typed = ""; attempts = 0; canConfirm = true }
+    static func reset(_ value: String) { box = value; deleted = 0; typed = ""; attempts = 0; canConfirm = true; onConfirm = nil }
     static func value(_ e: AXUIElement) -> String? { box }
     static func selectedRange(_ e: AXUIElement) -> NSRange? { NSRange(location: box.utf16.count, length: 0) }
     static func focusedElement() -> (AXUIElement, Int)? { (element, 1) }
     static func forgetLast() {}
-    static func backspace(_ count: Int, while still: () -> Bool) -> Int {
+    static func backspace(_ count: Int, while still: () -> Bool) async -> Int {
         attempts += 1
         var n = 0
         while n < count && still() { box.removeLast(); deleted += 1; n += 1 }
         return n
     }
-    static func type(_ text: String, while still: () -> Bool) -> Bool {
+    static func type(_ text: String, while still: () -> Bool) async -> Bool {
         guard still() else { return false }; typed += text; box += text; return true
     }
-    static func confirm(_ expected: String, in e: AXUIElement, while still: () -> Bool) -> Bool {
-        still() && canConfirm && BoxText.same(expected, box)
+    static func confirm(_ expected: String, in e: AXUIElement, while still: () -> Bool) async -> Bool {
+        if let onConfirm { await Task.yield(); onConfirm() }
+        return still() && canConfirm && BoxText.same(expected, box)
     }
 '''
 tests = r'''
@@ -250,7 +270,7 @@ final class Calls: @unchecked Sendable {
         while !test(), Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
         return test()
     }
-    static func main() async throws {
+    @MainActor static func main() async throws {
         let video = noise(12, 16_000)
         let user = noise(92, 48_000)
         let beforeKeyVideo = noise(123, 9600)
@@ -332,17 +352,60 @@ final class Calls: @unchecked Sendable {
             ("one  two", "one two.", "one ", 4, "two.")
         ] {
             Insert.reset(draft)
-            let ok = Insert.replaceDraft(draft, with: final, expectedBox: draft, in: Insert.element, while: { true })
+            let ok = await Insert.replaceDraft(draft, with: final, expectedBox: draft, in: Insert.element, while: { true })
             check("actual prefix adapter confirms whole result", ok && Insert.box == final)
             check("actual prefix adapter posts only changed suffix", Insert.deleted == deleted && Insert.typed == typed && final.hasPrefix(kept))
         }
         Insert.reset("Changed box")
-        check("actual adapter refuses changed full box", !Insert.replaceDraft("draft", with: "checked", expectedBox: "draft", in: Insert.element, while: { true }) && Insert.attempts == 0)
+        check("actual adapter refuses changed full box", !(await Insert.replaceDraft("draft", with: "checked", expectedBox: "draft", in: Insert.element, while: { true })) && Insert.attempts == 0)
         Insert.reset("Keep wrong words")
-        check("actual adapter stops partial edit without retry", !Insert.replaceDraft("Keep wrong words", with: "Keep checked words", expectedBox: Insert.box, in: Insert.element, while: { Insert.deleted < 1 }) && Insert.deleted == 1 && Insert.attempts == 1 && Insert.typed.isEmpty)
+        check("actual adapter stops partial edit without retry", !(await Insert.replaceDraft("Keep wrong words", with: "Keep checked words", expectedBox: Insert.box, in: Insert.element, while: { Insert.deleted < 1 })) && Insert.deleted == 1 && Insert.attempts == 1 && Insert.typed.isEmpty)
         Insert.reset("Keep words")
         Insert.canConfirm = false
-        check("actual adapter needs confirmation and never retries", !Insert.replaceDraft("Keep words", with: "Keep words.", expectedBox: Insert.box, in: Insert.element, while: { true }) && Insert.attempts == 1 && Insert.typed == ".")
+        check("actual adapter needs confirmation and never retries", !(await Insert.replaceDraft("Keep words", with: "Keep words.", expectedBox: Insert.box, in: Insert.element, while: { true })) && Insert.attempts == 1 && Insert.typed == ".")
+
+        for change in ["sent", "moved", "Escape"] {
+            Insert.reset("Keep words")
+            var ownsBox = true
+            Insert.onConfirm = { ownsBox = false }
+            let edited = await Insert.replaceDraft("Keep words", with: "Keep words.", expectedBox: "Keep words", in: Insert.element, while: { ownsBox })
+            check("actual asynchronous adapter refuses confirmation after \(change)", !edited && Insert.attempts == 1 && Insert.typed == ".")
+        }
+        Insert.onConfirm = nil
+
+        // The real confirmation wait and edit queue, with a blocking fake AX read on a worker.
+        let edits = SerialEdits()
+        var slowReadStarted = false, confirmedSlow = false, laterEditRan = false
+        let pendingEdit = edits.enqueue {
+            confirmedSlow = await EditWait.confirm(attempts: 1, while: { true }) {
+                slowReadStarted = true
+                return await Task.detached { Thread.sleep(forTimeInterval: 1.3); return true }.value
+            }
+        }
+        check("fake AX confirmation started", try await until { slowReadStarted })
+        let keyScheduled = ProcessInfo.processInfo.systemUptime
+        var enter = EnterSend()
+        enter.arm(now: keyScheduled)
+        let response = await Task { @MainActor in
+            let handled = ProcessInfo.processInfo.systemUptime
+            return (handled - keyScheduled, enter.keyDown(code: 36, flags: 0, own: false, repeated: false, now: handled))
+        }.value
+        check("Enter handler runs within 50ms during 1300ms AX read", response.0 < 0.05)
+        if case .hold = response.1 {} else { check("Enter held during confirmation", false) }
+        check("Enter runs before AX completion", !confirmedSlow)
+        let laterEdit = edits.enqueue { laterEditRan = true }
+        check("later edit cannot overtake suspended AX confirmation", !laterEditRan)
+        await pendingEdit.value
+        await laterEdit.value
+        check("confirmation and subsequent edit both complete in order", confirmedSlow && laterEditRan)
+        var allowed = true
+        let revoked = await EditWait.confirm(attempts: 1, while: { allowed }) {
+            allowed = false; return true
+        }
+        check("confirmation cannot succeed after ownership revoked", !revoked)
+        let invalidFocus = await EditWait.confirm(attempts: 20, while: { true }, read: { nil })
+        check("changed focus ends confirmation immediately", !invalidFocus)
+        print("simulated Enter handler delay \(Int(response.0 * 1000))ms during 1300ms fake AX read")
 
         // Tail staging must never put non-cooperative inference ahead of foreground work.
         Transcriber.lastJob = 0
@@ -694,7 +757,7 @@ with tempfile.TemporaryDirectory(prefix="first-words-", dir=ROOT / ".build") as 
     source.write_text(stubs.replace("__PRODUCTION_GATE__", gate) + session + "\n}\n" + recording + insert_stubs + replacement_adapter + "\n}\n" + tests)
     core = ROOT / "Sources/VoiceCore"
     files = [core / name for name in ["MediaEcho.swift", "MediaAudio.swift", "MediaOpening.swift", "MediaGate.swift", "Chunker.swift",
-                                    "Silence.swift", "FocusGate.swift", "CheckedTail.swift", "BoxText.swift", "EnterSend.swift", "LongTalk.swift", "BoxMatch.swift", "DictationEnding.swift", "TalkKeyState.swift", "DictationDelivery.swift", "TalkTimingTrace.swift", "TalkCapture.swift", "StartTargetWait.swift"]]
+                                    "Silence.swift", "FocusGate.swift", "CheckedTail.swift", "BoxText.swift", "EnterSend.swift", "LongTalk.swift", "BoxMatch.swift", "DictationEnding.swift", "TalkKeyState.swift", "DictationDelivery.swift", "TalkTimingTrace.swift", "TalkCapture.swift", "StartTargetWait.swift", "EditWait.swift", "SerialEdits.swift", "Names.swift", "Fillers.swift"]]
     subprocess.run(["xcrun", "swiftc", "-O", "-parse-as-library", "-swift-version", "5", str(source),
                     *map(str, files), "-o", str(tmp / "check")], cwd=ROOT, check=True)
     subprocess.run([str(tmp / "check")], cwd=ROOT, check=True, env=os.environ)

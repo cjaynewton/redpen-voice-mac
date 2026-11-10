@@ -48,12 +48,15 @@ public enum DraftSafety {
         }
     }
 
-    /// The read-only input listener runs independently of the typing/main thread. Wait without pumping
-    /// the main run loop or reentering dictation callbacks. An unmatched key never gets a blanket exemption.
+    /// The read-only input listener runs independently. Workers may wait without pumping the run loop.
+    /// UI callers can refuse unresolved input immediately. An unmatched key never gets a blanket exemption.
     public static func resolveHardware(since start: Double, sample: () -> HardwareSample,
+                                       waitForListener: Bool = true,
                                        wait: (Double) -> Void = { Thread.sleep(forTimeInterval: $0) }) -> HardwareSample {
         var current = sample()
         let deadline = current.now + eventWait
+        // UI/key handlers refuse unresolved input immediately. Worker callers can still wait for the listener.
+        guard waitForListener else { return current }
         while current.failure(since: start) == .hardwareKey,
               current.typingKeyDownAt.map({ $0 >= start }) != true,
               current.leftClickAgo >= max(0, current.now - start),

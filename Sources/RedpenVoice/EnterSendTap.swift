@@ -143,8 +143,9 @@ final class EnterSendTap: @unchecked Sendable {
         case .swallow: return true
         case .hold(let id):
             let eventAt = Double(event.timestamp) / 1_000_000_000
+            let tapAt = Self.now
             DispatchQueue.main.async {
-                Log.note("ending Enter event: event_ms=\(Log.ms(eventAt)) handler_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime))")
+                Log.note("ending Enter event: event_ms=\(Log.ms(eventAt)) tap_ms=\(Log.ms(tapAt)) handler_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime))")
                 StartTrace.note(.stopEvent, gesture: 0, capture: 0, eventAt: eventAt, value: 2)
                 self.onHold(id)
             }

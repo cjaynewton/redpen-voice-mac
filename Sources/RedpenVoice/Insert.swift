@@ -8,7 +8,7 @@ import VoiceCore
 /// cursor back; when an app says yes and does nothing, the text is typed instead, as key events.
 enum Insert {
     /// `joining`: the dictation this text belongs to, when it is typed in pieces, so Take back removes all of it.
-    static func text(_ text: String, joining: Int? = nil, confirmed: Bool = false, while still: () -> Bool = { true }) -> Bool {
+    @MainActor static func text(_ text: String, joining: Int? = nil, confirmed: Bool = false, while still: () -> Bool = { true }) async -> Bool {
         typedSome = false; typedCount = 0; typedPadding = 0; unconfirmed = false; lastEdit = nil; draftAttempt = nil
         guard !text.isEmpty else { return true }  // nothing to type; replacing the selection with "" would delete it
         guard !ownWindowInFront else { Log.note("insert: a Redpen Voice window is in front, not typed"); return false }
@@ -17,7 +17,7 @@ enum Insert {
         let sys = AXUIElementCreateSystemWide()
         var focusedRef: CFTypeRef?
         let hasFocus = AXUIElementCopyAttributeValue(sys, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success
-        guard hasFocus, let focusedRef, CFGetTypeID(focusedRef) == AXUIElementGetTypeID() else {
+        guard still(), hasFocus, let focusedRef, CFGetTypeID(focusedRef) == AXUIElementGetTypeID() else {
             Log.note("insert: no focused element, kept for Paste last")
             return false
         }
@@ -44,7 +44,7 @@ enum Insert {
         }
         if let before = oldRange, AXUIElementSetAttributeValue(el, kAXSelectedTextAttribute as CFString, padded as CFString) == .success {
             if confirmed, let expected {
-                if confirm(expected, in: el, while: still, attempts: 2) {
+                if await confirm(expected, in: el, while: still, attempts: 2) {
                     recordEdit(padded); remember(padded); return true
                 }
                 // An accepted edit can arrive late. Only fall back when neither text nor cursor changed.
@@ -61,9 +61,10 @@ enum Insert {
         // Focus can move between the check and here: never type into a page or a video.
         guard Self.canTypeAtFocus else { Log.note("insert: focus left the text box, not typed"); return false }
         let before = joining == nil ? value(el) : nil
-        let ok = type(padded, while: still)
+        let safe: () -> Bool = { still() && focusedElement().map { CFEqual($0.0, el) } == true }
+        let ok = await type(padded, while: safe)
         if confirmed, let expected {
-            let landed = ok && confirm(expected, in: el, while: still)
+            let landed = ok ? await confirm(expected, in: el, while: still) : false
             if landed { recordEdit(padded); remember(padded) }
             else { unconfirmed = true; Log.note("insert: draft typing not confirmed, kept for Paste last") }
             return landed
@@ -73,7 +74,7 @@ enum Insert {
         // A whole dictation in a box that says what it holds, and the box hasn't changed a second later: it may not
         // have landed. Never pasted automatically (a busy app can still take the typing late, and then it would be
         // there twice): the caller says so and Control-Option-V pastes it (D-825).
-        if ok, let before, !landed(in: el, before: before) {
+        if ok, let before, !(await landed(in: el, before: before)) {
             unconfirmed = true
             Log.note("insert: typing not seen in the box after a second")
         }
@@ -82,19 +83,20 @@ enum Insert {
 
     /// Read the complete expected value in the original focused box. Whitespace normalization is harmless;
     /// a changed word, cursor movement alone, or merely posting events cannot confirm a draft.
-    private static func confirm(_ expected: String, in element: AXUIElement, while still: () -> Bool,
-                                attempts: Int = 20) -> Bool {
-        for _ in 0..<attempts {
-            guard still(), let (now, _) = focusedElement(), CFEqual(now, element) else { return false }
-            if let value = value(element), BoxText.same(expected, value) { return true }
-            usleep(50_000)
+    @MainActor private static func confirm(_ expected: String, in element: AXUIElement, while still: () -> Bool,
+                                attempts: Int = 20) async -> Bool {
+        await EditWait.confirm(attempts: attempts, while: still) {
+            // Read-only AX work can itself block inside another app, even without a polling sleep.
+            await Task.detached(priority: .userInitiated) { () -> Bool? in
+                guard let (now, _) = focusedElement(), CFEqual(now, element) else { return nil }
+                return value(element).map { BoxText.same(expected, $0) } == true
+            }.value
         }
-        return false
     }
 
     /// Replace only the known suffix, using the editor's actual length and checking what landed afterward.
-    static func replaceDraft(_ draft: String, with replacement: String, expectedBox: String,
-                             in element: AXUIElement, while still: @escaping () -> Bool) -> Bool {
+    @MainActor static func replaceDraft(_ draft: String, with replacement: String, expectedBox: String,
+                             in element: AXUIElement, while still: @escaping () -> Bool) async -> Bool {
         lastEdit = nil
         guard still(), let (now, _) = focusedElement(), CFEqual(now, element),
               let value = value(element), let cursor = selectedRange(element),
@@ -111,10 +113,10 @@ enum Insert {
             still() && focusedElement().map { CFEqual($0.0, element) } == true
         }
         StartTrace.note(.replacementPost, gesture: 0)
-        let deleted = backspace(count, while: safe)
-        let retyped = deleted == count && (edit.replacement.isEmpty || type(edit.replacement, while: safe))
+        let deleted = await backspace(count, while: safe)
+        let retyped = deleted == count ? (edit.replacement.isEmpty ? true : await type(edit.replacement, while: safe)) : false
         Log.note("ending replace post: elapsed_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime - began)) deleted=\(deleted) retyped=\(retyped ? 1 : 0)")
-        let confirmed = retyped && confirm(edit.expected, in: element, while: safe)
+        let confirmed = retyped ? await confirm(edit.expected, in: element, while: still) : false
         Log.note("ending replace confirm: elapsed_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime - began)) confirmed=\(confirmed ? 1 : 0)")
         guard confirmed else {
             forgetLast()
@@ -138,9 +140,9 @@ enum Insert {
     private(set) static var draftAttempt: (element: AXUIElement, draft: DictationEnding.LateDraft)?
 
     /// The box's text changed within a second of typing.
-    private static func landed(in el: AXUIElement, before: String) -> Bool {
+    @MainActor private static func landed(in el: AXUIElement, before: String) async -> Bool {
         for _ in 0..<20 {
-            usleep(50_000)
+            try? await Task.sleep(for: .milliseconds(50))
             if let now = value(el), now != before { return true }
         }
         return false
@@ -324,7 +326,7 @@ enum Insert {
     /// bringing it forward, never by typing keys into a window behind. Only the known words right before that box's
     /// cursor, only while it reads as Voice left it, and it counts only when the box then reads as expected. Tried
     /// once: when nothing changed, the cursor goes back, so a key pressed there later can't replace a selection.
-    static func takeBack(_ typed: String, expectedBox: String, from el: AXUIElement) -> Bool {
+    @MainActor static func takeBack(_ typed: String, expectedBox: String, from el: AXUIElement) async -> Bool {
         lastEdit = nil
         guard let before = value(el), let cursor = selectedRange(el),
               let edit = DraftReplacement(expectedBox: expectedBox, actual: before, cursor: cursor, draft: typed, replacement: "") else { return false }
@@ -334,7 +336,7 @@ enum Insert {
         if selected, AXUIElementSetAttributeValue(el, kAXSelectedTextAttribute as CFString, "" as CFString) == .success {
             for _ in 0..<6 {
                 if edit.landed(value(el)) { lastEdit = (el, edit.before, edit.range, ""); return true }
-                usleep(50_000)
+                try? await Task.sleep(for: .milliseconds(50))
             }
         }
         if selected, value(el) == before {
@@ -377,11 +379,24 @@ enum Insert {
 
     /// Removes the last dictation if it is provably the last thing before the cursor. Returns nil when done, or the
     /// reason it would not, so it never deletes words you typed yourself.
-    static func undoLast() -> String? {
+    @MainActor static func undoLast() async -> String? {
         guard let l = last else { return "Nothing to take back" }
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == l.pid else { return "Go back to the app it went into" }
         guard Date().timeIntervalSince(l.at) < 600 else { return "Too long ago, use Command-Z" }
         let n = (l.text as NSString).length
+        let origin = focusedElement()?.0
+        let events: [CGEventType] = [.keyDown, .leftMouseDown, .rightMouseDown]
+        let counters = events.map { CGEventSource.counterForEventType(.hidSystemState, eventType: $0) }
+        let safe: () -> Bool = {
+            NSWorkspace.shared.frontmostApplication?.processIdentifier == l.pid
+                && counters == events.map { CGEventSource.counterForEventType(.hidSystemState, eventType: $0) }
+                && origin.map { old in focusedElement().map { CFEqual(old, $0.0) } == true } == true
+        }
+        func erase() async -> String? {
+            let deleted = await backspace(l.text.count, while: safe)
+            last = nil
+            return deleted == l.text.count ? nil : "Stopped because the box or input changed"
+        }
         // Best: the app tells us what sits before the cursor, and it matches exactly.
         let sys = AXUIElementCreateSystemWide()
         var f: CFTypeRef?
@@ -395,28 +410,27 @@ enum Insert {
                    AXUIElementCopyParameterizedAttributeValue(el, kAXStringForRangeParameterizedAttribute as CFString, param, &v) == .success,
                    let before = v as? String {
                     guard before == l.text else { return "The text has changed, use Command-Z" }
-                    backspace(l.text.count); last = nil; return nil
+                    return await erase()
                 }
             }
         }
         // The app will not say (Electron apps often will not): only if you have typed nothing since.
         guard !typedSince else { return "You typed since, use Command-Z" }
-        backspace(l.text.count); last = nil
-        return nil
+        return await erase()
     }
 
     /// Deletes `count` characters before the cursor. No modifiers: with Fn held, Delete is forward delete, and with
     /// Option held it deletes whole words. `still` is asked before every character; the moment it says no (you
     /// typed or clicked), it stops. Returns how many it deleted.
     @discardableResult
-    static func backspace(_ count: Int, while still: () -> Bool = { true }) -> Int {
+    @MainActor static func backspace(_ count: Int, while still: () -> Bool = { true }) async -> Int {
         var done = 0
         for _ in 0..<count {
             guard still() else { break }
             guard let pair = VoiceEvents.keyboardPair(key: CGKeyCode(kVK_Delete)) else { return done }
             pair.down.post(tap: .cgSessionEventTap); pair.up.post(tap: .cgSessionEventTap)
             done += 1
-            usleep(1_500)
+            try? await Task.sleep(for: .microseconds(1500))
         }
         return done
     }
@@ -516,7 +530,7 @@ enum Insert {
     /// the last key press", so Voice's own typing looked like you typing and live drafts stopped after the first
     /// 20 characters (Oct 26, every draft dictation stuck at one run).
     /// Stops if you switch apps partway, so the rest never lands somewhere else, or when `still` says no.
-    static func type(_ text: String, while still: () -> Bool = { true }) -> Bool {
+    @MainActor static func type(_ text: String, while still: () -> Bool = { true }) async -> Bool {
         let app = NSWorkspace.shared.frontmostApplication?.processIdentifier
         var ok = false
         for chunk in Array(text.utf16).chunks(of: 20) {
@@ -533,9 +547,9 @@ enum Insert {
             down.flags = []; up.flags = []
             down.post(tap: .cgSessionEventTap); up.post(tap: .cgSessionEventTap)
             ok = true; typedSome = true; typedCount += units.count
-            usleep(4_000)
+            try? await Task.sleep(for: .milliseconds(4))
         }
-        return ok
+        return ok && still()
     }
 }
 

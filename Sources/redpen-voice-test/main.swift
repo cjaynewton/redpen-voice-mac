@@ -3202,5 +3202,17 @@ do {
     check("retry.fileStillPrivate", (try? MeetingFiles.requireMode(0o600, at: file)) != nil)
 } catch { check("retry.syntheticFiles", false, "\(type(of: error))") }
 
+// A main-thread safety read refuses unresolved hardware instead of blocking Enter behind a listener race.
+do {
+    var reads = 0, waits = 0
+    let sample = DraftSafety.resolveHardware(since: 1, sample: {
+        reads += 1
+        return .init(now: 2, keyDownAgo: 0, leftClickAgo: 10, rightClickAgo: 10,
+                     talkKeyDownTimes: [], typingKeyDownAt: nil)
+    }, waitForListener: false, wait: { _ in waits += 1 })
+    check("draftSafety.nonblockingReadOnce", reads == 1 && waits == 0)
+    check("draftSafety.unresolvedStillRefused", sample.failure(since: 1) == .hardwareKey)
+}
+
 print("\(pass) passed, \(fail) failed")
 exit(fail == 0 ? 0 : 1)
