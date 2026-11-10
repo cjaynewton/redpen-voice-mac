@@ -183,6 +183,10 @@ final class HoldKey {
                                  canBegin: canBegin(), at: e.timestamp)
         if action == .begin { captureID = gestureID }
         StartTrace.note(down ? .keyDown : .keyUp, gesture: gestureID, capture: captureID, eventAt: e.timestamp)
+        if action == .end {
+            Log.note("ending stop event: event_ms=\(Log.ms(e.timestamp)) handler_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime))")
+            StartTrace.note(.stopEvent, gesture: gestureID, capture: captureID, eventAt: e.timestamp)
+        }
         apply(action)
         if down, action == .begin || action == .resume {
             let id = gestureID
@@ -210,7 +214,10 @@ final class HoldKey {
         guard let owner = state.owner, state.held, !state.handsFree else { return }
         let hardware = CGEventSource.keyState(.hidSystemState, key: CGKeyCode(owner))
         let action = state.checkRelease(key: owner, hardwareDown: hardware, at: ProcessInfo.processInfo.systemUptime)
-        if action == .end { Log.note("hold key: release was missed, ended from the key's real state") }
+        if action == .end {
+            Log.note("hold key: release was missed, ended from the key's real state")
+            StartTrace.note(.stopEvent, gesture: gestureID, capture: captureID, value: 1)
+        }
         apply(action)
         // A deadline can fire a fraction before tapLength. The hardware poll also confirms an ongoing hold.
         if hardware { apply(state.confirmHold(hardwareDown: true, at: ProcessInfo.processInfo.systemUptime)) }

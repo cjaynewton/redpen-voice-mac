@@ -15,7 +15,7 @@ public struct CheckedTail: Equatable, Sendable {
     public func matches(generation: Int, start: Int, checkedUpTo: Int, pieces: Int,
                         available: Int, newerSpeech: Bool, revoked: Bool) -> Bool {
         !revoked && !newerSpeech && self.generation == generation && self.start == start
-            && self.checkedUpTo == checkedUpTo && self.pieces == pieces && start < end && end <= available
+            && self.checkedUpTo == checkedUpTo && self.pieces == pieces && start >= 0 && start < end && end <= available
     }
     /// Check every appended sample, including a partial 30 ms frame. Conservative peak evidence
     /// prevents a last syllable hidden in a short capture buffer from being silently skipped.

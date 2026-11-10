@@ -920,6 +920,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         StartTrace.note(.captureAttached, gesture: capture.id, count: capture.preRoll)
         escapePresses = EscapeTwice()
         hud.flushInitialDisplay()
+        finishingDrafting?.owner.invalidateTail()
         // Return to AppKit so the already-ordered panel can paint before engine/target/media work.
         DispatchQueue.main.async { [weak self] in self?.prepareStart(capture) }
     }
@@ -2180,6 +2181,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func end() {
+        Log.note("ending stop handler: mono_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime))")
+        StartTrace.note(.stopHandler, gesture: keys.gestureID, capture: keys.captureID)
         if let capture = pendingStart {
             capture.confirmed = true; capture.endRequested = true
             deliveries.confirm()

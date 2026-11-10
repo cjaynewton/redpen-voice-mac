@@ -26,7 +26,9 @@ def block(source, marker):
     return source[start:i]
 
 
-session = block((ROOT / "Sources/RedpenVoice/Transcriber.swift").read_text(), "final class Session:")
+transcriber_source = (ROOT / "Sources/RedpenVoice/Transcriber.swift").read_text()
+session = block(transcriber_source, "final class Session:")
+gate = block(transcriber_source, "actor Gate {")
 recording = block((ROOT / "Sources/RedpenVoice/SoundTap.swift").read_text(), "final class Recording:")
 # Passive source contracts for the real AppDelegate/adapter path, alongside runtime audio/state checks below.
 app_source = (ROOT / "Sources/RedpenVoice/main.swift").read_text()
@@ -77,6 +79,22 @@ wiring_checks = [
     ("first draft trace carries no text length", "StartTrace.note(.firstDraftReady, gesture: traceID)" in session and "firstDraftReady, gesture: traceID, count:" not in session),
     ("non-text key downs and modifier changes invalidate target", 'draftInputMonitor.record(talkKey: false, at: e.timestamp)' in block(hold_source, "private func key(") and 'draftInputMonitor.record(talkKey: false, at: e.timestamp)' in block(hold_source, "private func flagsChanged(") and "guard talk, modifierCodes" not in (ROOT / "Sources/RedpenVoice/DraftInputMonitor.swift").read_text()),
 ]
+insert_source = (ROOT / "Sources/RedpenVoice/Insert.swift").read_text()
+replace_source = block(insert_source, "static func replaceDraft(")
+finish_source = block(session, "func finish()")
+wiring_checks += [
+    ("prefix adapter types only planned suffix", "type(edit.replacement, while: safe)" in replace_source and "type(replacement," not in replace_source),
+    ("prefix adapter keeps full-box and cursor evidence", all(term in replace_source for term in ["DraftReplacement(expectedBox: expectedBox, actual: value, cursor: cursor", "guard still()", "confirm(edit.expected, in: element, while: safe)"])),
+    ("prefix adapter never retries uncertain edit", replace_source.count("backspace(") == 1 and replace_source.count("type(edit.replacement,") == 1),
+    ("new press revokes old checked-tail cache after capture attaches", "finishingDrafting?.owner.invalidateTail()" in begin and begin.index("recorder.begin(") < begin.index("finishingDrafting?.owner.invalidateTail()")),
+    ("Escape cancels cache and tasks", "clearDraftTailLocked()" in block(session, "func cancel()") and "session?.cancel()" in block(app_source, "private func discard()")),
+    ("ending waits for capture before finish", block(app_source, "private func end()").index("self.recorder.end()") < block(app_source, "private func end()").index("s.finish()")),
+    ("Enter waits for checked finish and confirmed delivery", block(app_source, "private func end()").index("s.finish()") < block(app_source, "private func end()").index("self.finishEnter(gen: gen, wordsIn: inserted && !(long && s.endingLost))")),
+    ("tail work never publishes draft or check", all(term not in block(session, "private func prepareDraftTail(") for term in ["onDraft?", "onCheck?", "pieces.append("])),
+    ("speculation lower priority and no ordinary-loop await", ".utility" in block(session, "private func prepareDraftTail(") and "await task.value" not in block(session, "private func prepareDraftTail(")),
+    ("ordinary checks cancel speculation before inference", "lock.withLock { clearDraftTailLocked() }" in block(session, "func stream(_ chunker:")),
+    ("cleanup clears cached audio identity", "clearDraftTailLocked()" in block(session, "fileprivate func acceptMediaResult(") and "audioGeneration += 1" in block(session, "func silence(")),
+]
 for name, passed in wiring_checks:
     if not passed:
         raise AssertionError(name)
@@ -118,6 +136,11 @@ enum StartTrace {
     static func offset(_ gesture: Int) -> Int? { lock.withLock { firstKept[gesture] } }
 }
 enum FakeASR {
+    static let lock = NSLock()
+    static var calls = 0
+    static var delay = 0
+    static var ignoreCancellation = false
+    static var count: Int { lock.withLock { calls } }
     static var reference: [Float] = []
     static var text = ""
     static var failReference = false
@@ -130,14 +153,59 @@ enum FakeASR {
     }
 }
 enum Transcriber {
-    static let lastJob = 10.0
+    static var lastJob = 10.0
     static func prompt(_ hints: String, _ previous: String?) -> String { hints }
-    static func whisperText(_ w: WhisperKit, _ a: [Float], prompt: String? = nil) async throws -> String { try FakeASR.read(a) }
+    static func whisperText(_ w: WhisperKit, _ a: [Float], prompt: String? = nil,
+                            speculative: Bool = false, preempt: (@Sendable () -> Void)? = nil) async throws -> String {
+        try await gate.acquire(speculative: speculative, preempt: preempt)
+        do {
+            try Task.checkCancellation()
+            FakeASR.lock.withLock { FakeASR.calls += 1 }
+            if FakeASR.delay > 0 {
+                if FakeASR.ignoreCancellation { try? await Task.sleep(for: .milliseconds(FakeASR.delay)) }
+                else { try await Task.sleep(for: .milliseconds(FakeASR.delay)) }
+            }
+            if !FakeASR.ignoreCancellation { try Task.checkCancellation() }
+            let text = try FakeASR.read(a)
+            await gate.release()
+            return text
+        } catch { await gate.release(); throw error }
+    }
     static func parakeetText(_ p: AsrManager, _ a: [Float]) async throws -> String { try FakeASR.read(a) }
-    actor Gate { func acquire() {}; func release() {} }
+    __PRODUCTION_GATE__
+    static let gate = Gate()
     final class Once {
         let lock = NSLock(); var done = false
         func claim() -> Bool { lock.withLock { if done { return false }; done = true; return true } }
+    }
+'''
+# Exercise the actual Insert.replaceDraft adapter with an inert editor, never AX or keyboard events.
+replacement_adapter = block(insert_source, "static func replaceDraft(")
+insert_stubs = r'''
+
+typealias AXUIElement = NSObject
+enum Insert {
+    static let element = NSObject()
+    static var box = ""
+    static var deleted = 0, typed = "", attempts = 0
+    static var canConfirm = true
+    static var lastEdit: (element: AXUIElement, before: String, range: NSRange, replacement: String)?
+    static func reset(_ value: String) { box = value; deleted = 0; typed = ""; attempts = 0; canConfirm = true }
+    static func value(_ e: AXUIElement) -> String? { box }
+    static func selectedRange(_ e: AXUIElement) -> NSRange? { NSRange(location: box.utf16.count, length: 0) }
+    static func focusedElement() -> (AXUIElement, Int)? { (element, 1) }
+    static func forgetLast() {}
+    static func backspace(_ count: Int, while still: () -> Bool) -> Int {
+        attempts += 1
+        var n = 0
+        while n < count && still() { box.removeLast(); deleted += 1; n += 1 }
+        return n
+    }
+    static func type(_ text: String, while still: () -> Bool) -> Bool {
+        guard still() else { return false }; typed += text; box += text; return true
+    }
+    static func confirm(_ expected: String, in e: AXUIElement, while still: () -> Bool) -> Bool {
+        still() && canConfirm && BoxText.same(expected, box)
     }
 '''
 tests = r'''
@@ -165,6 +233,11 @@ final class Calls: @unchecked Sendable {
         b.frameLength = AVAudioFrameCount(a.count)
         a.withUnsafeBufferPointer { b.floatChannelData![0].update(from: $0.baseAddress!, count: a.count) }
         s.push(b)
+    }
+    static func until(_ test: () -> Bool) async throws -> Bool {
+        let deadline = Date().addingTimeInterval(3)
+        while !test(), Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        return test()
     }
     static func main() async throws {
         let video = noise(12, 16_000)
@@ -239,6 +312,140 @@ final class Calls: @unchecked Sendable {
         let lateCleanup = MediaAudio.removing(mic: alreadyUsed, played: video, preRoll: 9600)
         check("late media fit cannot replace a ready draft", !s.acceptMediaResult(lateCleanup, replacing: alreadyUsed.count) && s.recorded == alreadyUsed)
         s.cancel()
+
+        for (draft, final, kept, deleted, typed) in [
+            ("Already checked.", "Already checked.", "Already checked.", 0, ""),
+            ("Same words", "Same words.", "Same words", 0, "."),
+            ("Keep wrong ending", "Keep right ending", "Keep ", 12, "right ending"),
+            ("👍🏽 Cafe\u{301} yes", "👍🏽 Cafe\u{301} no", "👍🏽 Cafe\u{301} ", 3, "no"),
+            ("one  two", "one two.", "one ", 4, "two.")
+        ] {
+            Insert.reset(draft)
+            let ok = Insert.replaceDraft(draft, with: final, expectedBox: draft, in: Insert.element, while: { true })
+            check("actual prefix adapter confirms whole result", ok && Insert.box == final)
+            check("actual prefix adapter posts only changed suffix", Insert.deleted == deleted && Insert.typed == typed && final.hasPrefix(kept))
+        }
+        Insert.reset("Changed box")
+        check("actual adapter refuses changed full box", !Insert.replaceDraft("draft", with: "checked", expectedBox: "draft", in: Insert.element, while: { true }) && Insert.attempts == 0)
+        Insert.reset("Keep wrong words")
+        check("actual adapter stops partial edit without retry", !Insert.replaceDraft("Keep wrong words", with: "Keep checked words", expectedBox: Insert.box, in: Insert.element, while: { Insert.deleted < 1 }) && Insert.deleted == 1 && Insert.attempts == 1 && Insert.typed.isEmpty)
+        Insert.reset("Keep words")
+        Insert.canConfirm = false
+        check("actual adapter needs confirmation and never retries", !Insert.replaceDraft("Keep words", with: "Keep words.", expectedBox: Insert.box, in: Insert.element, while: { true }) && Insert.attempts == 1 && Insert.typed == ".")
+
+        // Synthetic ending regressions. Short speech stays below the ordinary four-second check.
+        Transcriber.lastJob = 0
+        let tailAudio = noise(992, 8000) + [Float](repeating: 0, count: 8000)
+        func ready(_ session: Transcriber.Session) async throws -> Bool {
+            let logStart = Log.recorded.count
+            session.drafter = AsrManager()
+            push(tailAudio, to: session)
+            session.streamDrafts(); session.stream(Chunker())
+            return try await until { Log.recorded.dropFirst(logStart).contains { $0.hasPrefix("ending tail ready:") } }
+        }
+        FakeASR.text = "Checked synthetic tail."
+        FakeASR.delay = 40
+        let cached = Transcriber.Session(whisper: WhisperKit())
+        check("draft tail ready before stop", try await ready(cached))
+        let beforeFinish = FakeASR.count
+        push([Float](repeating: 0, count: 1600), to: cached) // capture tail
+        let cachedResult = try await cached.finish()
+        check("checked cache reused through quiet capture tail", cachedResult == "Checked synthetic tail." && FakeASR.count == beforeFinish)
+        check("cache reuse logged numerically", Log.recorded.contains { $0.hasPrefix("ending tail: reused=1 ") })
+        let cachedAudio = cached.recorded
+        cached.silence(upTo: cachedAudio.count)
+        check("late cleanup cannot rewrite cached audio", cached.recorded == cachedAudio)
+        cached.cancel()
+
+        let newer = Transcriber.Session(whisper: WhisperKit())
+        check("second checked tail ready", try await ready(newer))
+        let oldCount = FakeASR.count
+        FakeASR.text = "Checked new syllable."
+        push([0.1] + [Float](repeating: 0, count: 16), to: newer)
+        check("partial-frame speech forces fresh checked tail", try await newer.finish() == "Checked new syllable." && FakeASR.count == oldCount + 1)
+        newer.cancel()
+
+        let pressed = Transcriber.Session(whisper: WhisperKit())
+        check("tail ready before new press", try await ready(pressed))
+        let pressCount = FakeASR.count
+        pressed.invalidateTail()
+        check("new press rejects ready cache", try await pressed.finish() == "Checked new syllable." && FakeASR.count == pressCount + 1)
+        pressed.cancel()
+
+        let escaped = Transcriber.Session(whisper: WhisperKit())
+        check("tail ready before Escape", try await ready(escaped))
+        let escapeCount = FakeASR.count
+        escaped.cancel()
+        do { _ = try await escaped.finish(); check("Escape cannot finish", false) }
+        catch { check("Escape cannot publish or run fresh ASR", FakeASR.count == escapeCount && escaped.lastTail.isEmpty) }
+
+        // A speculative check already running at stop is awaited once, without cancelling and redoing it.
+        FakeASR.delay = 300
+        let inflight = Transcriber.Session(whisper: WhisperKit())
+        inflight.drafter = AsrManager(); push(tailAudio, to: inflight)
+        let inCount = FakeASR.count
+        inflight.stream(Chunker())
+        check("speculative job starts in pause", try await until { FakeASR.count > inCount })
+        check("inflight matching check reused once", try await inflight.finish() == "Checked new syllable." && FakeASR.count == inCount + 1)
+        inflight.cancel()
+
+        let resuming = Transcriber.Session(whisper: WhisperKit())
+        resuming.drafter = AsrManager(); push(tailAudio, to: resuming)
+        let resumeCount = FakeASR.count
+        resuming.stream(Chunker())
+        check("guess running before resumed speech", try await until { FakeASR.count > resumeCount })
+        push([0.1], to: resuming)
+        FakeASR.text = "Fresh checked resumption."
+        check("new speech cancels inflight stale check", try await resuming.finish() == "Fresh checked resumption." && FakeASR.count == resumeCount + 2)
+        resuming.cancel()
+
+        FakeASR.ignoreCancellation = true
+        let discarding = Transcriber.Session(whisper: WhisperKit())
+        discarding.drafter = AsrManager(); push(tailAudio, to: discarding)
+        let discardCount = FakeASR.count
+        discarding.stream(Chunker())
+        check("guess running before discard", try await until { FakeASR.count > discardCount })
+        discarding.cancel()
+        do { _ = try await discarding.finish(); check("inflight Escape cannot finish", false) }
+        catch { check("inflight Escape cannot publish", discarding.lastTail.isEmpty) }
+        // Acquire/release the real gate to prove a cancelled guess does not leave it occupied.
+        try await Transcriber.gate.acquire()
+        await Transcriber.gate.release()
+        check("discarded guess leaves gate usable", discarding.lastTail.isEmpty)
+        FakeASR.ignoreCancellation = false
+        FakeASR.text = "Checked new syllable."
+
+        // A different foreground Session preempts the production Whisper gate's speculative owner.
+        let preempted = Transcriber.Session(whisper: WhisperKit())
+        preempted.drafter = AsrManager(); push(tailAudio, to: preempted)
+        let preemptCount = FakeASR.count
+        preempted.stream(Chunker())
+        check("preemptible guess started", try await until { FakeASR.count > preemptCount })
+        let preemptLog = Log.recorded.count
+        let foreground = Transcriber.Session(whisper: WhisperKit())
+        push(tailAudio, to: foreground)
+        check("foreground tail completes through production gate", try await foreground.finish() == "Checked new syllable.")
+        preempted.invalidateTail()
+        check("preempted guess never publishes", preempted.lastTail.isEmpty && !Log.recorded.dropFirst(preemptLog).contains { $0.hasPrefix("ending tail ready:") })
+        foreground.cancel(); preempted.cancel()
+        let priorityGate = Transcriber.Gate()
+        try await priorityGate.acquire()
+        do {
+            try await priorityGate.acquire(speculative: true)
+            check("speculation never queues behind foreground", false)
+        } catch { check("busy gate skips speculation", true) }
+        let cancelledWaiter = Task {
+            do { try await priorityGate.acquire(); await priorityGate.release(); return false }
+            catch { return true }
+        }
+        cancelledWaiter.cancel()
+        check("cancelled waiter leaves foreground queue", await cancelledWaiter.value)
+        await priorityGate.release()
+        try await priorityGate.acquire()
+        await priorityGate.release()
+        check("cancelled waiter never strands gate", true)
+        FakeASR.delay = 0
+        Transcriber.lastJob = 10
 
         // A measured 25 ms post-key startup gap is blanked; it no longer makes the whole dictation abstain.
         for i in 9600..<10000 { mic[i] = user[i] }
@@ -410,10 +617,10 @@ with tempfile.TemporaryDirectory(prefix="first-words-", dir=ROOT / ".build") as 
     reasons += ["middleBand", "futureUnknownReason"]
     tests = tests.replace("__WIRING_CHECKS__", str(len(wiring_checks)))
     tests = tests.replace("__UNSURE_REASONS__", ", ".join(json.dumps(reason) for reason in reasons))
-    source.write_text(stubs + session + "\n}\n" + recording + tests)
+    source.write_text(stubs.replace("__PRODUCTION_GATE__", gate) + session + "\n}\n" + recording + insert_stubs + replacement_adapter + "\n}\n" + tests)
     core = ROOT / "Sources/VoiceCore"
     files = [core / name for name in ["MediaEcho.swift", "MediaAudio.swift", "MediaOpening.swift", "MediaGate.swift", "Chunker.swift",
-                                    "Silence.swift", "TalkKeyState.swift", "DictationDelivery.swift", "TalkTimingTrace.swift", "TalkCapture.swift", "StartTargetWait.swift"]]
+                                    "Silence.swift", "FocusGate.swift", "CheckedTail.swift", "BoxText.swift", "EnterSend.swift", "LongTalk.swift", "BoxMatch.swift", "DictationEnding.swift", "TalkKeyState.swift", "DictationDelivery.swift", "TalkTimingTrace.swift", "TalkCapture.swift", "StartTargetWait.swift"]]
     subprocess.run(["xcrun", "swiftc", "-O", "-parse-as-library", "-swift-version", "5", str(source),
                     *map(str, files), "-o", str(tmp / "check")], cwd=ROOT, check=True)
     subprocess.run([str(tmp / "check")], cwd=ROOT, check=True, env=os.environ)

@@ -142,7 +142,12 @@ final class EnterSendTap: @unchecked Sendable {
         case .pass: return false
         case .swallow: return true
         case .hold(let id):
-            DispatchQueue.main.async { self.onHold(id) }
+            let eventAt = Double(event.timestamp) / 1_000_000_000
+            DispatchQueue.main.async {
+                Log.note("ending Enter event: event_ms=\(Log.ms(eventAt)) handler_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime))")
+                StartTrace.note(.stopEvent, gesture: 0, capture: 0, eventAt: eventAt, value: 2)
+                self.onHold(id)
+            }
             // The cap, on the main thread so it waits for any typing Voice is doing; the backstop if that thread stalls.
             DispatchQueue.main.asyncAfter(deadline: .now() + EnterSend.cap) { [self] in
                 send(id, why: "the 5 s cap") { $0.capReached(id: id, now: Self.now) }

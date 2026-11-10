@@ -43,7 +43,8 @@ final class Transcriber {
 
     /// `prompt`: words Whisper should expect (names from your list and the screen, the words just before), passed as
     /// Whisper's own "previous text" so it spells them the same way. Never typed out.
-    static func whisperText(_ whisper: WhisperKit, _ audio: [Float], prompt: String? = nil) async throws -> String {
+    static func whisperText(_ whisper: WhisperKit, _ audio: [Float], prompt: String? = nil,
+                            speculative: Bool = false, preempt: (@Sendable () -> Void)? = nil) async throws -> String {
         guard !audio.isEmpty else { return "" }
         let seconds = Double(audio.count) / 16000
         let peak = audio.map { abs($0) }.max() ?? 0
@@ -54,7 +55,8 @@ final class Transcriber {
         // One job at a time: two dictations close together (a double tap right after talking) asked Whisper at once
         // and both crawled (41 s on a busy Mac, Oct 25). They now wait in line.
         let queued = Date()
-        try await gate.acquire()
+        try await gate.acquire(speculative: speculative, preempt: preempt)
+        do { try Task.checkCancellation() } catch { await gate.release(); throw error }
         let started = Date()
         let results: [TranscriptionResult]
         do {
@@ -62,6 +64,7 @@ final class Transcriber {
             // failed"); one more try a moment later almost always works.
             do { results = try await whisper.transcribe(audioArray: audio, decodeOptions: options) }
             catch {
+                try Task.checkCancellation()
                 Log.note("engine: whisper failed once, trying again")
                 try await Task.sleep(for: .milliseconds(150))
                 results = try await whisper.transcribe(audioArray: audio, decodeOptions: options)
@@ -78,14 +81,16 @@ final class Transcriber {
         let text = Silence.clean(joined(results), peak: peak)
         // Whisper skips a stretch it judges to be silence. A short, quiet sentence can be skipped whole (3 of 1,100
         // WildSpeech clips), so when nothing came back but the audio has real sound, ask again without that skip.
+        try Task.checkCancellation()
         guard text.isEmpty, peak > Silence.quietPeak else { return text }
         var retry = options
         retry.noSpeechThreshold = nil
         retry.logProbThreshold = nil
         retry.firstTokenLogProbThreshold = nil
         Log.note("engine: whisper heard nothing in sound, asked again")
-        try await gate.acquire()
+        try await gate.acquire(speculative: speculative, preempt: preempt)
         do {
+            try Task.checkCancellation()
             let again = try await whisper.transcribe(audioArray: audio, decodeOptions: retry)
             await gate.release()
             return Silence.clean(joined(again), peak: peak)
@@ -315,12 +320,21 @@ final class Transcriber {
     /// A cancelled job (a guess thrown away when you let go) leaves the line at once instead of holding up the ending.
     actor Gate {
         private var busy = false
+        private var preempt: (@Sendable () -> Void)?
         private var waiting: [(id: UUID, turn: CheckedContinuation<Bool, Never>)] = []
-        func acquire() async throws {
-            if !busy { busy = true; return }
+        func acquire(speculative: Bool = false, preempt: (@Sendable () -> Void)? = nil) async throws {
+            try Task.checkCancellation()
+            // Guesses never queue ahead of a draft check or final tail. A foreground request
+            // cancels the current guess, including an empty-result retry, before taking its turn.
+            if !busy { busy = true; self.preempt = preempt; return }
+            if speculative { throw CancellationError() }
+            self.preempt?()
             let id = UUID()
             let got = await withTaskCancellationHandler {
-                await withCheckedContinuation { c in waiting.append((id, c)) }
+                await withCheckedContinuation { c in
+                    if Task.isCancelled { c.resume(returning: false) }
+                    else { waiting.append((id, c)) }
+                }
             } onCancel: { Task { await self.drop(id) } }
             if !got { throw CancellationError() }
         }
@@ -328,6 +342,7 @@ final class Transcriber {
             if let i = waiting.firstIndex(where: { $0.id == id }) { waiting.remove(at: i).turn.resume(returning: false) }
         }
         func release() {
+            preempt = nil
             if waiting.isEmpty { busy = false } else { waiting.removeFirst().turn.resume(returning: true) }
         }
     }
@@ -376,6 +391,77 @@ final class Transcriber {
         private var early: (end: Int, text: String)?
         private var napping: Task<Void, Error>?
         private var guessing: Task<String, Error>?
+        private var draftTailTask: Task<Void, Never>?
+        private var draftTailKey: CheckedTail?
+        private var draftTailID: UUID?
+        private var draftTailAudio: [Float] = []
+        private var draftTailQuiet: Float = 0.003
+        private var draftTailText: String?
+        private var draftTailRevoked = false
+
+        /// Caller holds the sample lock. A failed/cancelled guess never becomes checked text.
+        private func clearDraftTailLocked() {
+            draftTailTask?.cancel(); draftTailTask = nil
+            draftTailKey = nil; draftTailID = nil; draftTailText = nil; draftTailAudio = []
+        }
+        func invalidateTail() {
+            lock.withLock { draftTailRevoked = true; clearDraftTailLocked() }
+        }
+
+        private func tailMatchesLocked(_ key: CheckedTail, audio: [Float]) -> Bool {
+            key.matches(generation: audioGeneration, start: cut, checkedUpTo: checkedUpTo,
+                        pieces: pieces.count, available: audio.count,
+                        newerSpeech: CheckedTail.newerSpeech(audio, after: key.end, quiet: draftTailQuiet),
+                        revoked: cancelled || draftTailRevoked)
+                && audio[key.start..<key.end].elementsEqual(draftTailAudio)
+        }
+
+        /// Runs only in a pause when no ordinary check is due. It never calls onCheck/onDraft or
+        /// advances the checked boundary. A valid in-flight check can finish during the capture tail.
+        private func prepareDraftTail(_ whisper: WhisperKit, audio: [Float]) async {
+            guard lock.withLock({ !stopped && !cancelled && !draftTailRevoked && draftTailKey == nil }) else { return }
+            guard Transcriber.lastJob < 2, audio.count - cut > Chunker.rate / 2,
+                  Chunker.endsQuiet(audio, from: cut) else { return }
+            let key = CheckedTail(generation: lock.withLock { audioGeneration }, start: cut,
+                                  end: audio.count, checkedUpTo: checkedUpTo, pieces: pieces.count)
+            let quiet = Chunker.quietLevel(Chunker.levels(audio, from: cut))
+            let tailAudio = Array(audio[key.start...])
+            let id = UUID()
+            let accepted = lock.withLock { () -> Bool in
+                guard !stopped, !cancelled, !draftTailRevoked, mediaReadyLocked() else { return false }
+                if let old = draftTailKey, tailMatchesLocked(old, audio: samples) { return false }
+                clearDraftTailLocked()
+                guard key.generation == audioGeneration,
+                      samples.count >= key.end, samples[key.start..<key.end].elementsEqual(tailAudio),
+                      !CheckedTail.newerSpeech(samples, after: audio.count, quiet: quiet) else { return false }
+                cleanupSealed = true
+                draftTailKey = key; draftTailID = id; draftTailAudio = tailAudio; draftTailQuiet = quiet
+                return true
+            }
+            guard accepted else { return }
+            let prompt = Transcriber.prompt(hints, carry ? pieces.last : nil)
+            let task = Task.detached(priority: .utility) { [self] in
+                guard lock.withLock({ draftTailID == id && draftTailKey == key && !cancelled && !draftTailRevoked }) else { return }
+                let text = try? await Transcriber.whisperText(whisper, tailAudio, prompt: prompt,
+                    speculative: true, preempt: { [weak self] in
+                        self?.lock.withLock { if self?.draftTailID == id { self?.clearDraftTailLocked() } }
+                    })
+                lock.withLock {
+                    guard draftTailID == id, draftTailKey == key, !Task.isCancelled, let text,
+                          tailMatchesLocked(key, audio: samples) else {
+                        if draftTailID == id { clearDraftTailLocked() }
+                        return
+                    }
+                    draftTailTask = nil; draftTailText = text
+                    Log.note("ending tail ready: mono_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime)) start=\(key.start) end=\(key.end) checked=\(key.checkedUpTo) pieces=\(key.pieces)")
+                    StartTrace.note(.tailReady, gesture: traceID, count: key.end, value: key.checkedUpTo)
+                }
+            }
+            lock.withLock {
+                guard draftTailID == id, draftTailKey == key, !stopped, !cancelled, !draftTailRevoked else { task.cancel(); return }
+                draftTailTask = task
+            }
+        }
 
         // MARK: Fast draft, Whisper checks (D-764)
         /// A short stretch Parakeet wrote at a small pause, by its place in the audio.
@@ -455,7 +541,8 @@ final class Transcriber {
                 silenceUntil = max(silenceUntil, i)
                 firstKeptSample = silenceUntil
                 for k in 0..<min(silenceUntil, samples.count) { samples[k] = 0 }
-                if live != nil { audioGeneration += 1 }
+                audioGeneration += 1
+                clearDraftTailLocked()
                 // Commit the confirmed legacy-engine cut atomically with its timeout decision.
                 mediaOpening.settle(through: mediaOpening.through)
                 StartTrace.note(.firstSampleKept, gesture: traceID, count: silenceUntil, value: 1)
@@ -532,9 +619,13 @@ final class Transcriber {
                     if done { break }
                     if !ready { continue }
                     if drafter != nil {
-                        // Draft mode: Whisper rereads whole runs of drafts; no head start (the drafts are the speed).
+                        // Ordinary checks always win over a speculative tail.
                         // Audio and drafts are read in one step, so a draft can't end past the audio in hand.
-                        guard let d = draftCheckCut(ds, from: cut), d.end <= audio.count, d.end > cut else { continue }
+                        guard let d = draftCheckCut(ds, from: cut), d.end <= audio.count, d.end > cut else {
+                            await prepareDraftTail(whisper, audio: audio)
+                            continue
+                        }
+                        lock.withLock { clearDraftTailLocked() }
                         do {
                             let text = await echoStripped(try await Transcriber.whisperText(whisper, Array(audio[cut..<d.end]), prompt: Transcriber.prompt(hints, nil)), from: cut)
                             let range = checkedUpTo..<d.upTo
@@ -628,6 +719,8 @@ final class Transcriber {
                 defer { echoPreparing = false }
                 guard mediaOpening.acceptsCleanup, !cleanupSealed, !cancelled else { return false }
                 if result.certain && result.cleaned {
+                    audioGeneration += 1
+                    clearDraftTailLocked()
                     samples.replaceSubrange(0..<count, with: result.samples)
                     mediaOpening.settle(through: mediaOpening.through)
                     // The cleaner masks pre-roll plus measured ranges. Natural zero samples are still retained.
@@ -811,6 +904,11 @@ final class Transcriber {
                 samples.append(contentsOf: UnsafeBufferPointer(start: ch, count: Int(buffer.frameLength)))
                 if silenceUntil > start { for k in start..<min(silenceUntil, samples.count) { samples[k] = 0 } }
                 lastPush = (Date(), samples.count)
+                if let key = draftTailKey,
+                   CheckedTail.newerSpeech(samples, after: max(start, key.end), quiet: draftTailQuiet) {
+                    audioGeneration += 1
+                    clearDraftTailLocked()
+                }
             }
         }
 
@@ -853,6 +951,7 @@ final class Transcriber {
         /// and whatever it had is returned, so the app never hangs on "Writing".
         func finish() async throws -> String {
             defer { liveWordsLease.end() }
+            guard !lock.withLock({ cancelled }) else { throw CancellationError() }
             feed.finish()
             if let parakeet {
                 while !settledForLoops { try? await Task.sleep(for: .milliseconds(20)) }
@@ -887,19 +986,37 @@ final class Transcriber {
                 // A quick release before Voice decided about a video: wait for its bounded decision, so the video's
                 // words are still taken off.
                 while !settledForLoops { try? await Task.sleep(for: .milliseconds(20)) }
-                let (nap, guess, dnap) = lock.withLock { stopped = true; return (napping, guessing, draftNap) }
+                let (nap, guess, dnap) = lock.withLock {
+                    stopped = true
+                    if let key = draftTailKey, !tailMatchesLocked(key, audio: samples) { clearDraftTailLocked() }
+                    return (napping, guessing, draftNap)
+                }
                 nap?.cancel(); guess?.cancel(); dnap?.cancel()
                 let f0 = Date()
                 await draftLoop?.value
                 await loop?.value  // a piece being written finishes first, so the order holds
+                let tailWork = lock.withLock { draftTailTask }
+                await tailWork?.value
                 let loopWait = Log.ms(Date().timeIntervalSince(f0))
                 let t0 = Date()
                 let audio = lock.withLock { samples }
                 let tail: String
-                if let e = early, e.end <= audio.count, !Chunker.hasSpeech(audio, from: e.end, reference: cut) {
+                let cached: String? = lock.withLock {
+                    guard let key = draftTailKey, let text = draftTailText,
+                          tailMatchesLocked(key, audio: audio) else { return nil }
+                    return text
+                }
+                guard !lock.withLock({ cancelled }) else { throw CancellationError() }
+                if let cached {
+                    tail = cached
+                    Log.note("ending tail: reused=1 mono_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime))")
+                    StartTrace.note(.tailReuse, gesture: traceID, value: 1)
+                } else if let e = early, e.end <= audio.count, !Chunker.hasSpeech(audio, from: e.end, reference: cut) {
                     tail = e.text  // nothing said after the head start: it is the ending
                     Log.note("engine: ending was written ahead of release")
                 } else {
+                    Log.note("ending tail: reused=0 mono_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime))")
+                    StartTrace.note(.tailReuse, gesture: traceID)
                     do { tail = try await Transcriber.whisperText(whisper, Array(audio[min(cut, audio.count)...]), prompt: Transcriber.prompt(hints, carry ? pieces.last : nil)) }
                     catch {
                         // Keep what was already written and say the ending is missing, so it is never lost quietly.
@@ -909,6 +1026,8 @@ final class Transcriber {
                         endingLost = true
                     }
                 }
+                // Escape can arrive while a non-cooperative engine is completing. It cannot publish.
+                guard !lock.withLock({ cancelled }) else { throw CancellationError() }
                 let ending = await echoStripped(tail, from: cut)
                 if !ending.isEmpty { pieces.append(ending) }
                 lastTail = ending
@@ -938,7 +1057,10 @@ final class Transcriber {
         func cancel() {
             liveWordsLease.end()
             onPiece = nil; onDraft = nil; onCheck = nil; onPartial = nil
-            lock.withLock { cancelled = true; liveNap?.cancel() }
+            lock.withLock {
+                cancelled = true; liveNap?.cancel()
+                clearDraftTailLocked(); guessing?.cancel(); napping?.cancel(); draftNap?.cancel()
+            }
             draftLoop?.cancel()
             lock.withLock { stopped = true }
             loop?.cancel()
