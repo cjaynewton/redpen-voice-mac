@@ -29,6 +29,9 @@ public final class BrowserPauseOperation {
     public private(set) var inFlight: Action?
     public private(set) var counts: [Int: Int] = [:]
     public private(set) var touched: Set<Int> = []
+    public private(set) var candidates: Set<Int> = []
+    public let inheritedTokens: [String]
+    public let inheritedTabs: Set<Int>
     public private(set) var uncertain = false
     public private(set) var recovery = false
     public private(set) var refusal: Reply?
@@ -42,13 +45,21 @@ public final class BrowserPauseOperation {
     private var stopped = false
     private var visitedTabs: Set<Int> = []
     private var discoveryRetries: Set<String> = []
+    private var needsTakeoverDiscovery: Bool
 
-    public init(token: String, owner: Int, preferredTab: Int? = nil, now: @escaping () -> TimeInterval,
+    public init(token: String, owner: Int, preferredTab: Int? = nil, candidates: [Int] = [],
+                inheritedTokens: [String] = [], inheritedTabs: Set<Int> = [], now: @escaping () -> TimeInterval,
                 perform: @escaping (Action, TimeInterval, @escaping (Reply) -> Void) -> Void) {
         self.token = token; self.owner = owner; self.now = now; self.perform = perform
+        self.inheritedTokens = inheritedTokens; self.inheritedTabs = inheritedTabs
+        needsTakeoverDiscovery = !inheritedTokens.isEmpty
+        self.candidates = Set(candidates)
         entered = now()
+        queue.insert(contentsOf: candidates.map(Action.probe), at: 0)
         if let preferredTab { queue.insert(.probe(preferredTab), at: 0) }
     }
+    public var reconciliationTabs: [Int] { touched.union(inheritedTabs).sorted() }
+    public var reconciliationTokens: [String] { inheritedTokens + [token] }
     public var remaining: TimeInterval { max(0, Self.totalBudget - (now() - entered)) }
     public var canDispatch: Bool { !stopped && !finished && remaining > 0 }
     public func start() { advance() }
@@ -64,7 +75,7 @@ public final class BrowserPauseOperation {
         state = cancelled ? .cancelled : (counts.isEmpty ? .uncertain : .confirmed)
         settleIfIdle()
     }
-    /// A new recording inherits the marks, but no work or callback for the old recording becomes its work.
+    /// Retain all discovered candidates for the new owner's fresh, confirmed pause pass.
     public func transfer(to owner: Int) {
         self.owner = owner; stopped = true; queue.removeAll(); state = .transferred
         settleIfIdle()
@@ -102,8 +113,12 @@ public final class BrowserPauseOperation {
         if reply == .refused || reply == .notAllowed || reply == .failed { refusal = reply }
         guard canDispatch else { settleIfIdle(); return }
         switch (action, reply) {
-        case (.windows, .ids(let ids)): queue = ids.map(Action.front) + ids.map(Action.tabs)
-        case (.front, .ids(let ids)), (.tabs, .ids(let ids)): queue.insert(contentsOf: ids.map(Action.probe), at: 0)
+        case (.windows, .ids(let ids)):
+            needsTakeoverDiscovery = false
+            queue = ids.map(Action.front) + ids.map(Action.tabs)
+        case (.front, .ids(let ids)), (.tabs, .ids(let ids)):
+            candidates.formUnion(ids)
+            queue.insert(contentsOf: ids.map(Action.probe), at: 0)
         case (.probe(let id), .candidate(let document)):
             queue.insert(.pause(id, document: document, retry: false), at: 0)
         case (.pause(let id, let document, false), .timeout):
@@ -116,7 +131,11 @@ public final class BrowserPauseOperation {
         // Keep the current group's remaining candidates, as before. Publish each success through progress now;
         // later timeouts cannot erase it. Once a group succeeds, do not discover unrelated background groups.
         if !counts.isEmpty { queue.removeAll { action in
-            switch action { case .windows, .tabs: return true; default: return false }
+            switch action {
+            case .windows: return !needsTakeoverDiscovery
+            case .tabs: return true
+            default: return false
+            }
         } }
         if reply == .notAllowed { queue.removeAll() }
         advance()

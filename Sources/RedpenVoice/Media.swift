@@ -69,10 +69,20 @@ enum Media {
             if chromeOnly { done(nil, nil); return nil }
             pressPlayPause(); done(.key, nil); return nil
         }
+        return pauseBrowser(owner: owner, stillPaused: stillPaused, needsPause: needsPause,
+                            chromeOnly: chromeOnly, done: done)
+    }
+
+    /// A takeover starts a fresh pass after the gesture is confirmed. Include every known candidate, not just
+    /// confirmed pauses, and adopt still-paused elements before sealing their old owners.
+    static func pauseBrowser(owner: Int, candidates: [Int] = [], inheritedTokens: [String] = [],
+                             inheritedTabs: Set<Int> = [], stillPaused: @escaping () -> Bool,
+                             needsPause: @escaping () -> Bool, chromeOnly: Bool = true,
+                             done: @escaping (Paused?, BrowserMedia.Outcome?) -> Void) -> BrowserPauseOperation {
         let token = BrowserMedia.token()
         let entered = ProcessInfo.processInfo.systemUptime
         let epochEnd = Date().addingTimeInterval(BrowserPauseOperation.totalBudget).timeIntervalSince1970 * 1000
-        let operation = BrowserPauseOperation(token: token, owner: owner, preferredTab: recentTab, now: { ProcessInfo.processInfo.systemUptime }) { action, limit, reply in
+        let operation = BrowserPauseOperation(token: token, owner: owner, preferredTab: recentTab, candidates: candidates, inheritedTokens: inheritedTokens, inheritedTabs: inheritedTabs, now: { ProcessInfo.processInfo.systemUptime }) { action, limit, reply in
             chrome.async {
                 // Queue time is inside the transaction budget. Recheck on the owning queue immediately before launch.
                 let allowed = DispatchQueue.main.sync { stillPaused() && needsPause() }
@@ -82,9 +92,9 @@ enum Media {
                 case .windows: args = ["windows"]
                 case .front(let id): args = ["front", String(id)]
                 case .tabs(let id): args = ["tabs", String(id)]
-                case .probe(let id): args = ["page", String(id), BrowserMedia.probeScript(token: token, document: BrowserMedia.token(), expires: epochEnd)]
+                case .probe(let id): args = ["page", String(id), BrowserMedia.probeScript(token: token, document: BrowserMedia.token(), expires: epochEnd, inheriting: inheritedTokens)]
                 case .pause(let id, let document, _):
-                    args = ["page", String(id), BrowserMedia.pauseScript(token: token, document: document, expires: epochEnd)]
+                    args = ["page", String(id), BrowserMedia.pauseScript(token: token, document: document, expires: epochEnd, inheriting: inheritedTokens)]
                 }
                 let remaining = BrowserPauseOperation.totalBudget - (ProcessInfo.processInfo.systemUptime - entered)
                 guard remaining > 0 else { DispatchQueue.main.async { reply(.timeout) }; return }
@@ -107,7 +117,7 @@ enum Media {
             switch result {
             case .handled, .failed("slow"):
                 // Every dispatched candidate is reconciled, including any unacknowledged first pause.
-                done(.chrome(token: token, tabs: operation.touched.sorted()), result)
+                done(.chrome(token: token, tabs: operation.reconciliationTabs), result)
             default:
                 if !operation.recovery && BrowserMedia.keyAfterQuietCheck(result, chromeOnly: chromeOnly) {
                     pressPlayPause(); done(.key, result)
@@ -160,53 +170,51 @@ enum Media {
         }
     }
 
-    /// Plays back what `pause` paused. Chrome tabs get their own videos back and nothing else. A Chrome pause that was
-    /// too slow to say which tabs looks in every tab for its marks, so a pause that landed late still comes back; one
-    /// that never got an answer at all (no token yet) presses nothing.
-    static func resume(_ paused: Paused, wait: Bool = false, play: Bool = true,
-                       allowed: @escaping () -> Bool = { true }, done: @escaping () -> Void = {}) {
+    /// Reconcile only dispatched tabs. Resume work has its own queue and a short per-action bound, so it never
+    /// occupies the pause queue. A revoked action still reports what actually resumed before finishing.
+    @discardableResult
+    static func resume(_ paused: Paused, wait: Bool = false, play: Bool = true, inheriting: [String] = [],
+                       allowed: @escaping () -> Bool = { true },
+                       progress: @escaping (BrowserResumeOperation.Result) -> Void = { _ in },
+                       done: @escaping (BrowserResumeOperation.Result) -> Void = { _ in }) -> BrowserResumeOperation? {
         guard case .chrome(let token, let tabs) = paused else {
-            if allowed() { if play { pressPlayPause() }; done() }; return
+            if allowed(), play { pressPlayPause() }
+            done(.init(requested: [], resumed: [], cleared: [], cancelled: !allowed())); return nil
         }
-        guard !token.isEmpty else { done(); return }
-        let js = BrowserMedia.resumeScript(token: token, play: play)
-        // Preserve the bounded synchronous quit path. Ordinary reconciliation checks ownership before every action.
+        guard !token.isEmpty, !tabs.isEmpty else {
+            done(.init(requested: [], resumed: [], cleared: [], cancelled: false)); return nil
+        }
+        let js = BrowserMedia.resumeScript(token: token, play: play, inheriting: inheriting)
         if wait {
-            guard allowed() else { return }
-            // Do not join the worker here. A queued action may be waiting for this main queue's owner check.
-            _ = tabs.isEmpty ? run(BrowserMedia.pauseRunner, [js, "every"], limit: 4)
-                             : run(BrowserMedia.resumeRunner, [js] + tabs.map(String.init))
-            done(); return
-        }
-        let end = ProcessInfo.processInfo.systemUptime + 4
-        func step(_ remainingActions: [BrowserPauseOperation.Action]) {
-            guard allowed() else { return }
-            guard let action = remainingActions.first, ProcessInfo.processInfo.systemUptime < end else { done(); return }
-            let rest = Array(remainingActions.dropFirst())
-            chrome.async {
-                guard DispatchQueue.main.sync(execute: allowed) else { return }
+            // Quit seals in the page instead of joining a worker waiting on the main queue. The pause operation
+            // is stopped first by the caller. Its already-delivered pause sees the seal in either execution order.
+            let end = ProcessInfo.processInfo.systemUptime + BrowserResumeOperation.totalBudget
+            var resumed: Set<Int> = [], cleared: Set<Int> = []
+            for tab in Set(tabs).sorted() {
                 let left = end - ProcessInfo.processInfo.systemUptime
-                guard left > 0 else { DispatchQueue.main.async { if allowed() { done() } }; return }
-                let args: [String]
-                switch action {
-                case .windows: args = ["windows"]
-                case .tabs(let id): args = ["tabs", String(id)]
-                default:
-                    guard case .probe(let id) = action else { return }
-                    args = ["page", String(id), js]
-                }
-                let result = actionReply(action, runAction(args, limit: min(left, BrowserPauseOperation.actionBudget)))
-                DispatchQueue.main.async {
-                    guard allowed() else { return }
-                    switch (action, result) {
-                    case (.windows, .ids(let ids)): step(ids.map(BrowserPauseOperation.Action.tabs) + rest)
-                    case (.tabs, .ids(let ids)): step(ids.map(BrowserPauseOperation.Action.probe) + rest)
-                    default: step(rest)
-                    }
+                guard allowed(), left > 0 else { break }
+                let output = runAction(["page", String(tab), js], limit: min(left, BrowserPauseOperation.actionBudget))
+                if output.status == 0, !output.timedOut, let count = Int(output.output.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                    if count > 0 { resumed.insert(tab) } else { cleared.insert(tab) }
                 }
             }
+            done(.init(requested: Set(tabs), resumed: resumed, cleared: cleared, cancelled: !allowed())); return nil
         }
-        step(tabs.isEmpty ? [.windows] : tabs.map(BrowserPauseOperation.Action.probe))
+        let end = ProcessInfo.processInfo.systemUptime + BrowserResumeOperation.totalBudget
+        let operation = BrowserResumeOperation(tabs: tabs, now: { ProcessInfo.processInfo.systemUptime }, allowed: allowed) { tab, limit, reply in
+            reconciliation.async {
+                guard DispatchQueue.main.sync(execute: allowed) else { DispatchQueue.main.async { reply(nil) }; return }
+                let left = end - ProcessInfo.processInfo.systemUptime
+                guard left > 0 else { DispatchQueue.main.async { reply(nil) }; return }
+                let output = runAction(["page", String(tab), js], limit: min(limit, left))
+                let count = output.status == 0 && !output.timedOut ? Int(output.output.trimmingCharacters(in: .whitespacesAndNewlines)) : nil
+                DispatchQueue.main.async { reply(count) }
+            }
+        }
+        operation.onProgress = progress
+        operation.onFinish = done
+        DispatchQueue.main.async { operation.start() }
+        return operation
     }
 
     /// Until when to skip asking Chrome, after it said no: ten minutes, so turning the switch on is picked up soon.
@@ -214,7 +222,8 @@ enum Media {
     nonisolated(unsafe) private static var keyUntil = Date.distantPast
 
     /// One Chrome run at a time, off the main thread: Chrome can take a moment to answer.
-    private static let chrome = DispatchQueue(label: "redpen.media.chrome")
+    private static let chrome = DispatchQueue(label: "redpen.media.chrome", qos: .userInitiated)
+    private static let reconciliation = DispatchQueue(label: "redpen.media.reconcile", qos: .utility)
 
     /// Runs an AppleScript through osascript with the page script as an argument, never inside the script text.
     /// The Mac asks once whether Redpen Voice may control Chrome.

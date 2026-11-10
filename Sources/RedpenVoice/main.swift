@@ -47,6 +47,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let mediaPauseMonitor = MediaPauseMonitor()
     private var mediaPause = MediaPauseOwnership()
     private var browserPause: BrowserPauseOperation?
+    private var browserResume: BrowserResumeOperation?
+    private var browserInheritedTokens: [String] = []
+    private var browserTakeover: (candidates: [Int], tabs: Set<Int>, tokens: [String])?
+
+    private var heldMedia: Media.Paused {
+        if case .chrome(let token, _) = pausedHow, let operation = browserPause, operation.token == token {
+            return .chrome(token: token, tabs: operation.reconciliationTabs)
+        }
+        return pausedHow
+    }
     private var pausedMedia: Bool {
         get { mediaPause.paused }
         set {
@@ -107,7 +117,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.mediaPauseMonitor.stop()
             self.resumeWork?.cancel(); self.resumeWork = nil
             let released = self.mediaPause.generation
-            Media.resume(self.pausedHow, play: false, allowed: { [weak self] in self?.mediaPause.generation == released })
+            self.browserPause?.stop(cancelled: true)
+            Media.resume(self.heldMedia, play: false, inheriting: self.browserInheritedTokens, allowed: { [weak self] in self?.mediaPause.generation == released })
             Log.note("media: someone else pressed play, Voice lets go of the pause")
         }
         // `--hud-demo [style]` shows the talking bar for four seconds with a fake voice, then two of writing, so its
@@ -770,7 +781,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let m = meeting { _ = m.stop(); meeting = nil; Log.note("meeting: quit mid-meeting, the recording is kept for the next launch") }
         guard session != nil else {
             // Words still being written are dropped on quit; the video they paused is put back.
-            if pausedMedia, config.resumeMedia ?? true { pausedMedia = false; Media.resume(pausedHow, wait: true); Log.note("media: resumed on quit") }
+            if pausedMedia || browserTakeover != nil || browserResume != nil { releaseMediaOnQuit() }
             return .terminateNow
         }
         Log.note("quit asked mid-dictation, finishing first")
@@ -899,7 +910,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pendingStart = capture
         // Take over the existing pause on accepted down, before any asynchronous discovery can race its resume.
         resumeWork?.cancel(); resumeWork = nil
+        if case .chrome(let token, let tabs) = heldMedia, !token.isEmpty,
+           pausedMedia || browserResume != nil || browserTakeover != nil {
+            let operation = browserPause
+            let known = Set(tabs).union(operation?.candidates ?? []).union(browserResume?.tabs ?? [])
+                .union(browserTakeover?.candidates ?? [])
+            browserTakeover = (known.sorted(), Set(tabs), operation?.reconciliationTokens ?? (browserInheritedTokens + [token]))
+        }
         if pausedMedia { pausedMedia = true } // Invalidate an older in-flight resume listen too.
+        else { mediaPause.release() }
+        browserResume?.cancel(); browserResume = nil
         browserPause?.transfer(to: mediaPause.generation)
         press += 1
         deliveries.begin()
@@ -1113,7 +1133,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startMedia(_ players: [Media.Player], session s: Transcriber.Session, pending: PendingMedia,
                             capture: PendingStart, press thisPress: Int) {
-        if pausedMedia {
+        if let takeover = browserTakeover, config.pauseMedia {
+            // Re-pause any tab already resumed and adopt the others under a fresh token. Confirmation still
+            // gates every action. A quick tap keeps the old hold for ordinary cleanup and starts no pause.
+            let unused = SoundTap.Recording(continuous: true)
+            whenMediaConfirmed(session: s, press: thisPress, played: unused) { [weak self, s] in
+                unused.stop()
+                guard let self, self.session === s else { return }
+                self.browserTakeover = nil
+                self.pausedMedia = true
+                self.mediaPauseMonitor.stop()
+                let owner = self.mediaPause.generation
+                self.browserInheritedTokens = takeover.tokens
+                self.browserPause = Media.pauseBrowser(owner: owner, candidates: takeover.candidates,
+                    inheritedTokens: takeover.tokens, inheritedTabs: takeover.tabs,
+                    stillPaused: { [weak self] in self?.mediaPause.owns(owner) == true },
+                    needsPause: { [weak self, weak s] in self?.session === s && s != nil }) { [weak self, weak s] how, outcome in
+                    guard let self, let s, self.mediaPause.owns(owner), self.session === s else { return }
+                    self.chromeAnswer(outcome)
+                    if let how { self.pausedHow = how }
+                    if self.browserPause?.counts.isEmpty == false { _ = self.mediaPauseMonitor.start(players) }
+                }
+                if let operation = self.browserPause {
+                    self.pausedHow = .chrome(token: operation.token, tabs: operation.reconciliationTabs)
+                }
+            }
+            s.mediaSettled() // The new pass cannot revise the prior opening-audio decision.
+        } else if pausedMedia {
             Log.note("media: still paused from the last press")
         } else if config.pauseMedia {
             if players.isEmpty { Log.note("media: no app playing") }
@@ -1151,6 +1197,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 let pauseToken = self.mediaPause.generation
                                 // Until Chrome answers, a resume has nothing to put back, so it presses nothing.
                                 self.pausedHow = .chrome(token: "", tabs: [])
+                                self.browserInheritedTokens = []
                                 self.browserPause = Media.pause(players, chromeOnly: !playing, owner: pauseToken,
                                     stillPaused: { [weak self] in self?.mediaPause.owns(pauseToken) == true },
                                     needsPause: { [weak self, weak s] in self?.session === s && s != nil }) { how, outcome in
@@ -2240,6 +2287,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let hint = chromeHint, session == nil { chromeHint = nil; hud.flash(hint, for: 5) }
         guard MediaGate.shouldResume(paused: pausedMedia, recordingAgain: session != nil || pendingStart != nil || writing > 0) else { return }
         let pauseToken = mediaPause.generation
+        // Quit seals the touched tabs before returning, even when an action is still in flight.
+        if quitting { releaseMediaOnQuit(); return }
         // Do not search before a sent pause has answered. A later answer must not leave unreconciled marks.
         if let operation = browserPause, !operation.finished {
             operation.onSettled = { [weak self] in
@@ -2251,8 +2300,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // "Play again when I stop talking" off: pause only, so nothing ever starts by itself.
         guard config.resumeMedia ?? true else { releaseBrowserPause(play: false); Log.note("media: left paused, play again is off"); return }
-        // Quitting: no time to listen, the app is about to go.
-        if quitting { pausedMedia = false; Media.resume(pausedHow, wait: true); Log.note("media: resumed on quit"); return }
         let players = Media.playingApps()
         guard !players.isEmpty else { releaseBrowserPause(play: true); Log.note("media: resumed"); return }
         SoundTap.loudness(of: players.map(\.object), for: 0.2) { peak in
@@ -2277,20 +2324,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Reconciliation is queued with a generation guard, so a new recording can take over before dispatch.
+    /// Quit seals an in-flight pause instead of waiting for its main-queue callback. The synchronous actions
+    /// are bounded and touch only dispatched/inherited tabs, never every tab in Chrome.
+    private func releaseMediaOnQuit() {
+        browserPause?.onSettled = nil
+        browserPause?.stop(cancelled: true)
+        browserResume?.cancel()
+        Media.resume(heldMedia, wait: true, play: config.resumeMedia ?? true, inheriting: browserInheritedTokens)
+        pausedMedia = false
+        Log.note("media: quit reconciliation finished")
+    }
+
+    /// Record each completed tab before proceeding. A takeover captures the full requested set for re-pause,
+    /// while the old hold contains only unresolved tabs and can never claim a tab already resumed.
     private func releaseBrowserPause(play: Bool) {
-        let how: Media.Paused
-        if case .chrome(let token, _) = pausedHow, let operation = browserPause, operation.token == token {
-            how = .chrome(token: token, tabs: operation.touched.sorted())
-        } else { how = pausedHow }
+        let how = heldMedia
+        browserPause = nil
+        browserTakeover = nil
         let generation = mediaPause.generation
-        Media.resume(how, play: play, allowed: { [weak self] in
+        func record(_ result: BrowserResumeOperation.Result) {
+            guard self.mediaPause.owns(generation) else { return }
+            if case .chrome(let token, _) = how {
+                self.pausedHow = .chrome(token: token, tabs: result.unresolved.sorted())
+            }
+            Log.note("media browser: reconcile resumed=\(result.resumed.count) cleared=\(result.cleared.count) unresolved=\(result.unresolved.count) cancelled=\(result.cancelled)")
+            if result.unresolved.isEmpty { self.pausedMedia = false; self.browserResume = nil }
+        }
+        browserResume = Media.resume(how, play: play, inheriting: browserInheritedTokens, allowed: { [weak self] in
             guard let self, self.mediaPause.owns(generation), self.session == nil,
                   self.pendingStart == nil, self.writing == 0 else { return false }
             return true
-        }, done: { [weak self] in
-            guard let self, self.mediaPause.owns(generation) else { return }
-            self.pausedMedia = false
+        }, progress: record, done: { result in
+            let current = self.mediaPause.owns(generation)
+            record(result)
+            if current { self.browserResume = nil }
         })
     }
 

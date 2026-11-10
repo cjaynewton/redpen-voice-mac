@@ -15,34 +15,52 @@ public enum BrowserMedia {
 
     /// Probe and pause are separate bounded actions. Document identity and element references never leave the page.
     /// Navigation loses this registry, so a retry cannot act on a replacement document in the same tab.
-    public static func probeScript(token: String, document: String, expires: Double) -> String {
+    public static func probeScript(token: String, document: String, expires: Double, inheriting: [String] = []) -> String {
         let t = clean(token), d = clean(document)
+        let inherited = inheriting.map { "'\(clean($0))'" }.joined(separator: ",")
         return "(function(){if(Date.now()>\(expires)){return ''}var r=window.__redpenMedia||(window.__redpenMedia=Object.create(null));"
-            + "if(r['\(t)']&&r['\(t)'].cancelled)return '';var items=Array.from(document.querySelectorAll('video,audio')).filter(function(m){return !m.paused&&!m.ended&&!m.muted&&m.volume>0});"
+            + "if(r['\(t)']&&r['\(t)'].cancelled)return '';var old=[\(inherited)];"
+            + "var items=Array.from(document.querySelectorAll('video,audio')).filter(function(m){var owners=(m.getAttribute('\(mark)')||'').split(' ');return (!m.paused&&!m.ended&&!m.muted&&m.volume>0)||(m.paused&&owners.some(function(v){return v&&(old.indexOf(v)>=0||(m.__redpenOwners&&m.__redpenOwners[v]=='live'))}))});"
             + "if(!items.length)return '';r['\(t)']={doc:'\(d)',items:items,cancelled:false};return '\(d)'})()"
     }
 
-    /// Repeating a pause preserves every operation's marks. Count only elements actually paused by this operation.
-    public static func pauseScript(token: String, document: String? = nil, expires: Double = 9e15) -> String {
+    /// Each element has explicit live/sealed owner status. Playback ends the old hold, even if its native resume
+    /// failed. An audible element also proves that all its previous holds ended, including marks from older builds.
+    /// An inherited paused element gets the new owner's mark before the old owner is sealed.
+    public static func pauseScript(token: String, document: String? = nil, expires: Double = 9e15,
+                                   inheriting: [String] = []) -> String {
         let t = clean(token)
+        let inherited = inheriting.map { "'\(clean($0))'" }.joined(separator: ",")
         let selection: String
         if let document {
             selection = "var r=window.__redpenMedia&&window.__redpenMedia['\(t)'];if(!r||r.cancelled||r.doc!='\(clean(document))')return -1;var items=r.items;"
         } else { selection = "var items=Array.from(document.querySelectorAll('video,audio'));" }
-        return "(function(){if(Date.now()>\(expires))return -1;var n=0;" + selection
-            + "items.forEach(function(m){if(!m.isConnected)return;var owners=(m.getAttribute('\(mark)')||'').split(' ').filter(Boolean);"
-            + "if(!m.paused&&!m.ended&&!m.muted&&m.volume>0){try{m.pause()}catch(e){}if(m.paused){if(owners.indexOf('\(t)')<0)owners.push('\(t)');m.setAttribute('\(mark)',owners.join(' '))}}"
+        return "(function(){if(Date.now()>\(expires))return -1;var n=0;var old=[\(inherited)];" + selection
+            + "items.forEach(function(m){if(!m.isConnected)return;var owners=(m.getAttribute('\(mark)')||'').split(' ').filter(Boolean);var status=m.__redpenOwners||(m.__redpenOwners=Object.create(null));"
+            + "var audible=!m.paused&&!m.ended&&!m.muted&&m.volume>0;var adopt=m.paused&&owners.some(function(v){return old.indexOf(v)>=0||status[v]=='live'});"
+            + "if(audible){owners.forEach(function(v){status[v]='sealed'});try{m.pause()}catch(e){}}"
+            + "if(m.paused&&(audible||adopt)){status['\(t)']='live';if(owners.indexOf('\(t)')<0)owners.push('\(t)');"
+            + "old.forEach(function(v){status[v]='sealed';var registry=window.__redpenMedia;if(registry&&registry[v])registry[v]={cancelled:true}});"
+            + "if(!m.__redpenPlaybackWatch&&m.addEventListener){m.__redpenPlaybackWatch=true;m.addEventListener('play',function(){if(m.paused)return;Object.keys(m.__redpenOwners).forEach(function(v){m.__redpenOwners[v]='sealed'})})}}"
+            + "owners=owners.filter(function(v){return status[v]!='sealed'});if(owners.length)m.setAttribute('\(mark)',owners.join(' '));else m.removeAttribute('\(mark)');"
+            + "Object.keys(status).forEach(function(v){if(owners.indexOf(v)<0)delete status[v]});"
             + "if(m.paused&&owners.indexOf('\(t)')>=0)n++});return n})()"
     }
 
-    /// Seal the token before reconciling, so an already-delivered, delayed pause cannot act after this script.
-    /// Never start marked media while anything on this page is already audible. Pause-only clears marks without play.
-    public static func resumeScript(token: String, play: Bool = true) -> String {
+    /// Seal only a registry/element that actually held a requested token. Unrelated tabs allocate nothing.
+    /// Drop sealed foreign marks, but never play while a remaining live owner holds this element.
+    public static func resumeScript(token: String, play: Bool = true, inheriting: [String] = []) -> String {
         let t = clean(token)
-        return "(function(){var n=0;var r=window.__redpenMedia||(window.__redpenMedia=Object.create(null));r['\(t)']={cancelled:true};"
+        let tokens = (inheriting.map(clean) + [t]).map { "'\($0)'" }.joined(separator: ",")
+        return "(function(){var n=0;var tokens=[\(tokens)];var r=window.__redpenMedia;"
+            + "var marked=Array.from(document.querySelectorAll('[\(mark)~=\"\(t)\"]'));"
+            + "if(tokens.length>1)marked=Array.from(document.querySelectorAll('video,audio')).filter(function(m){var owners=(m.getAttribute('\(mark)')||'').split(' ');return tokens.some(function(v){return owners.indexOf(v)>=0})});"
+            + "if(r)tokens.forEach(function(v){if(r[v])r[v]={cancelled:true}});"
             + "var audible=Array.from(document.querySelectorAll('video,audio')).some(function(m){return !m.paused&&!m.ended&&!m.muted&&m.volume>0});"
-            + "document.querySelectorAll('[\(mark)~=\"\(t)\"]').forEach(function(m){var rest=(m.getAttribute('\(mark)')||'').split(' ').filter(function(v){return v&&v!='\(t)'});if(rest.length)m.setAttribute('\(mark)',rest.join(' '));else m.removeAttribute('\(mark)');"
-            + "if(\(play ? "true" : "false")&&!rest.length&&!audible&&m.paused){var p=m.play();if(p&&p.catch)p.catch(function(){});n++}});return n})()"
+            + "marked.forEach(function(m){var status=m.__redpenOwners||(m.__redpenOwners=Object.create(null));var held=(m.getAttribute('\(mark)')||'').split(' ').some(function(v){return tokens.indexOf(v)>=0&&status[v]!='sealed'});tokens.forEach(function(v){status[v]='sealed'});"
+            + "var rest=(m.getAttribute('\(mark)')||'').split(' ').filter(function(v){return v&&status[v]!='sealed'});if(rest.length)m.setAttribute('\(mark)',rest.join(' '));else m.removeAttribute('\(mark)');"
+            + "Object.keys(status).forEach(function(v){if(rest.indexOf(v)<0)delete status[v]});"
+            + "if(\(play ? "true" : "false")&&held&&!rest.length&&!audible&&m.paused){var p=m.play();if(p&&p.catch)p.catch(function(){});n++}});return n})()"
     }
 
     /// One bounded phase per process. Site URLs order background candidates inside AppleScript only.
