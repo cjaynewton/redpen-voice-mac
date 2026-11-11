@@ -206,8 +206,13 @@ enum Media {
                 guard DispatchQueue.main.sync(execute: allowed) else { DispatchQueue.main.async { reply(nil) }; return }
                 let left = end - ProcessInfo.processInfo.systemUptime
                 guard left > 0 else { DispatchQueue.main.async { reply(nil) }; return }
+                let started = ProcessInfo.processInfo.systemUptime
                 let output = runAction(["page", String(tab), js], limit: min(limit, left))
                 let count = output.status == 0 && !output.timedOut ? Int(output.output.trimmingCharacters(in: .whitespacesAndNewlines)) : nil
+                if count == nil {
+                    let ms = Int((ProcessInfo.processInfo.systemUptime - started) * 1000)
+                    Log.note("media browser: resume tab=\(tab) no answer timed_out=\(output.timedOut) status=\(output.status) elapsed_ms=\(ms)")
+                }
                 DispatchQueue.main.async { reply(count) }
             }
         }

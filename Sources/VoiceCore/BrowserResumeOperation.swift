@@ -4,7 +4,8 @@ import Foundation
 /// The caller serializes callbacks. A dispatched action reports before cancellation completes.
 public final class BrowserResumeOperation {
     public static let totalBudget: TimeInterval = 4
-    public static let actionBudget: TimeInterval = 0.2
+    // Chrome takes about 0.4 to 0.6 s to answer one tab (Nov 11 log). 0.2 s cut every play off before it landed.
+    public static let actionBudget: TimeInterval = 1.2
     public struct Result: Equatable {
         public let requested: Set<Int>
         public let resumed: Set<Int>
