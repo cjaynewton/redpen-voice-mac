@@ -2550,6 +2550,17 @@ do {
     check("meeting.cutEnd", Meeting.cutPoint(wave, target: wave.count + 10, search: 100) == wave.count)
     check("meeting.cutNeverAfter", Meeting.cutPoint([Float](repeating: 0.5, count: 1000), target: 900, search: 500) <= 900)
 
+    // Lines too fast to be real talk (D-1523, log only): judged from 3 s up, over 300 words a minute.
+    let wordsOf = { (n: Int) in Array(repeating: "word", count: n).joined(separator: " ") }
+    let paced = [MeetingSegment(start: 0, end: 10, text: wordsOf(30)),     // 180 wpm, normal
+                 MeetingSegment(start: 10, end: 20, text: wordsOf(45)),    // 270 wpm, fast but real
+                 MeetingSegment(start: 20, end: 26, text: wordsOf(60)),    // 600 wpm, made up
+                 MeetingSegment(start: 26, end: 27, text: wordsOf(20))]    // 1 s line, too short to judge
+    let fastLines = Meeting.tooFast(paced)
+    check("meeting.tooFastOne", fastLines.count == 1 && fastLines.first?.start == 20 && fastLines.first?.wpm == 600, "\(fastLines)")
+    check("meeting.tooFastEdge", Meeting.tooFast([MeetingSegment(start: 0, end: 6, text: wordsOf(30))]).isEmpty)  // exactly 300
+    check("meeting.tooFastEmpty", Meeting.tooFast([]).isEmpty && Meeting.tooFast([MeetingSegment(start: 5, end: 5, text: "a b")]).isEmpty)
+
     // Gaps with no line in them, for asking Whisper again, and how much of a stretch sounds like talk.
     let lined = [MeetingSegment(start: 2, end: 10, text: "a"), MeetingSegment(start: 11, end: 20, text: "b"), MeetingSegment(start: 45, end: 50, text: "c")]
     let gaps = Meeting.gaps(lined, length: 120, minimum: 6)

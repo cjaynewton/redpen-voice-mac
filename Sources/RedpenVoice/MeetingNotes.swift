@@ -149,7 +149,14 @@ enum MeetingNotes {
             if peak >= 0.003 {
                 let start = offset + Double(at) / Double(rate)
                 let segs = try await engine.meetingSegments(audio, config: config)
-                out += segs.map { MeetingSegment(start: $0.start + start, end: $0.end + start, text: $0.text) }
+                let placed = segs.map { MeetingSegment(start: $0.start + start, end: $0.end + start, text: $0.text) }
+                // Log only (D-1523): lines too fast to be real talk, as times and rates, never the words.
+                let fast = Meeting.tooFast(placed)
+                if !fast.isEmpty {
+                    let at = fast.prefix(5).map { "\(Meeting.clock($0.start)) \($0.wpm) wpm" }.joined(separator: ", ")
+                    Log.note("meeting: \(fast.count) of \(placed.count) lines too fast for their length (\(at))")
+                }
+                out += placed
             }
             at += audio.count
             done(Double(audio.count) / Double(rate))

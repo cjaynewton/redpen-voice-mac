@@ -498,6 +498,19 @@ public enum Meeting {
         return out
     }
 
+    /// Lines with more words than anyone can say in their time (D-1523, a log-only check): a sign the engine made
+    /// words up. Only lines of `minSeconds` or more are judged, since short lines' times are rough. Fast talk runs
+    /// about 250 words a minute, so `maxWPM` sits above it. Returns each flagged line's start and rate, never its words.
+    public static func tooFast(_ segments: [MeetingSegment], minSeconds: Double = 3, maxWPM: Double = 300) -> [(start: Double, wpm: Int)] {
+        segments.compactMap { s in
+            let secs = s.end - s.start
+            guard secs >= minSeconds else { return nil }
+            let words = s.text.split(whereSeparator: { $0.isWhitespace }).count
+            let wpm = Double(words) / secs * 60
+            return wpm > maxWPM ? (s.start, Int(wpm.rounded())) : nil
+        }
+    }
+
     /// Seconds of `samples` (16 kHz) loud enough to be someone talking: 30 ms stretches at `level` or above.
     public static func talkSeconds(_ samples: ArraySlice<Float>, level: Float = 0.01) -> Double {
         let frame = 480
