@@ -2302,7 +2302,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard config.resumeMedia ?? true else { releaseBrowserPause(play: false); Log.note("media: left paused, play again is off"); return }
         let players = Media.playingApps()
         guard !players.isEmpty else { releaseBrowserPause(play: true); Log.note("media: resumed"); return }
-        SoundTap.loudness(of: players.map(\.object), for: 0.2) { peak in
+        let listened: @Sendable (Float?) -> Void = { peak in
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.mediaPause.owns(pauseToken) else { return }
                 let playing = MediaGate.isPlaying(peak: peak)
@@ -2322,6 +2322,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+        // Chrome tabs paused by this app are played again by the page itself, which plays only the video it
+        // marked and only if nothing in that tab is already playing. So when the sound check is busy, do not
+        // wait in line behind it (2 to 5 s on Nov 11): play the marked tab now.
+        if case .chrome = pausedHow {
+            if !SoundTap.loudnessIfIdle(of: players.map(\.object), for: 0.2, done: listened) {
+                releaseBrowserPause(play: true)
+                Log.note("media: resumed, sound check busy so played the marked Chrome tab directly")
+            }
+            return
+        }
+        SoundTap.loudness(of: players.map(\.object), for: 0.2, done: listened)
     }
 
     /// Quit seals an in-flight pause instead of waiting for its main-queue callback. The synchronous actions
