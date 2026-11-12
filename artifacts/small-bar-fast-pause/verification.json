@@ -1,0 +1,16 @@
+{
+  "base": "5c4cda0f61929ea57628ee4c7f871330ea900945",
+  "branch": "t3/small-bar-fast-pause",
+  "core_checks": 1843,
+  "integration_checks": 697,
+  "source_contracts_included": 120,
+  "swift_tests": 5,
+  "native_checks": 458,
+  "native_captures": 69,
+  "failures": 0,
+  "release_build": "passed",
+  "review_signature": "passed",
+  "live_chrome_test": false,
+  "installed": false,
+  "implementation_commit": "d5662b93d52a399456f632b3d66c95a13ae5aa33"
+}

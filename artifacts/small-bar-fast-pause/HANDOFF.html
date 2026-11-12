@@ -1,0 +1,288 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Small bar and faster Chrome pause</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap">
+<style>
+:root{--bg:#FBF8F3;--ink:#1d1b18;--mid:#4a4640;--dim:#857f76;--rule:#e4ddd2;--red:#b3261e;--code:#f1ece4}
+@media (prefers-color-scheme: dark){:root{--bg:#161513;--ink:#FAFAFA;--mid:rgba(250,250,250,.78);--dim:rgba(250,250,250,.52);--rule:#2e2b27;--red:#ff6b5e;--code:#22201d}}
+*{box-sizing:border-box}
+html{font-size:106%}
+body{margin:0;background:var(--bg);color:var(--ink);font:400 1.125rem/1.6 "Newsreader",Georgia,serif;-webkit-font-smoothing:antialiased}
+main{max-width:46rem;margin:0 auto;padding:clamp(28px,6vw,72px) 16px 96px}
+.meta{font:500 .78rem/1.4 "Inter",system-ui,sans-serif;color:var(--dim);margin-bottom:2rem;word-break:break-all}
+h1,h2,h3,h4{font-weight:600;line-height:1.2;text-wrap:balance;margin:2.2em 0 .5em}
+h1{font-size:clamp(1.9rem,4.5vw,2.6rem);margin-top:0}
+h2{font-size:1.5rem}h3{font-size:1.2rem}
+p,li,blockquote{text-wrap:pretty}
+a{color:var(--red)}
+strong{font-weight:600}
+ul,ol{padding-left:1.3em}li{margin:.3em 0}
+blockquote{margin:1.2em 0;padding-left:1em;border-left:3px solid var(--red);color:var(--mid)}
+code{font:.85em/1.4 ui-monospace,Menlo,monospace;background:var(--code);padding:.1em .35em;border-radius:3px}
+pre{background:var(--code);padding:14px 16px;border-radius:3px;overflow-x:auto}pre code{background:none;padding:0}
+.table-wrap{overflow-x:auto;margin:1.4em 0}
+table{border-collapse:collapse;font:400 .92rem/1.45 "Inter",system-ui,sans-serif;min-width:100%}
+th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--rule);vertical-align:top}
+th{font-weight:600;color:var(--mid)}
+hr{border:0;height:1px;background:var(--rule);margin:2.5em 0}
+</style></head><body><main>
+<div class="meta">Built from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/small-bar-fast-pause/artifacts/small-bar-fast-pause/HANDOFF.md · Nov 12 2026, 1:56 AM</div>
+<h1 id="small-bar-and-faster-chrome-pause">Small bar and faster Chrome
+pause</h1>
+<p>Implemented on <code>t3/small-bar-fast-pause</code>, based on
+<code>t3/bar-click-fixes</code> at
+<code>5c4cda0f61929ea57628ee4c7f871330ea900945</code>.</p>
+<p>Implementation commit
+<code>d5662b93d52a399456f632b3d66c95a13ae5aa33</code>.</p>
+<p>Worktree
+<code>/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/small-bar-fast-pause</code>.</p>
+<p>Build and test only. No <code>build.sh</code>, install, push, merge,
+tag or release. No other worktree was edited. This is an implementation
+handoff, not independent reviewer approval or permission to install.
+Model was GPT-6 Astra, high effort. No delegated agents or research
+services.</p>
+<h2 id="behavior">Behavior</h2>
+<p>Clicking the six-square grip toggles the saved small size. Movement
+over three points, measured as absolute horizontal plus vertical
+displacement, makes it a drag for the remainder of that gesture, even if
+the pointer returns to its starting point. Clicking the rest of the
+resting rail still starts dictation. Small mode is 157 by 26 points,
+compared with the main listening rail at 314 by 52. The saved anchor,
+display clamping, square corners and colours remain. All five signal
+styles remain, including a round Dot.</p>
+<p>The small active Needs you state shows the grip, crossed mic and grey
+signal. Ordinary captions, timer and word count are hidden in small
+mode. Paste last, final no-sound messages and recovery questions retain
+their words and controls. Expanding returns access to the existing
+options. Old configs default to full size; the independent hidden-idle
+preference is unchanged.</p>
+<p>Chrome dispatch no longer waits for the sound-listen result or the
+Accessibility target. It starts once the existing off-main player lookup
+and physical hold/hands-free confirmation permit media control. A quick
+Fn shortcut still sends no pause. The sound reference continues in
+parallel. Non-Chrome playback keeps its original target and sound gates.
+If Chrome settles before the microphone buffer has activated, the
+original opening audio is retained rather than estimating an echo
+offset.</p>
+<p>The known tab receives one pause-if-playing page script. A miss
+starts one AppleScript process for all windows and tabs, keeping front
+tabs first, likely media sites next and other tabs last. A refusing page
+is skipped. Discovery stops at its first successful pause. This removes
+the probe-before-pause and separate native discovery calls; it does not
+imply that all internal AppleEvents finish instantly.</p>
+<p>The eight-second pause budget includes time since the accepted press.
+A known tab gets at most one retry using its original document fence.
+Discovery is never retried. Each attempted discovery tab ID is written
+to a private temporary journal before its page call, so an interpreter
+timeout still leaves reconciliation targets. A permit file stops later
+attempts after cancellation or transfer. Both files are deleted on
+completion. Only generated tokens, IDs, counts and timings enter the new
+trace lines.</p>
+<p>Resume remains restricted to the operation's exact marked elements.
+Confirmed paused tabs go before uncertain discovery attempts within the
+existing four-second resume budget. A newer recording waits for the
+previous batch's terminal journal before adopting its marks. Native
+generation checks, page timestamps, document fences, expiry and
+cancellation seals protect against older callbacks and scripts.</p>
+<h2 id="incident-evidence-and-timing">Incident evidence and timing</h2>
+<p>The supplied 06:00 and 06:23 log excerpts are the historical
+evidence. Their old reply-code mapping was confirmed in source and
+preserved by a regression check. Codes 0 through 8 retain their
+meanings; the new batched discovery result uses 9. The old source
+confirmed serial candidate then pause calls and separate window/tab
+discovery calls. A direct re-read of the live log confirmed the
+incidents. The 06:00 candidate took 929 ms and the pause succeeded at
+2,061 ms of operation time. The 06:23 known tab was empty at 371 ms; its
+front candidate refused at 1,295 ms. The log also records failed
+front/window-tab queries (code 8), followed by two tab-list timeouts at
+2,749 and 3,905 ms. It finished uncertain at 3,906 ms. This corrects the
+brief's budget description. The operation exhausted its discovery queue
+before the eight-second ceiling. The code-8 error cause was not logged
+and remains unknown. Batched ordering now tolerates an unreadable window
+or active-tab index rather than aborting all discovery.</p>
+<ul>
+<li>With a fake clock and a one-second browser response, a known-tab
+pause takes one call and 1.00 s of operation time. An uncached discovery
+success also takes one call and 1.00 s.</li>
+<li>The stale-known-tab case uses two calls. Replaying 0.93 s for the
+known miss plus 1.10 s for discovery totals 2.03 s, before gesture/setup
+overhead. It cannot meet 1.5 s when both calls each cost about a
+second.</li>
+<li>The final release-suite inert AppleScript loop run took 339 ms. The
+same production loop skipped front tab 414388973's simulated refusal and
+paused tab 77, while excluding the stale known tab and never visiting
+the later tab. Browser accessors were inert fixtures. This is
+process/loop evidence, not Chrome playback timing.</li>
+<li>About 1 to 1.5 s from the press remains a live target for the
+one-call path. Real Chrome responsiveness, player lookup, sound-tap
+startup and scheduling were not measured. New
+<code>press_dispatch</code> and <code>press_answer</code> timing lines
+support that later check.</li>
+</ul>
+<h2 id="changes-by-file">Changes by file</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>File</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Sources/VoiceCore/TalkingBar.swift</code></td>
+<td>Small rail geometry; existing screen fitting retained.</td>
+</tr>
+<tr>
+<td><code>Sources/RedpenVoice/TalkingBarView.swift</code></td>
+<td>Grip click/drag distinction, compact drawing and message
+handling.</td>
+</tr>
+<tr>
+<td><code>Sources/RedpenVoice/HUD.swift</code></td>
+<td>Size callback, native state/click/config/display checks and
+captures.</td>
+</tr>
+<tr>
+<td><code>Sources/RedpenVoice/Config.swift</code></td>
+<td>Optional persisted <code>smallTalkingBar</code>.</td>
+</tr>
+<tr>
+<td><code>Sources/RedpenVoice/main.swift</code></td>
+<td>Config wiring, early Chrome/sound join, stale-batch takeover and
+original-audio fallback.</td>
+</tr>
+<tr>
+<td><code>Sources/VoiceCore/BrowserPauseOperation.swift</code></td>
+<td>Direct known-tab action, single discovery action, press budget and
+reconciliation evidence.</td>
+</tr>
+<tr>
+<td><code>Sources/VoiceCore/BrowserMedia.swift</code></td>
+<td>Atomic page pause, stale-page guards, discovery AppleScript and
+targeted cancellation seals.</td>
+</tr>
+<tr>
+<td><code>Sources/VoiceCore/BrowserResumeOperation.swift</code></td>
+<td>Preserve confirmed-first caller ordering while deduplicating
+targets.</td>
+</tr>
+<tr>
+<td><code>Sources/RedpenVoice/Media.swift</code></td>
+<td>Adapter dispatch, private journal/permit lifecycle, timeout recovery
+and no Chrome key fallback.</td>
+</tr>
+<tr>
+<td><code>Sources/redpen-voice-test/BrowserPauseChecks.swift</code></td>
+<td>Updated operation cases, fake timings, resume and late-owner
+regressions, inert page JavaScript checks.</td>
+</tr>
+<tr>
+<td><code>Sources/redpen-voice-test/BrowserDiscoveryChecks.swift</code></td>
+<td>Compile the real AppleScript; execute its loop with inert browser
+accessors.</td>
+</tr>
+<tr>
+<td><code>tools/check-first-words.py</code></td>
+<td>Updated source contracts and inclusion of the new discovery
+checks.</td>
+</tr>
+<tr>
+<td><code>NOTES.md</code></td>
+<td>Appended reusable implementation limits and verification
+record.</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="verification">Verification</h2>
+<p>All required checks passed with Xcode's
+<code>DEVELOPER_DIR</code>.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Command or check</th>
+<th>Result</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>swift run -c release redpen-voice-test</code></td>
+<td>1,843 passed, 0 failed</td>
+<td><a href="core-tests.log">Core log</a></td>
+</tr>
+<tr>
+<td><code>swift test</code></td>
+<td>5 passed, 0 failed</td>
+<td><a href="swift-test.log">Swift test log</a></td>
+</tr>
+<tr>
+<td><code>python3 tools/check-first-words.py</code></td>
+<td>697 passed, including 120 source contracts and 577 synthetic runtime
+checks</td>
+<td><a href="first-words.log">Integration log</a></td>
+</tr>
+<tr>
+<td><code>swift build -c release --product RedpenVoice</code></td>
+<td>Passed</td>
+<td><a href="build.log">Build log</a></td>
+</tr>
+<tr>
+<td><code>python3 tools/package-review-app.py</code></td>
+<td>Passed; strict deep signature verified</td>
+<td><a href="package.log">Package log</a></td>
+</tr>
+<tr>
+<td>Review app
+<code>--talking-bar-shots artifacts/small-bar-fast-pause/shots</code></td>
+<td>458 passed, 0 failed; 69 captures</td>
+<td><a href="native-tests.log">Native log</a>, <a
+href="shots/verification.json">capture manifest</a></td>
+</tr>
+<tr>
+<td><code>git diff --check</code></td>
+<td>Passed</td>
+<td>Checked before commit</td>
+</tr>
+</tbody>
+</table></div>
+<p>These suites overlap, so their counts should not be added as
+independent test cases. Compiler warnings are retained in the build and
+integration logs.</p>
+<p>The final review bundle is
+<code>build/Redpen Voice Review.app</code>. Captures include <a
+href="shots/small-pen-listening.png">small listening</a>, <a
+href="shots/small-pen-writing.png">small writing</a>, <a
+href="shots/small-pen-needs.png">small Needs you</a>, <a
+href="shots/small-dot-listening.png">round Dot</a>, <a
+href="shots/small-paste-last.png">Paste last</a> and <a
+href="shots/small-no-sound-message.png">final no-sound message</a>.
+These are native 2x offscreen drawings, not desktop screenshots or live
+dictation proof.</p>
+<p>The relevant historical media lines only are saved in <a
+href="historical-media.log">historical-media.log</a>. No dictated words
+were copied into that extract.</p>
+<p>Capture/recognition and delivery implementations in
+<code>Insert.swift</code>, <code>Recorder.swift</code>,
+<code>Transcriber.swift</code>, <code>HoldKey.swift</code>,
+<code>DictationEnding.swift</code>, <code>FinishInBox.swift</code> and
+<code>MediaOpening.swift</code> are byte-for-byte unchanged from the
+base, verified by Git diff. See
+<code>unchanged-boundaries.json</code>.</p>
+<h2 id="remaining-limits">Remaining limits</h2>
+<p>Physical dragging, actual preference restoration after restarting the
+installed app, real display removal, Chrome permissions/site behavior,
+playback latency and speech accuracy remain untested. Cross-origin media
+inaccessible to the page script remains outside its reach. Terminating
+osascript cannot revoke an AppleEvent already delivered to Chrome; page
+guards and exact-target reconciliation mitigate that race, but live
+event ordering has not been exercised.</p>
+<p>No production app was started, quit or restarted. The separate review
+app ran only its native capture/test entry point, before AppDelegate,
+microphone, ASR and media setup. Nothing was published or made
+accessible on a phone.</p>
+<p>The next step is owner review of this branch and evidence. Any
+installation or live acceptance test requires its separate
+authorization.</p>
+<p>Saved. Safe to close. No implementation process or service remains
+running.</p>
+
+</main></body></html>

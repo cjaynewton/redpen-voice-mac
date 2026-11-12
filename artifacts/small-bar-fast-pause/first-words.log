@@ -1,0 +1,135 @@
+120 startup source contracts passed (not screen-pixel or hardware proof)
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/small-bar-fast-pause/.build/first-words-pg67fjcy/Harness.swift:1001:17: warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+ 999 |                 try await liveGate.acquire()
+1000 |                 defer { Task { try? await live.reset(); await liveGate.release() } }
+1001 |                 try await live.reset()
+     |                 `- warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+1002 |                 lock.withLock { fed = 0; heardGeneration = audioGeneration }
+1003 |                 // While you talk: words for the bar. A failure here only stops the live words; the ending redoes it.
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/small-bar-fast-pause/.build/first-words-pg67fjcy/Harness.swift:1009:33: warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+1007 |                         do {
+1008 |                             if lock.withLock({ heardGeneration != audioGeneration }) {
+1009 |                                 try await live.reset(); shown = ""
+     |                                 `- warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+1010 |                                 lock.withLock { fed = 0; heardGeneration = audioGeneration }
+1011 |                                 Log.note("engine: instant started over after the video's sound was left out")
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/small-bar-fast-pause/.build/first-words-pg67fjcy/Harness.swift:1036:29: warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+1034 |                     do {
+1035 |                         if redo {
+1036 |                             try await live.reset()
+     |                             `- warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+1037 |                             lock.withLock { fed = 0; liveBroken = false; heardGeneration = generation }
+1038 |                             Log.note("engine: instant writing the whole dictation again")
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/small-bar-fast-pause/.build/first-words-pg67fjcy/Harness.swift:1041:36: warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+1039 |                         }
+1040 |                         try await feedLive(live)
+1041 |                         let text = try await live.finish()
+     |                                    `- warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+1042 |                         if lock.withLock({ audioGeneration == generation }) {
+1043 |                             guard let played = lock.withLock({ echoAudio }), !played.isEmpty else { return text }
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/small-bar-fast-pause/.build/first-words-pg67fjcy/Harness.swift:1045:29: warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+1043 |                             guard let played = lock.withLock({ echoAudio }), !played.isEmpty else { return text }
+1044 |                             // What the paused app played, written with the same engine, then taken off the start.
+1045 |                             try await live.reset()
+     |                             `- warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+1046 |                             try await feedArray(live, played)
+1047 |                             return Self.logStrip(text, video: try await live.finish())
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/small-bar-fast-pause/.build/first-words-pg67fjcy/Harness.swift:1047:63: warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+1045 |                             try await live.reset()
+1046 |                             try await feedArray(live, played)
+1047 |                             return Self.logStrip(text, video: try await live.finish())
+     |                                                               `- warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+1048 |                         }
+1049 |                         lock.withLock { liveBroken = true }
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/small-bar-fast-pause/.build/first-words-pg67fjcy/Harness.swift:1055:44: warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+1053 |                         Log.note("engine: instant ending failed, trying again from the saved audio")
+1054 |                     }
+1055 |                     if tries >= 3 { return try await live.finish() }
+     |                                            `- warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+1056 |                 }
+1057 |             }
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/small-bar-fast-pause/.build/first-words-pg67fjcy/Harness.swift:1000:32: warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+ 998 |             liveRun = Task.detached(priority: .userInitiated) { [self] in
+ 999 |                 try await liveGate.acquire()
+1000 |                 defer { Task { try? await live.reset(); await liveGate.release() } }
+     |                                `- warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+1001 |                 try await live.reset()
+1002 |                 lock.withLock { fed = 0; heardGeneration = audioGeneration }
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/small-bar-fast-pause/.build/first-words-pg67fjcy/Harness.swift:1065:13: warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+1063 |             b.frameLength = AVAudioFrameCount(a.count)
+1064 |             a.withUnsafeBufferPointer { b.floatChannelData![0].update(from: $0.baseAddress!, count: a.count) }
+1065 |             try await live.appendAudio(b)
+     |             `- warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+1066 |             try await live.processBufferedAudio()
+1067 |         }
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/small-bar-fast-pause/.build/first-words-pg67fjcy/Harness.swift:1066:13: warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+1064 |             a.withUnsafeBufferPointer { b.floatChannelData![0].update(from: $0.baseAddress!, count: a.count) }
+1065 |             try await live.appendAudio(b)
+1066 |             try await live.processBufferedAudio()
+     |             `- warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+1067 |         }
+1068 | 
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/small-bar-fast-pause/.build/first-words-pg67fjcy/Harness.swift:1080:13: warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+1078 |             b.frameLength = AVAudioFrameCount(chunk.count)
+1079 |             chunk.withUnsafeBufferPointer { b.floatChannelData![0].update(from: $0.baseAddress!, count: chunk.count) }
+1080 |             try await live.appendAudio(b)
+     |             `- warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+1081 |             try await live.processBufferedAudio()
+1082 |         }
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/small-bar-fast-pause/.build/first-words-pg67fjcy/Harness.swift:1081:13: warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+1079 |             chunk.withUnsafeBufferPointer { b.floatChannelData![0].update(from: $0.baseAddress!, count: chunk.count) }
+1080 |             try await live.appendAudio(b)
+1081 |             try await live.processBufferedAudio()
+     |             `- warning: no calls to throwing functions occur within 'try' expression [#UnnecessaryEffectMarker]
+1082 |         }
+1083 | 
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/small-bar-fast-pause/.build/first-words-pg67fjcy/Harness.swift:1684:57: warning: result of call to 'AXUIElementSetAttributeValue' is unused [#NoUsage]
+1682 |         if selected, selectedRange(el) == edit.range, value(el) == before {
+1683 |             var back = CFRange(location: cursor.location, length: 0)
+1684 |             if let r = AXValueCreate(.cfRange, &back) { AXUIElementSetAttributeValue(el, kAXSelectedTextRangeAttribute as CFString, r) }
+     |                                                         `- warning: result of call to 'AXUIElementSetAttributeValue' is unused [#NoUsage]
+1685 |         }
+1686 |         return false
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/small-bar-fast-pause/.build/first-words-pg67fjcy/Harness.swift:2155:53: warning: class method 'sleep' is unavailable from asynchronous contexts; Use Task.sleep(until:clock:) instead.; this is an error in the Swift 6 language mode
+2153 |             confirmedSlow = await EditWait.confirm(attempts: 1, while: { true }) {
+2154 |                 slowReadStarted = true
+2155 |                 return await Task.detached { Thread.sleep(forTimeInterval: 1.3); return true }.value
+     |                                                     `- warning: class method 'sleep' is unavailable from asynchronous contexts; Use Task.sleep(until:clock:) instead.; this is an error in the Swift 6 language mode
+2156 |             }
+2157 |         }
+
+/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk/System/Library/Frameworks/Foundation.framework/Headers/NSThread.h:69:1: note: 'sleep(forTimeInterval:)' declared here
+ 67 | ///
+ 68 | /// - Parameter ti: The duration of the sleep.
+ 69 | + (void)sleepForTimeInterval:(NSTimeInterval)ti NS_SWIFT_UNAVAILABLE_FROM_ASYNC("Use Task.sleep(until:clock:) instead.");
+    | `- note: 'sleep(forTimeInterval:)' declared here
+ 70 | 
+ 71 | /// Terminates the current thread.
+
+[#NoUsage]: <https://docs.swift.org/compiler/documentation/diagnostics/no-usage>
+[#UnnecessaryEffectMarker]: <https://docs.swift.org/compiler/documentation/diagnostics/unnecessary-effect-marker>
+headphones: known user audio blanked before 1700 ms, after 0 ms
+speakers: known user audio blanked before 1700 ms, after 0 ms
+simulated Enter handler delay 0ms during 1300ms fake AX read
+slow-engine control: resumed=0 run=0 baseline_ms=317 staged_ms=320 added_line_ms=0
+slow-engine control: resumed=0 run=1 baseline_ms=304 staged_ms=319 added_line_ms=0
+slow-engine control: resumed=0 run=2 baseline_ms=305 staged_ms=308 added_line_ms=0
+slow-engine control: resumed=1 run=0 baseline_ms=319 staged_ms=318 added_line_ms=0
+slow-engine control: resumed=1 run=1 baseline_ms=315 staged_ms=306 added_line_ms=0
+slow-engine control: resumed=1 run=2 baseline_ms=325 staged_ms=320 added_line_ms=0
+Browser discovery inert AppleScript elapsed_ms=444; no live Chrome calls
+quick tap: pause calls before 0, after 0; no delivered dictation by design
+697 Session/Recording integration checks passed (synthetic ASR, no hardware)
