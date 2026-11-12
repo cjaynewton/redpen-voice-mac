@@ -1,0 +1,417 @@
+{
+  "captures" : [
+    {
+      "file" : "r3-default-idle-hidden.png",
+      "scale" : 2,
+      "visible" : false
+    },
+    {
+      "file" : "r3-pen-resting.png",
+      "height" : 40,
+      "scale" : 2,
+      "width" : 182
+    },
+    {
+      "file" : "r3-pen-listening.png",
+      "height" : 52,
+      "scale" : 2,
+      "width" : 314
+    },
+    {
+      "file" : "r3-pen-writing.png",
+      "height" : 52,
+      "scale" : 2,
+      "width" : 282
+    },
+    {
+      "file" : "r3-pen-needs.png",
+      "height" : 52,
+      "scale" : 2,
+      "width" : 328
+    },
+    {
+      "file" : "r3-pen-done.png",
+      "height" : 40,
+      "scale" : 2,
+      "width" : 78
+    },
+    {
+      "file" : "r3-bars-resting.png",
+      "height" : 40,
+      "scale" : 2,
+      "width" : 182
+    },
+    {
+      "file" : "r3-bars-listening.png",
+      "height" : 52,
+      "scale" : 2,
+      "width" : 314
+    },
+    {
+      "file" : "r3-bars-writing.png",
+      "height" : 52,
+      "scale" : 2,
+      "width" : 282
+    },
+    {
+      "file" : "r3-bars-needs.png",
+      "height" : 52,
+      "scale" : 2,
+      "width" : 328
+    },
+    {
+      "file" : "r3-bars-done.png",
+      "height" : 40,
+      "scale" : 2,
+      "width" : 78
+    },
+    {
+      "file" : "r3-tape-resting.png",
+      "height" : 40,
+      "scale" : 2,
+      "width" : 182
+    },
+    {
+      "file" : "r3-tape-listening.png",
+      "height" : 52,
+      "scale" : 2,
+      "width" : 314
+    },
+    {
+      "file" : "r3-tape-writing.png",
+      "height" : 52,
+      "scale" : 2,
+      "width" : 282
+    },
+    {
+      "file" : "r3-tape-needs.png",
+      "height" : 52,
+      "scale" : 2,
+      "width" : 328
+    },
+    {
+      "file" : "r3-tape-done.png",
+      "height" : 40,
+      "scale" : 2,
+      "width" : 78
+    },
+    {
+      "file" : "r3-dot-resting.png",
+      "height" : 40,
+      "scale" : 2,
+      "width" : 142
+    },
+    {
+      "file" : "r3-dot-listening.png",
+      "height" : 52,
+      "scale" : 2,
+      "width" : 174
+    },
+    {
+      "file" : "r3-dot-writing.png",
+      "height" : 52,
+      "scale" : 2,
+      "width" : 282
+    },
+    {
+      "file" : "r3-dot-needs.png",
+      "height" : 52,
+      "scale" : 2,
+      "width" : 306
+    },
+    {
+      "file" : "r3-dot-done.png",
+      "height" : 40,
+      "scale" : 2,
+      "width" : 78
+    },
+    {
+      "file" : "r3-classic-resting.png",
+      "height" : 40,
+      "scale" : 2,
+      "width" : 182
+    },
+    {
+      "file" : "r3-classic-listening.png",
+      "height" : 52,
+      "scale" : 2,
+      "width" : 314
+    },
+    {
+      "file" : "r3-classic-writing.png",
+      "height" : 52,
+      "scale" : 2,
+      "width" : 282
+    },
+    {
+      "file" : "r3-classic-needs.png",
+      "height" : 52,
+      "scale" : 2,
+      "width" : 328
+    },
+    {
+      "file" : "r3-classic-done.png",
+      "height" : 40,
+      "scale" : 2,
+      "width" : 78
+    },
+    {
+      "file" : "r3-menu-resting.png",
+      "height" : 177,
+      "scale" : 2,
+      "width" : 236
+    },
+    {
+      "file" : "r3-menu-listening.png",
+      "height" : 245,
+      "scale" : 2,
+      "width" : 314
+    },
+    {
+      "file" : "r3-menu-listening-default-off.png",
+      "height" : 245,
+      "scale" : 2,
+      "width" : 314
+    },
+    {
+      "file" : "r3-done-hidden.png",
+      "scale" : 2,
+      "visible" : false
+    },
+    {
+      "file" : "r3-flash-hidden.png",
+      "scale" : 2,
+      "visible" : false
+    },
+    {
+      "file" : "r3-paste-dismissed-hidden.png",
+      "scale" : 2,
+      "visible" : false
+    },
+    {
+      "file" : "r3-recovery-question.png",
+      "height" : 127,
+      "scale" : 2,
+      "width" : 428
+    },
+    {
+      "file" : "r3-word-suggestion.png",
+      "height" : 127,
+      "scale" : 2,
+      "width" : 341
+    },
+    {
+      "file" : "r3-warning.png",
+      "height" : 91,
+      "scale" : 2,
+      "width" : 481
+    },
+    {
+      "file" : "r3-progress.png",
+      "height" : 91,
+      "scale" : 2,
+      "width" : 314
+    },
+    {
+      "file" : "r3-caption.png",
+      "height" : 91,
+      "scale" : 2,
+      "width" : 399
+    },
+    {
+      "file" : "r3-stopped-typing.png",
+      "height" : 52,
+      "scale" : 2,
+      "width" : 314
+    },
+    {
+      "file" : "r3-writing-note.png",
+      "height" : 52,
+      "scale" : 2,
+      "width" : 282
+    },
+    {
+      "file" : "r3-long-mic-name.png",
+      "height" : 186,
+      "scale" : 2,
+      "width" : 600
+    },
+    {
+      "file" : "r3-reduced-motion-writing.png",
+      "height" : 52,
+      "scale" : 2,
+      "width" : 282
+    },
+    {
+      "file" : "small-pen-resting.png",
+      "height" : 26,
+      "scale" : 2,
+      "width" : 157
+    },
+    {
+      "file" : "small-pen-listening.png",
+      "height" : 26,
+      "scale" : 2,
+      "width" : 157
+    },
+    {
+      "file" : "small-pen-writing.png",
+      "height" : 26,
+      "scale" : 2,
+      "width" : 157
+    },
+    {
+      "file" : "small-pen-needs.png",
+      "height" : 26,
+      "scale" : 2,
+      "width" : 157
+    },
+    {
+      "file" : "small-pen-done.png",
+      "height" : 26,
+      "scale" : 2,
+      "width" : 157
+    },
+    {
+      "file" : "small-bars-resting.png",
+      "height" : 26,
+      "scale" : 2,
+      "width" : 157
+    },
+    {
+      "file" : "small-bars-listening.png",
+      "height" : 26,
+      "scale" : 2,
+      "width" : 157
+    },
+    {
+      "file" : "small-bars-writing.png",
+      "height" : 26,
+      "scale" : 2,
+      "width" : 157
+    },
+    {
+      "file" : "small-bars-needs.png",
+      "height" : 26,
+      "scale" : 2,
+      "width" : 157
+    },
+    {
+      "file" : "small-bars-done.png",
+      "height" : 26,
+      "scale" : 2,
+      "width" : 157
+    },
+    {
+      "file" : "small-tape-resting.png",
+      "height" : 26,
+      "scale" : 2,
+      "width" : 157
+    },
+    {
+      "file" : "small-tape-listening.png",
+      "height" : 26,
+      "scale" : 2,
+      "width" : 157
+    },
+    {
+      "file" : "small-tape-writing.png",
+      "height" : 26,
+      "scale" : 2,
+      "width" : 157
+    },
+    {
+      "file" : "small-tape-needs.png",
+      "height" : 26,
+      "scale" : 2,
+      "width" : 157
+    },
+    {
+      "file" : "small-tape-done.png",
+      "height" : 26,
+      "scale" : 2,
+      "width" : 157
+    },
+    {
+      "file" : "small-dot-resting.png",
+      "height" : 26,
+      "scale" : 2,
+      "width" : 157
+    },
+    {
+      "file" : "small-dot-listening.png",
+      "height" : 26,
+      "scale" : 2,
+      "width" : 157
+    },
+    {
+      "file" : "small-dot-writing.png",
+      "height" : 26,
+      "scale" : 2,
+      "width" : 157
+    },
+    {
+      "file" : "small-dot-needs.png",
+      "height" : 26,
+      "scale" : 2,
+      "width" : 157
+    },
+    {
+      "file" : "small-dot-done.png",
+      "height" : 26,
+      "scale" : 2,
+      "width" : 157
+    },
+    {
+      "file" : "small-classic-resting.png",
+      "height" : 26,
+      "scale" : 2,
+      "width" : 157
+    },
+    {
+      "file" : "small-classic-listening.png",
+      "height" : 26,
+      "scale" : 2,
+      "width" : 157
+    },
+    {
+      "file" : "small-classic-writing.png",
+      "height" : 26,
+      "scale" : 2,
+      "width" : 157
+    },
+    {
+      "file" : "small-classic-needs.png",
+      "height" : 26,
+      "scale" : 2,
+      "width" : 157
+    },
+    {
+      "file" : "small-classic-done.png",
+      "height" : 26,
+      "scale" : 2,
+      "width" : 157
+    },
+    {
+      "file" : "small-paste-last.png",
+      "height" : 91,
+      "scale" : 2,
+      "width" : 314
+    },
+    {
+      "file" : "small-no-sound-message.png",
+      "height" : 84,
+      "scale" : 2,
+      "width" : 157
+    },
+    {
+      "file" : "small-question.png",
+      "height" : 127,
+      "scale" : 2,
+      "width" : 314
+    }
+  ],
+  "failed" : 0,
+  "passed" : 458,
+  "scope" : "Native offscreen rendering and synthetic interactions. No recording, insertion, media or installation."
+}

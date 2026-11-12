@@ -31,7 +31,8 @@ public final class BrowserResumeOperation {
 
     public init(tabs: [Int], now: @escaping () -> TimeInterval, allowed: @escaping () -> Bool,
                 perform: @escaping (Int, TimeInterval, @escaping (Int?) -> Void) -> Void) {
-        self.tabs = Array(Set(tabs)).sorted(); self.now = now; self.allowed = allowed; self.perform = perform
+        var seen: Set<Int> = []
+        self.tabs = tabs.filter { seen.insert($0).inserted }; self.now = now; self.allowed = allowed; self.perform = perform
         end = now() + Self.totalBudget
     }
     public var result: Result { Result(requested: Set(tabs), resumed: resumed, cleared: cleared, cancelled: cancelled) }

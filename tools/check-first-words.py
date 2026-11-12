@@ -50,7 +50,7 @@ wiring_checks = [
     ("no target/media discovery or delayed HUD on start path", all(term not in begin for term in ["Insert.focus", "boxPrint", "playingApps()", "SoundTap.loudness", "asyncAfter", "loadNames", "engine.session("])),
     ("HUD orders on initial show", "panel.orderFrontRegardless()" in block(hud_source, "func show(") or ("transition(" in block(hud_source, "func show(") and "panel.orderFrontRegardless()" in block(hud_source, "private func transition("))),
     ("capture promotion needs confirmation and bounded target result", "capture.confirmed, capture.targetDone" in block(app_source, "private func activateIfReady(")),
-    ("media action is gated by gesture not timer alone", "keys.mediaAllowed, pendingStart == nil" in confirmed and "whenMediaConfirmed(" in media),
+    ("media action is gated by gesture not timer alone", "if keys.mediaAllowed, !waitForTarget || pendingStart == nil" in confirmed and "whenMediaConfirmed(" in media),
     ("no blanket opening zeroing in app media path", "silence(upTo:" not in media),
     ("quiet Chrome guard survived conflict resolution", "askChromeWhenQuiet" in media and "chromeOnly: !playing" in media),
     ("SoundTap setup off caller", "setup.async { listen(next) }" in (ROOT / "Sources/RedpenVoice/SoundTap.swift").read_text()),
@@ -81,7 +81,7 @@ wiring_checks = [
 ]
 media_adapter = (ROOT / "Sources/RedpenVoice/Media.swift").read_text()
 resume_media = block(app_source, "private func resumeNow()")
-resume_adapter = media_adapter[media_adapter.index("static func resume("):media_adapter.index("    /// Until when")]
+resume_adapter = media_adapter[media_adapter.index("static func resume("):media_adapter.index("    /// The last confirmed tab")]
 wiring_checks += [
     ("browser pause has separate lifecycle and recording gate", "BrowserPauseOperation" in media_adapter and "needsPause:" in media and "self?.session === s" in media),
     ("old browser completion cannot mutate new hold", media.index("guard self.mediaPause.owns(pauseToken), self.session === s") < media.index("self.pausedHow = how", media.index("guard self.mediaPause.owns(pauseToken), self.session === s"))),
@@ -90,18 +90,28 @@ wiring_checks += [
     ("accepted down transfers browser marks", "browserPause?.transfer(to: mediaPause.generation)" in begin),
     ("resume waits for in-flight browser answer", "operation.onSettled" in resume_media and "!operation.finished" in resume_media),
     ("pause-only reconciliation never plays", "releaseBrowserPause(play: false)" in resume_media and "play: play" in media_adapter),
-    ("resume rechecks owner before each browser action", "allowed: allowed" in media_adapter[media_adapter.index("static func resume("):media_adapter.index("    /// Until when")] and "DispatchQueue.main.sync(execute: allowed)" in media_adapter),
-    ("recovery never uses old key fallback", "!operation.recovery && BrowserMedia.keyAfterQuietCheck" in media_adapter),
+    ("resume rechecks owner before each browser action", "allowed: allowed" in media_adapter[media_adapter.index("static func resume("):media_adapter.index("    /// The last confirmed tab")] and "DispatchQueue.main.sync(execute: allowed)" in media_adapter),
+    ("Chrome never uses a blind key fallback", "pressPlayPause()" not in block(media_adapter, "static func pauseBrowser(")),
     ("quit seals before the ordinary in-flight deferral", resume_media.index("if quitting { releaseMediaOnQuit()") < resume_media.index("!operation.finished")),
     ("quit stops dispatch and resumes exact touched tabs", all(term in block(app_source, "private func releaseMediaOnQuit()") for term in ["browserPause?.stop(cancelled: true)", "Media.resume(heldMedia, wait: true", "inheriting: browserInheritedTokens"])),
     ("empty touched tabs never discover or sweep", "!tabs.isEmpty" in media_adapter and "pauseRunner" not in resume_adapter),
     ("reconciliation cannot occupy the pause queue", "reconciliation.async" in resume_adapter and "chrome.async" not in resume_adapter),
-    ("takeover rechecks all candidates after confirmation", "browserResume?.tabs" in begin and "operation?.candidates" in begin and "whenMediaConfirmed" in media and "Media.pauseBrowser(owner: owner, candidates: takeover.candidates" in media),
+    ("takeover rechecks all candidates after confirmation", "browserResume?.tabs" in begin and "operation?.candidates" in begin and "whenMediaConfirmed" in media and "requestedAt: capture.beganUptime, candidates: takeover.candidates" in media),
     ("resume records completed tabs in native hold", "result.unresolved.sorted()" in block(app_source, "private func releaseBrowserPause(") and "progress: record" in app_source),
     ("completed resume clears its takeover reference", "self.browserResume = nil" in block(app_source, "private func releaseBrowserPause(")),
     ("quit cancels an old settled continuation before sealing", "browserPause?.onSettled = nil" in block(app_source, "private func releaseMediaOnQuit()")),
     ("reconcile queue time counts against the budget", "let left = end - ProcessInfo.processInfo.systemUptime" in resume_adapter and "limit: min(limit, left)" in resume_adapter),
     ("browser reference and audio deadlines unchanged", "private var mediaOpening = MediaOpening()" in session and "MediaOpening.timeout" not in media_adapter and "SoundTap" not in media_adapter),
+]
+chrome_media = block(app_source, "private func startChromeMedia(")
+wiring_checks += [
+    ("Chrome pause outside sound callback", chrome_media.index("whenMediaConfirmed(") > chrome_media.index("SoundTap.loudness(") and "Media.pauseBrowser" not in block(chrome_media, "SoundTap.loudness(")),
+    ("Chrome pause independent of target discovery", "waitForTarget: false" in chrome_media and "!waitForTarget || pendingStart == nil" in confirmed),
+    ("Chrome result and sound join before cleanup", "guard heard, answered, !settled" in chrome_media),
+    ("takeover collects late discovery targets before new pass", "previous.onSettled" in media and "union(previous.candidates)" in media and "takeover.tabs.union(previous.reconciliationTabs)" in media),
+    ("early Chrome preserves session and generation guard", "self.mediaPause.owns(owner), self.session === s" in chrome_media),
+    ("early Chrome keeps original audio fallback", 's.mediaUnchecked(reason: canTakeOff ? "unusableVideoReference"' in chrome_media),
+    ("Chrome pause dispatch measured from press", "press_dispatch elapsed_ms=" in chrome_media and "press_answer elapsed_ms=" in chrome_media),
 ]
 insert_source = (ROOT / "Sources/RedpenVoice/Insert.swift").read_text()
 replace_source = block(insert_source, "static func replaceDraft(")
@@ -1162,7 +1172,7 @@ with tempfile.TemporaryDirectory(prefix="first-words-", dir=ROOT / ".build") as 
     reasons += ["middleBand", "futureUnknownReason"]
     tests = tests.replace("__WIRING_CHECKS__", str(len(wiring_checks)))
     tests = tests.replace("__UNSURE_REASONS__", ", ".join(json.dumps(reason) for reason in reasons))
-    pause_checks = (ROOT / "Sources/redpen-voice-test/BrowserPauseChecks.swift").read_text().replace("import VoiceCore", "")
+    pause_checks = "\n".join((ROOT / ("Sources/redpen-voice-test/" + name)).read_text().replace("import VoiceCore", "") for name in ["BrowserDiscoveryChecks.swift", "BrowserPauseChecks.swift"])
     tests = tests.replace('        print("quick tap:', '        browserPauseChecks { name, ok, detail in check(name + detail, ok) }\n        print("quick tap:')
     finish_checks = (ROOT / "Sources/redpen-voice-test/FinishInBoxChecks.swift").read_text().replace("import VoiceCore", "")
     tests = tests.replace('        print("quick tap:', '        finishInBoxChecks(check)\n        print("quick tap:')

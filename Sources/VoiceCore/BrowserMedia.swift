@@ -24,6 +24,18 @@ public enum BrowserMedia {
             + "if(!items.length)return '';r['\(t)']={doc:'\(d)',items:items,cancelled:false};return '\(d)'})()"
     }
 
+    /// First pause creates its document fence and acts in the same page call. The timestamp rejects an older
+    /// recording even if its AppleEvent arrives after a newer recording has already visited this page.
+    public static func directPauseScript(token: String, document: String, expires: Double,
+                                         started: Double, inheriting: [String] = []) -> String {
+        let t = clean(token), d = clean(document)
+        return "(function(){if(Date.now()>\(expires)||((window.__redpenLatest||0)>\(started)))return -1;"
+            + "window.__redpenLatest=\(started);var all=window.__redpenMedia||(window.__redpenMedia=Object.create(null));"
+            + "if(all['\(t)']&&all['\(t)'].cancelled)return -1;"
+            + "if(!all['\(t)'])all['\(t)']={doc:'\(d)',started:\(started),items:Array.from(document.querySelectorAll('video,audio')),cancelled:false};"
+            + "return " + pauseScript(token: token, document: document, expires: expires, inheriting: inheriting) + "})()"
+    }
+
     /// Each element has explicit live/sealed owner status. Playback ends the old hold, even if its native resume
     /// failed. An audible element also proves that all its previous holds ended, including marks from older builds.
     /// An inherited paused element gets the new owner's mark before the old owner is sealed.
@@ -33,7 +45,7 @@ public enum BrowserMedia {
         let inherited = inheriting.map { "'\(clean($0))'" }.joined(separator: ",")
         let selection: String
         if let document {
-            selection = "var r=window.__redpenMedia&&window.__redpenMedia['\(t)'];if(!r||r.cancelled||r.doc!='\(clean(document))')return -1;var items=r.items;"
+            selection = "var r=window.__redpenMedia&&window.__redpenMedia['\(t)'];if(!r||r.cancelled||(r.started&&(window.__redpenLatest||0)>r.started)||r.doc!='\(clean(document))')return -1;var items=r.items;"
         } else { selection = "var items=Array.from(document.querySelectorAll('video,audio'));" }
         return "(function(){if(Date.now()>\(expires))return -1;var n=0;var old=[\(inherited)];" + selection
             + "items.forEach(function(m){if(!m.isConnected)return;var owners=(m.getAttribute('\(mark)')||'').split(' ').filter(Boolean);var status=m.__redpenOwners||(m.__redpenOwners=Object.create(null));"
@@ -47,12 +59,13 @@ public enum BrowserMedia {
             + "if(m.paused&&owners.indexOf('\(t)')>=0)n++});return n})()"
     }
 
-    /// Seal only a registry/element that actually held a requested token. Unrelated tabs allocate nothing.
+    /// Seal held tokens. Exact dispatched tabs may also seal an unseen token before a late direct pause arrives.
     /// Drop sealed foreign marks, but never play while a remaining live owner holds this element.
-    public static func resumeScript(token: String, play: Bool = true, inheriting: [String] = []) -> String {
+    public static func resumeScript(token: String, play: Bool = true, inheriting: [String] = [], sealUnseen: Bool = false) -> String {
         let t = clean(token)
         let tokens = (inheriting.map(clean) + [t]).map { "'\($0)'" }.joined(separator: ",")
-        return "(function(){var n=0;var tokens=[\(tokens)];var r=window.__redpenMedia;"
+        let seal = sealUnseen ? "r=window.__redpenMedia||(window.__redpenMedia=Object.create(null));tokens.forEach(function(v){r[v]={cancelled:true}});" : ""
+        return "(function(){var n=0;var tokens=[\(tokens)];var r=window.__redpenMedia;" + seal
             + "var marked=Array.from(document.querySelectorAll('[\(mark)~=\"\(t)\"]'));"
             + "if(tokens.length>1)marked=Array.from(document.querySelectorAll('video,audio')).filter(function(m){var owners=(m.getAttribute('\(mark)')||'').split(' ');return tokens.some(function(v){return owners.indexOf(v)>=0})});"
             + "if(r)tokens.forEach(function(v){if(r[v])r[v]={cancelled:true}});"
@@ -62,6 +75,106 @@ public enum BrowserMedia {
             + "Object.keys(status).forEach(function(v){if(rest.indexOf(v)<0)delete status[v]});"
             + "if(\(play ? "true" : "false")&&held&&!rest.length&&!audible&&m.paused){var p=m.play();if(p&&p.catch)p.catch(function(){});n++}});return n})()"
     }
+
+    /// One discovery process, stopping at the first successful tab. IDs are journalled BEFORE execute so a
+    /// timeout still supplies exact reconciliation targets. The journal contains only numeric IDs, never URLs.
+    public static let discoveryRunner = """
+    on run argv
+        set js to item 1 of argv
+        set journalPath to item 2 of argv
+        set permitPath to item 3 of argv
+        set excluded to items 4 thru -1 of argv
+        set slow to false
+        set refused to false
+        set ordered to my orderedTabs()
+        repeat with t in ordered
+            try
+                try
+                    if (read POSIX file permitPath) is not "1" then return ""
+                on error
+                    return ""
+                end try
+                set tid to my tabID(contents of t)
+                if excluded does not contain tid then
+                    -- Closing the file before execute makes even a killed process's target recoverable.
+                    set journal to open for access POSIX file journalPath with write permission
+                    try
+                        write (tid & linefeed) to journal starting at eof
+                        close access journal
+                    on error msg number n
+                        close access journal
+                        error msg number n
+                    end try
+                    set result to my pauseTab(contents of t, js)
+                    if result is not missing value and (result as integer) > 0 then return tid & ":" & (result as text)
+                end if
+            on error msg number n
+                if n is -1743 then error msg number n
+                if n is -1712 then set slow to true
+                if msg contains "Apple Events" or msg contains "turned off" then set refused to true
+            end try
+        end repeat
+        if slow then return "slow"
+        if refused then return "refused"
+        return ""
+    end run
+
+    on orderedTabs()
+        set fronts to {}
+        set likely to {}
+        set others to {}
+        set sites to {\(mediaSites.map { "\"\($0)\"" }.joined(separator: ", "))}
+        tell application id "\(chromeBundleID)"
+            with timeout of 1 second
+                repeat with w in windows
+                    try
+                    set ts to tabs of w
+                    set us to URL of tabs of w
+                    set activeIndex to 0
+                    try
+                        set activeIndex to active tab index of w
+                    end try
+                    repeat with i from 1 to count of ts
+                        if i is activeIndex then
+                            set end of fronts to item i of ts
+                        else
+                            set onSite to false
+                            repeat with site in sites
+                                if (item i of us) contains (contents of site) then set onSite to true
+                            end repeat
+                            if onSite then
+                                set end of likely to item i of ts
+                            else
+                                set end of others to item i of ts
+                            end if
+                        end if
+                    end repeat
+                    on error msg number n
+                        if n is -1743 then error msg number n
+                        -- One unreadable window cannot prevent checking the others.
+                    end try
+                end repeat
+            end timeout
+        end tell
+        return fronts & likely & others
+    end orderedTabs
+
+    on tabID(t)
+        tell application id "\(chromeBundleID)"
+            with timeout of 1 second
+                return (id of t) as text
+            end timeout
+        end tell
+    end tabID
+
+    on pauseTab(t, js)
+        tell application id "\(chromeBundleID)"
+            with timeout of 1 second
+                return execute t javascript js
+            end timeout
+        end tell
+    end pauseTab
+    """
 
     /// One bounded phase per process. Site URLs order background candidates inside AppleScript only.
     /// Only opaque IDs, a generated document identity or a count leave the runner. No page text or titles.

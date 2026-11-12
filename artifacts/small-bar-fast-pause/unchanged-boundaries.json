@@ -1,0 +1,9 @@
+{
+  "Sources/RedpenVoice/Insert.swift": true,
+  "Sources/RedpenVoice/Recorder.swift": true,
+  "Sources/RedpenVoice/Transcriber.swift": true,
+  "Sources/RedpenVoice/HoldKey.swift": true,
+  "Sources/VoiceCore/DictationEnding.swift": true,
+  "Sources/VoiceCore/FinishInBox.swift": true,
+  "Sources/VoiceCore/MediaOpening.swift": true
+}

@@ -7,6 +7,8 @@ import QuartzCore
 @MainActor
 final class HUD {
     var style = "pen" { didSet { box.style = style; if panel.isVisible { layout() } } }
+    var onSmallTalkingBar: (Bool) -> Void = { _ in }
+    var smallTalkingBar = false { didSet { box.small = smallTalkingBar; layout(animated: false) } }
     var micName = ""
     var traceID = 0
     var onStart: () -> Void = {}
@@ -295,6 +297,9 @@ final class HUD {
         } else if !panel.frame.contains(NSEvent.mouseLocation) { dismissExtras() }
     }
     private func perform(_ action: String) {
+        if action == "size" {
+            box.menuOpen = false; smallTalkingBar.toggle(); onSmallTalkingBar(smallTalkingBar); return
+        }
         if action == "options" {
             let available = menuAvailability()
             box.canFinish = available.finish; box.canCancel = available.cancel; box.canPaste = available.paste
@@ -371,6 +376,7 @@ final class HUD {
         let screen = screens.first(where: { $0.frame.contains(anchor ?? panel.frame.origin) })
             ?? dictationScreen.flatMap { old in screens.first { $0 == old } } ?? screens.first
         let maxWidth = max(182, (screen?.visibleFrame.width ?? 800) - 16)
+        box.smallNeedsMessage = !listeningActive
         box.canKeepBar = listeningActive
         let size = box.desiredSize(maxWidth: maxWidth)
         let origin = anchor ?? screen.map { BarScreen.origin(visible: $0.visibleFrame, size: size, avoiding: startBox) } ?? .zero
@@ -463,7 +469,7 @@ final class HUD {
                 var outsideRed = false
                 let railTop = image.pixelsHigh - Int(hud.box.railHeight * 2)
                 for y in stride(from: 0, to: image.pixelsHigh, by: 2) {
-                    for x in stride(from: 0, to: image.pixelsWide, by: 2) where x < 80 || x >= image.pixelsWide - 100 || y < railTop {
+                    for x in stride(from: 0, to: image.pixelsWide, by: 2) where x < 80 || x >= image.pixelsWide - (hud.box.compact ? 24 : 100) || y < railTop {
                         if let color = image.colorAt(x: x, y: y),
                            color.redComponent > 0.5, color.redComponent > color.greenComponent * 1.5,
                            color.redComponent > color.blueComponent * 1.5 { outsideRed = true }
@@ -621,7 +627,7 @@ final class HUD {
         hud.box.freeze = true; hud.box.reducedMotion = false
         let beforeClick = started
         hud.keepBarOnScreen = true; hud.rest()
-        let click = NSEvent.mouseEvent(with: .leftMouseDown, location: CGPoint(x: 16, y: 20), modifierFlags: [],
+        let click = NSEvent.mouseEvent(with: .leftMouseDown, location: CGPoint(x: 80, y: 20), modifierFlags: [],
             timestamp: 1, windowNumber: hud.panel.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
         hud.box.mouseDown(with: click); hud.box.mouseUp(with: click)
         check("resting rail click starts once", started == beforeClick + 1)
@@ -657,6 +663,52 @@ final class HUD {
         reopened.keepBarOnScreen = true; reopened.writing(); reopened.hide()
         RunLoop.main.run(until: Date().addingTimeInterval(0.8))
         check("opt-in Done returns to resting tab", reopened.wantsVisible && reopened.box.state == .resting)
+        // Small mode persists through the real config codec, without touching installed preferences.
+        var smallConfig = Config(); smallConfig.smallTalkingBar = true
+        let smallData = try! JSONEncoder().encode(smallConfig)
+        let smallCopy = try! JSONDecoder().decode(Config.self, from: smallData)
+        check("small config round trip", smallCopy.smallTalkingBar == true)
+        check("legacy config full size", legacyCopy.smallTalkingBar == nil)
+        var toggles: [Bool] = []
+        hud.onSmallTalkingBar = { toggles.append($0) }
+        hud.show("", level: true)
+        let sizeOrigin = hud.panel.frame.origin
+        hud.box.beginPointer(at: .zero, local: CGPoint(x: 18, y: hud.box.bounds.height - 13))
+        hud.box.movePointer(to: CGPoint(x: 1, y: 1)); hud.box.endPointer()
+        check("grip click with jitter toggles once", hud.smallTalkingBar && toggles == [true])
+        check("size toggle keeps anchor", hud.panel.frame.origin == sizeOrigin)
+        check("small rail dimensions", hud.panel.frame.size == CGSize(width: 157, height: 26))
+        hud.box.beginPointer(at: .zero, local: CGPoint(x: 18, y: 13))
+        hud.box.movePointer(to: CGPoint(x: 20, y: 10)); hud.box.movePointer(to: .zero); hud.box.endPointer()
+        check("drag returning to start never toggles", hud.smallTalkingBar && toggles == [true])
+        hud.box.beginPointer(at: .zero, local: CGPoint(x: 18, y: 13)); hud.box.endPointer()
+        check("second grip click restores full size", !hud.smallTalkingBar && toggles == [true, false] && hud.panel.frame.width == 314)
+        hud.smallTalkingBar = smallCopy.smallTalkingBar ?? false
+        reopened.smallTalkingBar = smallCopy.smallTalkingBar ?? false
+        reopened.show("", level: true)
+        check("config restored on new instance", reopened.panel.frame.size == CGSize(width: 157, height: 26))
+        for style in ["pen", "bars", "tape", "dot", "classic"] {
+            hud.style = style
+            for state in [TalkingBar.State.resting, .listening, .writing, .needs, .done] {
+                hud.show("", level: true)
+                hud.box.state = state; hud.box.stateAge = 0.3; hud.box.phase = 1.7
+                hud.box.smooth = 0.82; hud.box.words = 52; hud.box.seconds = 22
+                hud.box.message = state == .needs ? "No sound from Scarlett" : "52 words"
+                capture("small-\(style)-\(state.rawValue)")
+                check("small \(style) \(state) rail only", hud.box.shownMessage.isEmpty && hud.box.subviews.isEmpty && hud.panel.frame.size == CGSize(width: 157, height: 26))
+            }
+        }
+        hud.style = "pen"
+        hud.show("Paste last with ⌃⌥V", level: false); capture("small-paste-last")
+        check("small keeps Paste last words", hud.box.shownMessage == "Paste last with ⌃⌥V" && hud.box.detailHeight > 0)
+        hud.show("No sound from Scarlett", level: false); capture("small-no-sound-message")
+        check("small keeps terminal no-sound words", hud.box.shownMessage == "No sound from Scarlett" && hud.box.detailHeight > 0)
+        hud.ask("Keep these words?", yes: "Paste", no: "Keep", action: { _ in }); capture("small-question")
+        check("small keeps recovery buttons", hud.box.choices == ["Paste", "Keep"] && !hud.box.compact)
+        for small in [false, true] {
+            let fitted = TalkingBar.fitted(origin: CGPoint(x: 3000, y: 500), size: TalkingBar.size(.listening, style: "pen", small: small), screens: [CGRect(x: 0, y: 0, width: 1200, height: 800)])
+            check("display removal fits both sizes \(small)", CGRect(x: 8, y: 8, width: 1184, height: 784).contains(fitted))
+        }
         reopened.shutdown(); hud.shutdown(); defaults.removePersistentDomain(forName: suite)
         let result: [String: Any] = ["passed": passed, "failed": failed, "captures": records,
             "scope": "Native offscreen rendering and synthetic interactions. No recording, insertion, media or installation."]

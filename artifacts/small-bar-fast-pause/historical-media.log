@@ -1,0 +1,36 @@
+2026-11-12T06:00:16Z media browser: token=433C4E0A91644DE5AE4E68C6EBA7B176 queue_enter elapsed_ms=0
+2026-11-12T06:00:16Z media browser: token=433C4E0A91644DE5AE4E68C6EBA7B176 phase=candidate-dispatch tab=1388778235 count=0 elapsed_ms=0
+2026-11-12T06:00:16Z media browser: token=433C4E0A91644DE5AE4E68C6EBA7B176 phase=candidate process_start elapsed_ms=1
+2026-11-12T06:00:17Z media browser: token=433C4E0A91644DE5AE4E68C6EBA7B176 phase=candidate-result-1 tab=1388778235 count=0 elapsed_ms=929
+2026-11-12T06:00:17Z media browser: token=433C4E0A91644DE5AE4E68C6EBA7B176 phase=pause-dispatch tab=1388778235 count=0 elapsed_ms=931
+2026-11-12T06:00:17Z media browser: token=433C4E0A91644DE5AE4E68C6EBA7B176 phase=pause process_start elapsed_ms=939
+2026-11-12T06:00:18Z media browser: token=433C4E0A91644DE5AE4E68C6EBA7B176 phase=pause-result-2 tab=1388778235 count=1 elapsed_ms=2061
+2026-11-12T06:00:18Z media browser: token=433C4E0A91644DE5AE4E68C6EBA7B176 finished state=confirmed count=1 elapsed_ms=2062
+2026-11-12T06:00:18Z media: Chrome pause, handled(tabs: [1388778235], count: 1)
+2026-11-12T06:23:06Z media browser: token=6A03F2DAEF0949479FA5BF5A8E6CA03B queue_enter elapsed_ms=0
+2026-11-12T06:23:06Z media browser: token=6A03F2DAEF0949479FA5BF5A8E6CA03B phase=candidate-dispatch tab=1388778235 count=0 elapsed_ms=0
+2026-11-12T06:23:06Z media browser: token=6A03F2DAEF0949479FA5BF5A8E6CA03B phase=candidate process_start elapsed_ms=0
+2026-11-12T06:23:06Z media browser: token=6A03F2DAEF0949479FA5BF5A8E6CA03B phase=candidate-result-3 tab=1388778235 count=0 elapsed_ms=371
+2026-11-12T06:23:06Z media browser: token=6A03F2DAEF0949479FA5BF5A8E6CA03B phase=discovery-windows-dispatch tab=0 count=0 elapsed_ms=371
+2026-11-12T06:23:06Z media browser: token=6A03F2DAEF0949479FA5BF5A8E6CA03B phase=discovery-windows process_start elapsed_ms=371
+2026-11-12T06:23:07Z media browser: token=6A03F2DAEF0949479FA5BF5A8E6CA03B phase=discovery-windows-result-0 tab=0 count=2 elapsed_ms=574
+2026-11-12T06:23:07Z media browser: token=6A03F2DAEF0949479FA5BF5A8E6CA03B phase=discovery-front-dispatch tab=0 count=0 elapsed_ms=574
+2026-11-12T06:23:07Z media browser: token=6A03F2DAEF0949479FA5BF5A8E6CA03B phase=discovery-front process_start elapsed_ms=574
+2026-11-12T06:23:07Z media browser: token=6A03F2DAEF0949479FA5BF5A8E6CA03B phase=discovery-front-result-8 tab=0 count=0 elapsed_ms=772
+2026-11-12T06:23:07Z media browser: token=6A03F2DAEF0949479FA5BF5A8E6CA03B phase=discovery-front-dispatch tab=0 count=0 elapsed_ms=773
+2026-11-12T06:23:07Z media browser: token=6A03F2DAEF0949479FA5BF5A8E6CA03B phase=discovery-front process_start elapsed_ms=773
+2026-11-12T06:23:07Z media browser: token=6A03F2DAEF0949479FA5BF5A8E6CA03B phase=discovery-front-result-0 tab=0 count=1 elapsed_ms=1010
+2026-11-12T06:23:07Z media browser: token=6A03F2DAEF0949479FA5BF5A8E6CA03B phase=candidate-dispatch tab=414388973 count=0 elapsed_ms=1011
+2026-11-12T06:23:07Z media browser: token=6A03F2DAEF0949479FA5BF5A8E6CA03B phase=candidate process_start elapsed_ms=1011
+2026-11-12T06:23:07Z media browser: token=6A03F2DAEF0949479FA5BF5A8E6CA03B phase=candidate-result-6 tab=414388973 count=0 elapsed_ms=1295
+2026-11-12T06:23:07Z media browser: token=6A03F2DAEF0949479FA5BF5A8E6CA03B phase=discovery-tabs-dispatch tab=0 count=0 elapsed_ms=1295
+2026-11-12T06:23:07Z media browser: token=6A03F2DAEF0949479FA5BF5A8E6CA03B phase=discovery-tabs process_start elapsed_ms=1295
+2026-11-12T06:23:08Z media browser: token=6A03F2DAEF0949479FA5BF5A8E6CA03B phase=discovery-tabs-result-8 tab=0 count=0 elapsed_ms=1577
+2026-11-12T06:23:08Z media browser: token=6A03F2DAEF0949479FA5BF5A8E6CA03B phase=discovery-tabs-dispatch tab=0 count=0 elapsed_ms=1577
+2026-11-12T06:23:08Z media browser: token=6A03F2DAEF0949479FA5BF5A8E6CA03B phase=discovery-tabs process_start elapsed_ms=1578
+2026-11-12T06:23:09Z media browser: token=6A03F2DAEF0949479FA5BF5A8E6CA03B phase=discovery-tabs-result-5 tab=0 count=0 elapsed_ms=2749
+2026-11-12T06:23:09Z media browser: token=6A03F2DAEF0949479FA5BF5A8E6CA03B phase=discovery-tabs-dispatch tab=0 count=0 elapsed_ms=2750
+2026-11-12T06:23:09Z media browser: token=6A03F2DAEF0949479FA5BF5A8E6CA03B phase=discovery-tabs process_start elapsed_ms=2750
+2026-11-12T06:23:10Z media browser: token=6A03F2DAEF0949479FA5BF5A8E6CA03B phase=discovery-tabs-result-5 tab=0 count=0 elapsed_ms=3905
+2026-11-12T06:23:10Z media browser: token=6A03F2DAEF0949479FA5BF5A8E6CA03B finished state=uncertain count=0 elapsed_ms=3906
+2026-11-12T06:23:10Z media: Chrome pause, failed("slow")

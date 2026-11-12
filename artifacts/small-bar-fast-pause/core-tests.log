@@ -1,0 +1,36 @@
+Building for production...
+[1 / 5]
+[2 / 6] VoiceCore
+[4 / 7] VoiceCore
+[9 / 12] redpen-voice-test-product
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/small-bar-fast-pause/Sources/redpen-voice-test/main.swift:2675:102: warning: 'init(contentsOf:)' was deprecated in macOS 15: Use `init(contentsOf:encoding:)` instead [#DeprecatedDeclaration]
+2673 |         let file = root.appendingPathComponent("transcript.md")
+2674 |         try MeetingFiles.save(Data("synthetic transcript".utf8), to: file)
+2675 |         check("private.firstWrite", (try? MeetingFiles.requireMode(0o600, at: file)) != nil && (try? String(contentsOf: file)) == "synthetic transcript")
+     |                                                                                                      `- warning: 'init(contentsOf:)' was deprecated in macOS 15: Use `init(contentsOf:encoding:)` instead [#DeprecatedDeclaration]
+2676 |         try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
+2677 |         check("private.detectMode", (try? MeetingFiles.requireMode(0o600, at: file)) == nil)
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/small-bar-fast-pause/Sources/redpen-voice-test/main.swift:2679:100: warning: 'init(contentsOf:)' was deprecated in macOS 15: Use `init(contentsOf:encoding:)` instead [#DeprecatedDeclaration]
+2677 |         check("private.detectMode", (try? MeetingFiles.requireMode(0o600, at: file)) == nil)
+2678 |         try MeetingFiles.save(Data("replacement".utf8), to: file)
+2679 |         check("private.replaced", (try? MeetingFiles.requireMode(0o600, at: file)) != nil && (try? String(contentsOf: file)) == "replacement")
+     |                                                                                                    `- warning: 'init(contentsOf:)' was deprecated in macOS 15: Use `init(contentsOf:encoding:)` instead [#DeprecatedDeclaration]
+2680 |         let scratch = try MeetingFiles.scratch(in: root)
+2681 |         check("private.scratch", (try? MeetingFiles.requireMode(0o700, at: scratch)) != nil)
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/small-bar-fast-pause/Sources/redpen-voice-test/main.swift:2684:114: warning: 'init(contentsOf:)' was deprecated in macOS 15: Use `init(contentsOf:encoding:)` instead [#DeprecatedDeclaration]
+2682 |         let link = root.appendingPathComponent("link.md")
+2683 |         try fm.createSymbolicLink(at: link, withDestinationURL: file)
+2684 |         check("private.symlinkRejected", (try? MeetingFiles.save(Data("unsafe".utf8), to: link)) == nil && (try? String(contentsOf: file)) == "replacement")
+     |                                                                                                                  `- warning: 'init(contentsOf:)' was deprecated in macOS 15: Use `init(contentsOf:encoding:)` instead [#DeprecatedDeclaration]
+2685 |         check("private.failedWrite", (try? MeetingFiles.save(Data("x".utf8), to: root.appendingPathComponent("missing/notes.md"))) == nil)
+2686 |     } catch { check("private.setup", false, String(describing: error)) }
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[10 / 13] redpen-voice-test-product
+[12 / 13] redpen-voice-test-product
+[13 / 13] redpen-voice-test-product
+Build complete! (33.48 secs.)
+Browser discovery inert AppleScript elapsed_ms=339; no live Chrome calls
+1843 passed, 0 failed
