@@ -1,9 +1,9 @@
 import Foundation
 
 /// Where a finished dictation's words go (D-965, Oct 30 2026). The text box the cursor is in when it finishes takes
-/// them, whichever app (D-1297), unless some already went into a box you sent (D-998). Not in a text
-/// box (a web page, a video, a control): nothing is typed there, and the words wait for the next click into one. This
-/// replaced sending the words back to the box you started in.
+/// them, whichever app (D-1297), unless Voice saw some of them sent (D-998, narrowed to a send it saw by D-1603). Not
+/// in a text box (a web page, a video, a control): nothing is typed there, and the words wait for the next click into
+/// one. This replaced sending the words back to the box you started in.
 public enum DictationEnding {
     public enum Plan: Equatable, Sendable {
         /// Still in the box Voice typed into, and it reads exactly as Voice left it: the ending goes in there
@@ -92,22 +92,23 @@ public enum DictationEnding {
         return (box, inserted)
     }
 
-    /// Keep D-998's send protection separate from an ordinary edit or unconfirmed Voice fix. A reused composer in
-    /// another conversation is treated as sent too. With a URL, a window-title change alone is not a chat switch.
-    /// `boxGone`: the first box no longer exists (a chat composer unmounted after Send). Its text can't be read, and
-    /// it counts as sent, so the message is never typed again in the next chat (D-998; review of D-1297). A box that
-    /// is still there but unreadable (Voice's own fix unconfirmed) is not a send.
+    /// The wide test, for Voice's own typing INTO the first box only: resuming drafts there after a click, adopting a
+    /// late draft there, taking words back out of it. It never decides whether the finished words land (D-1603):
+    /// that is `sendSeen`. Besides a send Voice saw it counts another conversation in a reused composer, an emptied
+    /// box and a box that is gone, because typing drafts into any of those would be typing into the wrong message.
+    /// With a URL, a window-title change alone is not a chat switch. A box that is still there but unreadable
+    /// (Voice's own fix unconfirmed) is not a send.
     public static func wasSent(start: BoxPrint, now: BoxPrint, value: String?, observedSend: Bool = false, boxGone: Bool = false) -> Bool {
         observedSend || start.url != now.url || (start.url == nil && start.title != now.title) || (value == nil && boxGone) || looksSent(value)
     }
 
-    /// Where the finished words go (D-1601, Nov 12 2026, narrowing D-998 and D-1297): only a send Voice saw stops
-    /// them. A send seen means Enter or send went to the first box, or that same conversation now reads empty (a send by
-    /// mouse). Another conversation in the same box, a different title or address, or a box that is gone is a switch, not
-    /// a send: the whole dictation goes where the cursor is, and the early words stay in the first conversation's draft.
+    /// Whether a send holds the finished words back (D-1603, Nov 12 2026, narrowing D-1601, D-998 and D-1297): only
+    /// one Voice saw, Enter or a held Enter going into the box this dictation's words were in (`observedSend`). What
+    /// the box looks like is never a send: another conversation in the same box, a different title or address, a box
+    /// that is gone, or the same conversation reading empty are inferences. They are taken here so a logged failure
+    /// can be replayed with its facts, and they change nothing: the whole dictation goes where the cursor is.
     public static func sendSeen(start: BoxPrint, now: BoxPrint, value: String?, observedSend: Bool = false) -> Bool {
-        if observedSend { return true }
-        return sameConversation(start: start, now: now) && looksSent(value)
+        observedSend
     }
 
     /// The same web address, or with no address the same window title.
@@ -116,24 +117,24 @@ public enum DictationEnding {
     }
 
     /// A dictation whose start box couldn't be checked, with words typed early (D-1603, widening D-1565). It used to
-    /// be kept for Paste last every time. Now only a send Voice saw keeps it: Enter went out while you talked, or
-    /// the box the early words went into reads empty. Otherwise the words land where the cursor is.
-    public static func holdsUncheckedStart(typedEarly: Bool, enterSeen: Bool, earlyBoxReadsEmpty: Bool) -> Bool {
-        typedEarly && (enterSeen || earlyBoxReadsEmpty)
+    /// be kept for Paste last every time. Now only Enter seen going out while you talked keeps it. A box that reads
+    /// empty is not a send seen. Otherwise the words land where the cursor is.
+    public static func holdsUncheckedStart(typedEarly: Bool, enterSeen: Bool) -> Bool {
+        typedEarly && enterSeen
     }
 
     public static let earlyWordsNote = "A few early words stayed on the other screen."
 
-    /// The first box reads as sent: empty, or the one stray character some apps leave.
+    /// The first box reads as sent: empty, or the one stray character some apps leave. An inference, used only by
+    /// `wasSent` to keep Voice's own draft typing out of such a box. It never holds the finished words (D-1603).
     public static func looksSent(_ value: String?) -> Bool {
         guard let value else { return false }
         return value.trimmingCharacters(in: .whitespacesAndNewlines).count <= 1
     }
 
-    /// The bar after a `.keep` ending. Sent with every word in: nothing to say, the checks only fixed spelling.
-    /// Sent short of any word: say so, because the message went out without it. Quiet needs the same last word and
-    /// no more words than were typed, so a dropped repeat ("I I think") can't hide a missing last word. Edited,
-    /// another conversation, or a box Voice couldn't read: the checked text is one key away.
+    /// The bar after a `.keep` ending (a send Voice saw). Sent with every word in: nothing to say, the checks only
+    /// fixed spelling. Sent short of any word: say so, because the message went out without it. Quiet needs the same
+    /// last word and no more words than were typed, so a dropped repeat ("I I think") can't hide a missing last word.
     public static let sentShortNote = "Sent before the last words. ⌃⌥V has them all"
     public static let changedNote = "Not typed again. ⌃⌥V has the checked words"
     /// Nothing of yours changed the box: Voice's own last fix couldn't be confirmed, so the checked words are very
@@ -166,8 +167,10 @@ public enum DictationEnding {
 
     /// While words wait, a place that never takes them: Voice's own windows, a page or a control, and in a browser
     /// anything short of a real text box (a failed read on a page must never release the words).
-    public static func waitRefuses(kind: FocusKind, inBrowser: Bool, ownWindow: Bool) -> Bool {
-        ownWindow || kind == .notText || (kind == .unknown && inBrowser)
+    /// `textBoxOnly`: a try in a place Accessibility can't name already left nothing there (D-1603, the 07:28:51
+    /// T3 page on Nov 12 2026), and you haven't clicked since. Only a real text box takes the words then.
+    public static func waitRefuses(kind: FocusKind, inBrowser: Bool, ownWindow: Bool, textBoxOnly: Bool = false) -> Bool {
+        ownWindow || kind == .notText || (kind == .unknown && (inBrowser || textBoxOnly))
     }
 
     /// A real text box takes waiting words at once. A box Accessibility can't name (Electron apps) must be seen in

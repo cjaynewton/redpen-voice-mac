@@ -2087,8 +2087,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// A provisional press freezes the old draft checks. A discarded tap lets them finish as before.
     private var interruptedDrafting: (Drafting, Bool, Bool)?
 
-    /// How a draft dictation's ending went: swapped in, kept for Paste last, or the whole checked text still to go
-    /// where you are (after taking the drafts back out of the first box when `takeBack`).
+    /// How a draft dictation's ending went. `landed`: the checked text is in the box. `deliver`: the whole checked
+    /// text still goes where you are (after taking the drafts back out of the first box when `takeBack`). `kept`:
+    /// settled without typing it here, and its own log line says which (D-1603): a send seen, a newer press or
+    /// Escape, waiting for a click into a text box, or a box that couldn't be confirmed.
     enum DraftEnd { case landed, kept, deliver(takeBack: Bool) }
 
     /// Recover only our complete AX insertion or exact posted-key prefix in the original box.
@@ -2125,6 +2127,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Same actual text element, window and conversation, independent of edits elsewhere in its value.
+    /// The wide `wasSent` test here only picks the route: Voice goes on editing in this box (drafts, an adopted late
+    /// draft, the in-place swap), or the ending reads the cursor's box and lands the words there. Either way the
+    /// words land; only a send Voice saw (`start.sent`) holds them (D-1603).
     private func focusedStart(_ start: StartBox, duringOwnEdit: Bool = false) -> AXUIElement? {
         guard Insert.canTypeAtFocus, NSWorkspace.shared.frontmostApplication?.processIdentifier == start.pid,
               let (element, _) = Insert.focusedElement(), CFEqual(element, start.element),
@@ -2166,8 +2171,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func finishInStartBox(_ d: Drafting, _ start: StartBox, text: String) async -> DraftEnd {
         guard let element = focusedStart(start), let actual = Insert.value(element) else {
-            if delivery == d.generation { keepForPaste() }
-            return .kept
+            // The cursor left the box, or it stopped answering, since the check a moment ago. The general ending
+            // puts the words where the cursor is, or waits for a click into a text box (D-1603).
+            return .deliver(takeBack: false)
         }
         let typed = d.runs.map(\.text).joined()
         // A draft Voice couldn't confirm only matters if it changed the box. A box that reads exactly as the
@@ -2176,54 +2182,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             d.deliveryUncertain = false; d.lateDraft = nil
             Log.note("draft: the box reads exactly as Voice's confirmed record, the unconfirmed draft never arrived")
         }
-        let decision = FinishInBox.ending(typed: typed, checked: text, actual: actual,
-                                         sent: wasSent(start), uncertain: d.deliveryUncertain)
-        let landed: Bool
-        let finishing: () -> Bool = {
-            !d.owner.isCancelled && !start.sent && self.delivery == d.generation && !self.wasSent(start)
-                && self.focusedStart(start) != nil
-        }
-        switch decision {
+        let early = EarlyWords(typed: typed, late: d.lateDraft?.insertion.text ?? "", box: start)
+        // Only a newer press or Escape ends this ending. A send seen in this box is the one thing that holds the
+        // words here (D-1603). An edit of yours, an emptied box or a draft Voice couldn't confirm never does.
+        let mine: () -> Bool = { !d.owner.isCancelled && self.delivery == d.generation }
+        var outcome: EarlyWordsLanding
+        switch FinishInBox.ending(typed: typed, checked: text, actual: actual, sent: start.sent, uncertain: d.deliveryUncertain) {
         case .replace:
-            landed = await swapEndingChecked(d, start, text: text)
+            // Not confirmed: the box is read, and what isn't there lands (already, the swap once more, the rest, or whole).
+            if await swapEnding(d, start, text: text) { outcome = .landed }
+            else { outcome = await landOverEarlyWords(early, checked: text, still: mine) }
         case .append(let rest):
-            // No replacement. The exact checked prefix proves which words remain; this attempt cannot erase a selection.
-            guard Insert.selectionRange(element)?.length == 0 else {
-                if delivery == d.generation { keepForPaste() }
-                return .kept
-            }
-            let after = Date()
-            landed = await Insert.finishingText(rest, joining: d.generation, while: {
-                !d.owner.isCancelled && !start.sent && self.delivery == d.generation && !self.wasSent(start)
-                    && self.focusedStart(start) != nil && self.userActedAt < after
-            })
-            Insert.forgetLast()
+            // The exact checked prefix proves which words remain.
+            outcome = .rest(rest)
         case .keep:
             // You edited the early words, or a draft may have arrived unseen. Read the box and land what isn't
-            // there (D-1603): never the same words twice, never on top of a send.
-            switch await landOverEarlyWords(typed: typed, late: d.lateDraft?.insertion.text ?? "", checked: text,
-                                            sameBox: true, still: finishing) {
-            case .landed: landed = true
-            case .rest(let rest):
-                landed = await Insert.finishingText(rest, joining: d.generation, while: finishing)
-                Insert.forgetLast()
-            case .whole:
-                landed = await Insert.finishingText(text, joining: d.generation, while: finishing)
-                Insert.forgetLast()
-            case .hold: landed = false
+            // there (D-1603): never the same words twice.
+            outcome = await landOverEarlyWords(early, checked: text, still: mine)
+        }
+        var words: String?
+        switch outcome {
+        case .rest(let rest): words = rest
+        case .whole: words = text
+        default: break
+        }
+        if let words {
+            // Selected words are never replaced: finishingText puts the cursor at the end of the selection first.
+            let typedIn = await Insert.finishingText(words, joining: d.generation, while: { mine() && !start.sent })
+            Insert.forgetLast()
+            if typedIn { outcome = .landed }
+            else {
+                settleNotLanded(checked: text, early: early, long: false, newer: delivery != d.generation, cancelled: d.owner.isCancelled)
+                return .kept
             }
         }
-        if delivery == d.generation {
-            if landed { hud.hide() } else { keepForPaste() }
+        switch outcome {
+        case .landed:
+            if delivery == d.generation { hud.hide() }
+            return .landed
+        case .noBox:
+            // The cursor left for a place that takes no typing: the general ending waits for a click.
+            return .deliver(takeBack: false)
+        case .sent:
+            if delivery == d.generation { keptAfterSend(start, typed: typed, checked: text) }
+        case .unconfirmed:
+            if delivery == d.generation { keepForPaste(WordsLand.checkNote) }
+            Log.note("insert: the box couldn't be confirmed after Voice's fix, kept for paste")
+        case .superseded, .rest, .whole: break
         }
-        return landed ? .landed : .kept
+        return .kept
     }
 
     /// The ending in draft mode (D-965). Still in the box the drafts went into, and it reads as Voice left it: the
     /// drafts swap for the complete checked dictation there. Moved away from an untouched first box: the drafts come
     /// back out of it and the whole checked dictation goes where you are. Changed or unconfirmed (D-1297): deliver
-    /// there too, leaving unsafe early words alone. A send seen in the first box (D-998, narrowed by D-1603): nothing
-    /// is typed again. Another conversation with no send seen: the whole dictation goes where you are.
+    /// there too, leaving unsafe early words alone. A send Voice saw go into the first box (D-998, narrowed by
+    /// D-1603): nothing is typed again. Anything else, another conversation or an emptied box included: the whole
+    /// dictation goes where you are.
     private func finishDrafts(_ d: Drafting, _ s: Transcriber.Session, text: String, released: Date) async -> DraftEnd {
         // The final plan owns delivery now. A late draft or check must not type into the finishing box as well.
         d.draftsStopped = true; d.checksStopped = true
@@ -2231,6 +2246,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // An empty ending types nothing, so the bar goes instead of staying on Writing until the next press.
         if text.isEmpty { draftBlocked(d, .emptyText, during: "ending"); end = .kept; if delivery == d.generation { hud.hide() } }
         else {
+            failedSwap = nil
             await reconcileAtEnding(d)
             if let start = d.startBox { followRebuiltStart(start) }
             if let start = d.startBox, focusedStart(start) != nil {
@@ -2248,16 +2264,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch DictationEnding.plan(typedInStartBox: typedThere, startBoxAsLeft: asLeft, inStartBox: start.map { isAt($0) } ?? false,
                                        sent: start.map { sendSeen($0) } == true) {
             case .inPlace:
-                if let start { end = await swapEndingChecked(d, start, text: text) ? .landed : .kept }
-                else { end = .kept }
-                if delivery == d.generation {
-                    if case .landed = end { hud.hide() }
-                    else { keepForPaste("Didn't confirm all the words. Press ⌃⌥V to paste the checked text") }
-                }
+                // Not confirmed: the general ending reads the box the cursor is in and lands what isn't there.
+                if let start, await swapEnding(d, start, text: text) {
+                    end = .landed
+                    if delivery == d.generation { hud.hide() }
+                } else { end = .deliver(takeBack: false) }
             case .takeBackThenDeliver: end = .deliver(takeBack: true)
             case .deliver: end = .deliver(takeBack: false)
             case .keep:
-                keptAfterChange(start, typed: d.runs.map(\.text).joined(), checked: text)
+                // Enter or a send was seen going into the box the drafts were in.
+                keptAfterSend(start, typed: d.runs.map(\.text).joined(), checked: text)
                 end = .kept
             }
         }
@@ -2270,7 +2286,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let result: String
         switch end {
         case .landed: result = "checked text confirmed"
-        case .kept: result = "checked text kept for Paste last"
+        case .kept: result = "checked text not put in by this ending (the insert line says why)"
         case .deliver: result = "checked text goes where you are"
         }
         Log.note("draft: first words \(lag) after you started talking, \(d.runs.count) runs, checks \(d.checks), changed \(d.changed) (\(d.words) words), \(result), ending finished \(Log.ms(Date().timeIntervalSince(released)))ms after release")
@@ -2279,10 +2295,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// A long talk's ending (D-1023), in the box you started in while it still reads as Voice left it: the words
     /// Whisper checked there stay, only the rough words after them come out (a few seconds' worth at most), and the
     /// rest of the checked dictation goes in with one paste. Nothing long is erased or typed key by key, which is
-    /// where long endings broke. Anywhere else the ordinary ending decides.
+    /// where long endings broke. Anywhere else the ordinary ending decides. When the rough words can't be taken out,
+    /// or the cursor leaves the box, the general ending lands what isn't there where the cursor is (D-1603).
     private func finishLongDrafts(_ d: Drafting, _ s: Transcriber.Session, text: String, released: Date, gen: Int) async -> DraftEnd {
         guard !text.isEmpty, let start = d.startBox else { return await finishDrafts(d, s, text: text, released: released) }
+        failedSwap = nil
         await reconcileAtEnding(d)
+        // A composer the app rebuilt (same window, conversation and text) is still the box you started in.
+        followRebuiltStart(start)
         guard let owned = await prepareEndingSpan(d, start) else {
             return await finishDrafts(d, s, text: text, released: released)
         }
@@ -2311,51 +2331,86 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
            Insert.value(owned.element).map({ FinishInBox.exact(owned.value, $0) }) == true {
             erased = erase.isEmpty ? true : await Insert.replaceDraft(erase, with: "", expectedBox: owned.value, in: owned.element,
                                                                      exactRange: eraseRange, while: quiet)
-            if !erased, mine(), !start.sent, !d.owner.isCancelled {
-                // Not confirmed: one read decides (D-1603). The rough words are out, or the box is untouched and the
-                // erase runs once more. Anything else and nothing is pasted on top.
-                let wanted = (owned.value as NSString).replacingCharacters(in: eraseRange, with: "")
+            // Not confirmed: one read decides (D-1603). The rough words are out. Or the box is untouched and the
+            // erase runs once more. Or the erase stopped partway and exactly what is left of the rough words comes
+            // out. Anything else: nothing is pasted on top here, and the general ending reads the box.
+            var retried = false, finished = false
+            var asLeft = owned.value, left = eraseRange
+            while !erased, mine(), !start.sent, !d.owner.isCancelled {
+                let wanted = (asLeft as NSString).replacingCharacters(in: left, with: "")
                 let now = focusedStart(start, duringOwnEdit: true).flatMap { Insert.value($0) }
-                switch FinishInBox.afterFailedSwap(wanted: wanted, asLeft: owned.value, actual: now, retried: false) {
-                case .landed:
+                let since = Date()
+                let again: () async -> Bool = {
+                    let quiet = await AppDelegate.userQuietSinceAsync(since)
+                    return quiet && !d.owner.isCancelled && !start.sent && self.sameStartContext(start) && self.delivery == gen
+                }
+                let recovery = FinishInBox.afterFailedSwap(wanted: wanted, asLeft: asLeft, actual: now, range: left, fixed: "", retried: retried)
+                if recovery == .landed {
                     erased = true
                     Log.note("long talk: exact box read shows the rough words out")
-                case .retry:
+                } else if recovery == .retry, !finished {
+                    retried = true
                     Log.note("long talk: box untouched after the erase stopped, trying once more")
-                    if let again = await prepareEndingSpan(d, start), again.range == owned.range,
-                       FinishInBox.exact(again.value, owned.value) {
-                        let since = Date()
-                        erased = await Insert.replaceDraft(erase, with: "", expectedBox: owned.value, in: owned.element, exactRange: eraseRange, while: {
-                            let quiet = await AppDelegate.userQuietSinceAsync(since)
-                            return quiet && !d.owner.isCancelled && !start.sent && self.sameStartContext(start) && self.delivery == gen
-                        })
-                    }
-                case .hold: break
-                }
+                    guard let again2 = await prepareEndingSpan(d, start), again2.range == owned.range,
+                          FinishInBox.exact(again2.value, owned.value) else { break }
+                    erased = await Insert.replaceDraft(erase, with: "", expectedBox: owned.value, in: owned.element, exactRange: eraseRange, while: again)
+                } else if case .finish(let remnant) = recovery, !finished, let now {
+                    finished = true
+                    Log.note("long talk: the erase stopped partway, \(remnant.length) letters of the rough words left, taking them out")
+                    guard await Insert.positionAfter(remnant, expected: now, in: owned.element, while: again) else { break }
+                    erased = await Insert.replaceDraft((now as NSString).substring(with: remnant), with: "", expectedBox: now,
+                                                       in: owned.element, exactRange: remnant, proven: true, while: again)
+                    asLeft = now; left = remnant
+                } else { break }
             }
         }
         if erased {
             if !erase.isEmpty { rememberOwnTyping(in: start) }
+            // The rough words are out of the box and out of the record, so a later landing never counts them as there.
+            d.runs = Array(d.runs.prefix(keep))
             // An override may have sent Return when the deletion finished. Never append into its new composer.
             if needsPaste, mine(), !start.sent, !d.owner.isCancelled, focusedStart(start, duringOwnEdit: true) != nil {
                 pasted = await Insert.paste(rest, shape: .append, while: { mine() && !start.sent && self.sameStartContext(start) && !d.owner.isCancelled })
             } else if !needsPaste { pasted = .init(landed: true, copied: false) }
+            else if mine(), !start.sent, !d.owner.isCancelled {
+                // The cursor left the box before the paste: the whole dictation goes where the cursor is.
+                Log.note("long talk: the cursor left the box before the paste, the words go where you are")
+                logDraftEnd(d, .deliver(takeBack: false), released: released)
+                return .deliver(takeBack: false)
+            }
             // Take back can't remove the whole long talk, so it removes nothing, as after any draft ending.
             Insert.forgetLast()
             if pasted.landed { end = .landed; if mine() { hud.hide() } }
+            else if start.sent, mine() { keptAfterSend(start, typed: d.runs.map(\.text).joined(), checked: text) }
+            else if needsPaste, !pasted.posted, mine(), !d.owner.isCancelled {
+                // The paste never went out (another paste still settling, or the cursor moved): the general ending
+                // reads the cursor's box and puts in the words that aren't there, or waits for a click.
+                Log.note("long talk: the paste didn't go out, the words go where you are")
+                logDraftEnd(d, .deliver(takeBack: false), released: released)
+                return .deliver(takeBack: false)
+            }
             else if mine() {
+                // The one paste was tried and not confirmed. ⌃⌥V pastes every word, which would repeat the start.
                 keepForPaste(pasted.copied ? "Check the box. If the end is missing, ⌘V pastes it" : "Check the box. If the end is missing, History has it")
             }
-        } else {
+        } else if start.sent, mine() {
+            keptAfterSend(start, typed: d.runs.map(\.text).joined(), checked: text)
+        } else if mine(), !d.owner.isCancelled {
+            // The rough words couldn't be taken out. The general ending reads the box the cursor is in and pastes
+            // only the words that aren't there.
             draftBlocked(d, .editUnconfirmed, during: "long ending")
-            if mine() { keepForPaste("Couldn't confirm the box. Check it. History has every word") }
+            Log.note("long talk: the rough words stay, the words after them go where you are")
+            logDraftEnd(d, .deliver(takeBack: false), released: released)
+            return .deliver(takeBack: false)
         }
         Log.note("long talk: kept \(keep) checked runs, took out \(erase.utf16.count) letters, pasted \(rest.utf16.count) letters of \(s.written.count - d.piecesIn) pieces, \(pasted.landed ? "confirmed" : "not confirmed")")
         logDraftEnd(d, end, released: released)
         return end
     }
 
-    /// D-1601: only a send Voice saw keeps the words out. A switch to another conversation delivers where you are.
+    /// D-1603: only a send Voice saw holds the finished words. Asked once where the ending plans; the typing guards
+    /// read `start.sent` directly. The box's text and place are passed so the same decision can be replayed from a
+    /// log, and they never make a send: a switch, an emptied box or a box that is gone delivers where you are.
     private func sendSeen(_ start: StartBox) -> Bool {
         DictationEnding.sendSeen(start: start.print, now: Self.boxPrint(start.element, withText: false),
                                  value: Insert.value(start.element), observedSend: start.sent)
@@ -2379,104 +2434,173 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                        value: Insert.value(start.element), observedSend: start.sent, boxGone: gone)
     }
 
-    /// Some of this dictation went into a box you then sent, edited or left for another conversation (D-998, Oct 31
-    /// 2026). Typing the whole dictation where you are now repeated it there: the second T3 chat got it again. The
-    /// bar says only what helps: nothing when the sent message had every word, or that ⌃⌥V has the rest.
-    private func keptAfterChange(_ start: StartBox?, voiceUnsure: Bool = false, typed: String, checked: String) {
-        // Sent means the same conversation now reads empty. A chat app's one box shown for another conversation
-        // reads empty too, and that is not a send.
-        let sent = start.map { b in
-            let now = Self.boxPrint(b.element, withText: false)
-            return now.url == b.print.url && now.title == b.print.title && DictationEnding.looksSent(Insert.value(b.element))
-        } ?? false
-        if let note = DictationEnding.keptNote(sent: sent, voiceUnsure: voiceUnsure, typed: typed, checked: checked) { keepForPaste(note) }
+    /// Some of this dictation went into a box, and Voice saw Enter or a send go into it (D-998, Oct 31 2026, narrowed
+    /// to a send it saw by D-1603). Typing the whole dictation where you are now would repeat a sent message. The bar
+    /// says only what helps: nothing when the sent message had every word, or that ⌃⌥V has the rest.
+    private func keptAfterSend(_ start: StartBox?, typed: String, checked: String) {
+        if let note = DictationEnding.keptNote(sent: true, typed: typed, checked: checked) { keepForPaste(note) }
         else { hud.hide() }
-        Log.note("insert: the box you started in was \(sent ? "sent" : voiceUnsure ? "left unconfirmed by Voice's own fix" : "changed") after Voice typed into it, nothing typed again, kept for paste")
+        Log.note("insert: the box you started in was sent after Voice typed into it, nothing typed again, kept for paste")
     }
 
-    /// What the cursor's box needs so the finished words are in it once (D-1603).
-    enum EarlyWordsLanding { case landed, rest(String), whole, hold }
+    /// Words of this dictation that may already sit in a box, so landing at the cursor never puts them in twice
+    /// (D-1603). `typed`: early words Voice confirmed there. `late`: one more insertion it couldn't confirm. `box`:
+    /// the box you started in, when Voice checked it at the start. `element`: otherwise the box the first draft went
+    /// into (a start Voice never got to check).
+    struct EarlyWords {
+        var typed = ""
+        var late = ""
+        var box: StartBox?
+        var element: AXUIElement?
+        var pid: pid_t = 0
+        var isEmpty: Bool { typed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && late.isEmpty }
+    }
 
-    /// The cursor is in a text box that may already hold this dictation's early words: the box you started in after
-    /// you edited it, a rebuilt copy of it, or a box Voice never got to check. Read it and act on what is there.
-    /// One span of the early words: the checked text replaces it in place. Edited: only the words said after them
-    /// go in. None there: the whole text goes in. The caller types `rest` and `whole`.
-    private func landOverEarlyWords(typed: String, late: String = "", checked: String, sameBox: Bool,
+    /// The cursor is in the box those early words went into, and still its conversation. A chat app's one box shown
+    /// for another conversation is another place and takes the whole dictation.
+    private func isIn(_ early: EarlyWords, _ element: AXUIElement, pid: pid_t) -> Bool {
+        if let b = early.box { return b.pid == pid && sameBoxAndConversation(b, element) }
+        return early.element.map { early.pid == pid && CFEqual($0, element) } ?? false
+    }
+
+    /// What the cursor's box needs so the finished words are in it once (D-1603). `landed`: they are in. `rest`,
+    /// `whole`: the caller types those words at the cursor. `noBox`: the cursor is not in a text box, so the words
+    /// wait for a click. `sent`: a send was seen in the box the early words went into. `superseded`: a newer press or
+    /// Escape. `unconfirmed`: Voice's own swap stopped partway and couldn't be finished, so the bar says check the box.
+    enum EarlyWordsLanding { case landed, rest(String), whole, noBox, sent, superseded, unconfirmed }
+
+    /// A swap Voice started and couldn't confirm, with enough to tell from one read what it left in the box.
+    /// `partial`: it was already the finishing of a swap that stopped partway.
+    struct FailedSwap {
+        let generation: Int
+        let element: AXUIElement
+        let asLeft: String
+        let range: NSRange
+        let fixed: String
+        var partial = false
+        var wanted: String { (asLeft as NSString).replacingCharacters(in: range, with: fixed) }
+    }
+    /// This dictation's swap that wasn't confirmed, for the landing that reads its box next (in the same ending, or
+    /// after a click).
+    private var failedSwap: FailedSwap?
+
+    /// The cursor may be in a box that already holds this dictation's early words: the box you started in after you
+    /// edited it, a rebuilt copy of it, or a box Voice never got to check. Read it and act on what is there (D-1603).
+    /// One span of the early words: the checked text replaces it in place. Edited, repeated, or the swap already had
+    /// its two tries: only the words said after them go in. None there: the whole text goes in. A swap that wasn't
+    /// confirmed is settled by a read, never typed over blindly. A long talk is never retyped. The caller types
+    /// `rest` and `whole`. Nothing here holds the words except a send seen in the early words' box.
+    private func landOverEarlyWords(_ early: EarlyWords, checked: String, long: Bool = false,
                                     still: @escaping () -> Bool) async -> EarlyWordsLanding {
-        guard still(), Insert.canTypeAtFocus, let (element, _) = Insert.focusedElement(),
-              let actual = Insert.value(element) else { return sameBox ? .hold : .whole }
-        let landing = FinishInBox.landing(typed: typed, late: late, checked: checked, actual: actual, sameBox: sameBox)
-        let name: String
-        switch landing {
-        case .already: name = "already there"
-        case .swap: name = "swap in place"
-        case .rest: name = "the words after the early ones"
-        case .whole: name = "the whole text"
-        case .hold: name = "hold"
-        }
-        Log.note("landing: early words \(typed.utf16.count) letters, same box \(sameBox), box \(actual.utf16.count) letters, \(name)")
-        switch landing {
-        case .already: Insert.forgetLast(); return .landed
-        case .rest(let rest): return .rest(rest)
-        case .whole: return .whole
-        case .hold: return .hold
-        case .swap(let range):
-            let held = (actual as NSString).substring(with: range)
-            let fixed = (held.first?.isWhitespace == true ? " " : "") + checked.trimmingCharacters(in: .whitespacesAndNewlines)
-            let wanted = (actual as NSString).replacingCharacters(in: range, with: fixed)
-            var retried = false
-            while true {
+        let sendSeen: () -> Bool = { early.box?.sent == true }
+        // A swap of this dictation that wasn't confirmed keeps its record until its box is read again, here or
+        // after a click, so a half-done edit is never guessed at.
+        if let f = failedSwap, f.generation != delivery { failedSwap = nil }
+        var swaps = failedSwap == nil ? 0 : 1
+        for _ in 0..<6 {
+            guard still() else { return .superseded }
+            let focus = Insert.focus()
+            let canType = FocusGate.canType(kind: focus.kind, hasFocusedElement: focus.role != "none" && focus.role != "Redpen Voice")
+            let focused = canType ? Insert.focusedElement() : nil
+            let actual = focused.flatMap { Insert.value($0.0) }
+            if let f = failedSwap, let (element, _) = focused, CFEqual(element, f.element) {
+                failedSwap = nil
+                // One read of the box the swap ran in. Exactly the text it was making counts as landed, even when
+                // Enter followed it (07:11:31, Nov 12 2026).
+                switch FinishInBox.afterFailedSwap(wanted: f.wanted, asLeft: f.asLeft, actual: actual, range: f.range,
+                                                   fixed: f.fixed, retried: swaps >= 2) {
+                case .landed:
+                    Insert.forgetLast()
+                    Log.note("landing: exact box read shows the checked text in")
+                    return .landed
+                case .retry:
+                    // A partial edit that then stopped again can't be told from here.
+                    if f.partial { return sendSeen() ? .sent : .unconfirmed }
+                    Log.note("landing: box untouched after the swap stopped, trying once more")
+                case .finish(let left):
+                    if sendSeen() { return .sent }
+                    guard !f.partial, let actual else { return .unconfirmed }
+                    Log.note("landing: the swap stopped partway, \(left.length) letters of it left, finishing it")
+                    let since = Date()
+                    let quiet: () async -> Bool = {
+                        let quiet = await AppDelegate.userQuietSinceAsync(since)
+                        return quiet && still() && !sendSeen()
+                    }
+                    if await Insert.positionAfter(left, expected: actual, in: element, while: quiet),
+                       await Insert.replaceDraft((actual as NSString).substring(with: left), with: f.fixed, expectedBox: actual,
+                                                 in: element, exactRange: left, proven: true, while: quiet) {
+                        Insert.forgetLast()
+                        return .landed
+                    }
+                    failedSwap = FailedSwap(generation: f.generation, element: element, asLeft: actual, range: left, fixed: f.fixed, partial: true)
+                    continue
+                case .reread: break
+                }
+            }
+            let sameBox = focused.map { isIn(early, $0.0, pid: $0.1) } ?? false
+            let outcome = WordsLand.decide(focus: canType ? focus.kind : .notText, ownWindow: Insert.ownWindowInFront,
+                sendSeen: sendSeen(), typed: early.typed, late: early.late, sameBox: sameBox, boxText: actual,
+                checked: checked, canSwap: !long && swaps < 2)
+            let name: String
+            switch outcome {
+            case .hold: name = "a send was seen, nothing typed"
+            case .waitForClick: name = "not in a text box"
+            case .land(.already): name = "already there"
+            case .land(.swap): name = "swap in place"
+            case .land(.rest): name = "the words after the early ones"
+            case .land(.whole): name = "the whole text"
+            }
+            Log.note("landing: early words \(early.typed.utf16.count) letters, same box \(sameBox), box \(actual.map { String($0.utf16.count) } ?? "unreadable") letters, \(name)")
+            switch outcome {
+            case .hold: return .sent
+            case .waitForClick: return .noBox
+            case .land(.already): Insert.forgetLast(); return .landed
+            case .land(.rest(let rest)): return .rest(rest)
+            case .land(.whole): return .whole
+            case .land(.swap(let range)):
+                guard let (element, _) = focused, let actual else { return .whole }
+                swaps += 1
+                let held = (actual as NSString).substring(with: range)
+                let fixed = (held.first?.isWhitespace == true ? " " : "") + checked.trimmingCharacters(in: .whitespacesAndNewlines)
                 let since = Date()
                 let quiet: () async -> Bool = {
                     let quiet = await AppDelegate.userQuietSinceAsync(since)
-                    return quiet && still()
+                    return quiet && still() && !sendSeen()
                 }
                 if await Insert.positionAfter(range, expected: actual, in: element, while: quiet),
                    await Insert.replaceDraft(held, with: fixed, expectedBox: actual, in: element, exactRange: range, while: quiet) {
                     Insert.forgetLast()
                     return .landed
                 }
-                guard still() else { return .hold }
-                let now = Insert.focusedElement().map({ CFEqual($0.0, element) }) == true ? Insert.value(element) : nil
-                switch FinishInBox.afterFailedSwap(wanted: wanted, asLeft: actual, actual: now, retried: retried) {
-                case .landed:
-                    Insert.forgetLast()
-                    Log.note("landing: exact box read shows the checked text in")
-                    return .landed
-                case .retry:
-                    retried = true
-                    Log.note("landing: box untouched after the swap stopped, trying once more")
-                case .hold: return .hold
-                }
+                failedSwap = FailedSwap(generation: delivery, element: element, asLeft: actual, range: range, fixed: fixed)
             }
         }
+        return .unconfirmed
     }
 
-    /// The text the last swap was making, for one read after a swap that wasn't confirmed.
-    private var swapWanted: String?
-
-    /// The ending swap, then one read if it wasn't confirmed (D-1603). The box already holds the checked text: it
-    /// landed. It still reads exactly as Voice left it: the swap runs once more. Otherwise nothing goes on top.
-    private func swapEndingChecked(_ d: Drafting, _ start: StartBox, text: String) async -> Bool {
-        swapWanted = nil
-        if await swapEnding(d, start, text: text) { return true }
-        guard delivery == d.generation, !d.owner.isCancelled, !start.sent else { return false }
-        let actual = focusedStart(start, duringOwnEdit: true).flatMap { Insert.value($0) }
-        switch FinishInBox.afterFailedSwap(wanted: swapWanted, asLeft: start.print.text, actual: actual, retried: false) {
-        case .landed:
-            Insert.forgetLast()
-            Log.note("ending: exact box read shows the checked text in")
-            return true
-        case .retry:
-            Log.note("ending: box untouched after the swap stopped, trying once more")
-            return await swapEnding(d, start, text: text)
-        case .hold: return false
+    /// A finishing attempt that didn't put the words in (D-1603). Nothing arrived and the cursor isn't in a real
+    /// text box: the words wait for a click into one. A send seen, a newer press and Escape keep them for Paste
+    /// last. Otherwise typing, and the one paste where two reads allowed it, were tried and the box didn't confirm:
+    /// the bar says to check the box. `waiting`: the words that wait, the whole checked text unless given.
+    private func settleNotLanded(checked: String, waiting: String? = nil, early: EarlyWords?, long: Bool, newer: Bool, cancelled: Bool) {
+        let focus = Insert.focus()
+        switch WordsLand.notLanded(cancelled: cancelled, newer: newer, sendSeen: early?.box?.sent == true,
+                                   leftNothing: Insert.finishLeftNothing, focus: focus.kind) {
+        case .discarded: Log.note("insert: thrown away while the words were going in, kept for paste")
+        case .newerPress: Log.note("insert: delivery superseded, kept for paste")
+        case .sendSeen: keptAfterSend(early?.box, typed: early?.typed ?? "", checked: checked)
+        case .waitForClick:
+            Log.note("insert: cursor not in a text box (\(focus.role)), waiting for a click")
+            holdForClick(waiting ?? checked, long: long, early: early, textBoxOnly: true)
+        case .checkTheBox:
+            keepForPaste(WordsLand.checkNote)
+            Log.note("insert: typing wasn't confirmed in the box (\(focus.role)), kept for paste")
         }
     }
 
     /// Prove a unique literal span, align and confirm the caret, then swap only Voice's own words.
-    /// Surrounding user edits stay. Any new input while swapping stops it. A swap that wasn't confirmed is tried
-    /// again only by `swapEndingChecked`, once, and only while the box reads exactly as Voice left it.
+    /// Surrounding user edits stay. Any new input while swapping stops it. A swap that wasn't confirmed leaves its
+    /// record in `failedSwap`, and `landOverEarlyWords` settles it with one read of the box.
     private func swapEnding(_ d: Drafting, _ start: StartBox, text: String) async -> Bool {
         guard let owned = await prepareEndingSpan(d, start) else {
             return draftBlocked(d, .elementChanged, during: "ending")
@@ -2484,7 +2608,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let typed = d.runs.map(\.text).joined()
         let lead = typed.first == " " ? " " : ""
         let fixed = lead + text.trimmingCharacters(in: .whitespaces)
-        swapWanted = (owned.value as NSString).replacingCharacters(in: owned.range, with: fixed)
         d.checks += 1
         if fixed != typed { d.changed += 1; d.words += Corrections.wordsChanged(typed, fixed) }
         let after = Date()
@@ -2494,6 +2617,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard await Insert.replaceDraft(typed, with: fixed, expectedBox: owned.value, in: owned.element,
                                         exactRange: owned.range, while: quiet) else {
+            failedSwap = FailedSwap(generation: d.generation, element: owned.element, asLeft: owned.value, range: owned.range, fixed: fixed)
             return draftBlocked(d, .editUnconfirmed, during: "ending")
         }
         rememberOwnTyping(in: start)
@@ -2548,6 +2672,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if box.pid == pid, CFEqual(element, box.element) {
                 box.userEdited = true
                 if sent { box.sent = true }
+            } else if sent, box.pid == pid, sameBoxAndConversation(box, element) {
+                // The app rebuilt the box (web and Electron composers do). Enter into the same box and conversation
+                // is still a send Voice saw go into it, the one thing that holds the finished words (D-1603).
+                box.sent = true
             }
         }
     }
@@ -2640,13 +2768,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var waitingRevision = 0
     private var waitSeen = 0
     private var waitPid: pid_t = 0
+    /// Where the waiting dictation's early words may already be, so the click's box never gets them twice (D-1603).
+    private var waitingEarly: EarlyWords?
+    /// A try in a place Accessibility can't name already left nothing there. From then on a real text box takes the
+    /// words, or a place it can't name that you have clicked into since (some Electron boxes), never the same
+    /// place again by itself.
+    private var waitingTextBoxOnly = false
+    private var waitingArmedAt = 0.0
 
     /// Words that finished away from a text box wait 10 minutes for the next click into one (D-965; it was a minute).
     /// A new dictation ends the wait; Paste last keeps them either way. The bar asks the whole time (D-987).
-    private func holdForClick(_ text: String, long: Bool = false) {
+    private func holdForClick(_ text: String, long: Bool = false, early: EarlyWords? = nil, textBoxOnly: Bool = false) {
         stopWaiting()
         waitingText = text
         waitingLong = long
+        waitingEarly = early.flatMap { $0.isEmpty ? nil : $0 }
+        waitingTextBoxOnly = textBoxOnly
+        waitingArmedAt = ProcessInfo.processInfo.systemUptime
         let until = Date().addingTimeInterval(DictationEnding.waitSeconds)
         askWhereWordsGo()
         let revision = waitingRevision
@@ -2680,28 +2818,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let browser = FocusGate.browsers.contains(front?.bundleIdentifier ?? "")
         // Another message took the bar for a moment: the question comes back when it goes.
         if !hud.isShowing { askWhereWordsGo() }
-        if DictationEnding.waitRefuses(kind: focus.kind, inBrowser: browser, ownWindow: own) { waitSeen = 0; return }
+        let clickedSince = mouseAge() < ProcessInfo.processInfo.systemUptime - waitingArmedAt
+        let textBoxOnly = waitingTextBoxOnly && !clickedSince
+        if DictationEnding.waitRefuses(kind: focus.kind, inBrowser: browser, ownWindow: own, textBoxOnly: textBoxOnly) { waitSeen = 0; return }
         let pid = front?.processIdentifier ?? 0
         waitSeen = pid == waitPid ? waitSeen + 1 : 1
         waitPid = pid
         guard DictationEnding.waitTakes(kind: focus.kind, seenInARow: waitSeen) else { return }
-        let long = waitingLong
+        let long = waitingLong, early = waitingEarly
         stopWaiting()
+        let gen = delivery
+        let mine: () -> Bool = { self.session == nil && self.delivery == gen }
+        // Early words of this dictation may be in the box you clicked into (the box you started in, usually). They
+        // are swapped or completed there, never typed a second time. Any other box takes the whole dictation.
+        var words = text, appended = false
+        if let early {
+            switch await landOverEarlyWords(early, checked: text, long: long, still: mine) {
+            case .landed:
+                guard mine() else { return }
+                hud.flash("Pasted", ok: true)
+                Log.note("insert: early words were in the box you clicked into, checked text swapped in there")
+                Log.note("insert: pasted after a click into \(focus.role), true")
+                return
+            case .rest(let rest): words = rest; appended = true
+            case .whole: break
+            case .noBox:
+                // Focus moved on before the words went in: they keep waiting, now for a real text box.
+                if mine() { holdForClick(text, long: long, early: early, textBoxOnly: true) }
+                return
+            case .sent:
+                if mine() { keptAfterSend(early.box, typed: early.typed, checked: text) }
+                return
+            case .superseded: return
+            case .unconfirmed:
+                if mine() { keepForPaste(WordsLand.checkNote) }
+                Log.note("insert: pasted after a click into \(focus.role), false")
+                return
+            }
+        }
         if long {
-            let gen = delivery
-            let r = await Insert.paste(text, shape: .whole, while: { self.session == nil && self.delivery == gen })
+            let r = await Insert.paste(words, shape: appended ? .append : .whole, while: mine)
             guard session == nil else { return }
             if r.landed { hud.flash("Pasted", ok: true) }
+            else if !r.posted, mine(), Insert.focus().kind != .text {
+                // The paste never went out and this isn't a real text box: the words keep waiting for a click into one.
+                Log.note("insert: couldn't paste after the click into \(focus.role), still waiting for a click into a text box")
+                holdForClick(text, long: long, early: early, textBoxOnly: true)
+                return
+            }
+            // The one paste was tried and not confirmed.
             else { keepForPaste(r.copied ? "Didn't see it land. ⌘V pastes it" : "Couldn't paste it here. Press ⌃⌥V") }
             Log.note("insert: long talk pasted after a click into \(focus.role), \(r.landed)")
             return
         }
-        let gen = delivery
-        let ok = await Insert.finishingText(text, while: { self.session == nil && self.delivery == gen })
+        let ok = await Insert.finishingText(words, joining: appended ? gen : nil, while: mine)
         guard session == nil, delivery == gen else { return }
         if ok, Insert.unconfirmed { keepForPaste("Didn't see it land. Press ⌃⌥V to paste it") }
         else if ok { hud.flash("Pasted", ok: true) }
-        else { keepForPaste("Couldn't type it here. Press ⌃⌥V to paste") }
+        else {
+            switch WordsLand.notLanded(cancelled: false, newer: false, sendSeen: early?.box?.sent == true,
+                                       leftNothing: Insert.finishLeftNothing, focus: Insert.focus().kind) {
+            case .waitForClick:
+                // Nothing arrived and this isn't a real text box: the words keep waiting for a click into one.
+                Log.note("insert: couldn't type after the click into \(focus.role), still waiting for a click into a text box")
+                holdForClick(text, long: long, early: early, textBoxOnly: true)
+                return
+            case .sendSeen: keptAfterSend(early?.box, typed: early?.typed ?? "", checked: text)
+            // Typing, and the one paste where two reads allowed it, were tried and the box didn't confirm.
+            default: keepForPaste(WordsLand.checkNote)
+            }
+        }
         Log.note("insert: pasted after a click into \(focus.role), \(ok)")
     }
 
@@ -2709,6 +2895,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         waitingRevision += 1
         waitTimer?.invalidate(); waitTimer = nil
         waitingText = nil; waitingLong = false; waitSeen = 0
+        waitingEarly = nil; waitingTextBoxOnly = false
         hud.stopAsking()
     }
 
@@ -2994,15 +3181,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // Keep the complete result in lastSaid/History below, without discarding the opening audio.
                     // An unchecked start box only matters if words went into it early. Nothing typed yet: the words go
                     // where you are when you finish, under the normal ending rules (D-1565).
-                    // Words typed early into an unchecked box (D-1603): only a send Voice saw keeps the dictation
-                    // out. Enter went out while you talked, or the box the early words went into reads empty.
+                    // Words typed early into an unchecked box (D-1603): only Enter seen going out while you talked
+                    // keeps the dictation out. A box that reads empty is not a send seen.
                     let typedEarly = draftHandled || typedLive > 0
                     let earlyTyped = myDrafting?.runs.map(\.text).joined() ?? ""
-                    let earlyBoxEmpty = !earlyTyped.trimmingCharacters(in: .whitespaces).isEmpty
-                        && myDrafting?.box.map({ DictationEnding.looksSent(Insert.value($0.element)) }) == true
                     var kept = targetUncertain && !(self.firstRun?.isOpen == true && Insert.ownWindowInFront)
-                        && DictationEnding.holdsUncheckedStart(typedEarly: typedEarly, enterSeen: self.uncheckedSendDelivery == gen,
-                                                               earlyBoxReadsEmpty: earlyBoxEmpty)
+                        && DictationEnding.holdsUncheckedStart(typedEarly: typedEarly, enterSeen: self.uncheckedSendDelivery == gen)
                     if targetUncertain, !kept, !text.isEmpty { Log.note("insert: start box unchecked, no send seen, the words go where you are") }
                     if kept, !newer, !text.isEmpty {
                         self.keepForPaste(DictationEnding.changedNote)
@@ -3014,8 +3198,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             switch DictationEnding.plan(typedInStartBox: !typedText.isEmpty, startBoxAsLeft: asLeft, inStartBox: false,
                                                        sent: !asLeft && self.sendSeen(b)) {
                             case .keep:
+                                // Enter or a send was seen going into the box the pieces were typed in.
                                 kept = true
-                                self.keptAfterChange(b, typed: typedText, checked: text)
+                                self.keptAfterSend(b, typed: typedText, checked: text)
                             case .takeBackThenDeliver:
                                 whole = true; rest = text; typedBox = b
                                 takeBack = { await self.takeBackTyped(typedText, from: b.element, start: b) }
@@ -3038,37 +3223,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         Log.note("first run: practice sentence, \(text.split(separator: " ").count) words")
                     }
                     else {
-                        // The words go where your cursor is now, whichever app that is. If it isn't in a text box (a web page,
-                        // a video, a list), nothing is typed there: the words wait for you to click into one.
-                        // Early words of this dictation may be in the box the cursor is in: the box you started in
-                        // (edited, or rebuilt), or a box Voice never got to check. They are swapped or completed
-                        // there, never typed a second time (D-1603). Another conversation in the same box is
-                        // another place, and takes the whole dictation.
+                        // The words go where your cursor is now, whichever app that is (D-1603). If it isn't in a text
+                        // box (a web page, a video, a list), nothing is typed there: the words wait for you to click
+                        // into one. Early words of this dictation may be in the box the cursor is in: the box you
+                        // started in (edited, emptied or rebuilt), or a box Voice never got to check. They are
+                        // swapped or completed there, never typed a second time. Another conversation in the same
+                        // box is another place, and takes the whole dictation. Only a send Voice saw holds the words.
                         var back: EarlyWordsLanding?
                         var joinRest = false
                         let earlyWords = typedText.isEmpty ? earlyTyped : typedText
-                        if whole, !rest.isEmpty, !newer, DictationEnding.typesNow(kind: Insert.focus().kind, ownWindow: Insert.ownWindowInFront),
+                        // Where this dictation's early words may be, for now and for a click later.
+                        let early: EarlyWords? = whole ? EarlyWords(typed: earlyWords, late: myDrafting?.lateDraft?.insertion.text ?? "",
+                            box: typedBox, element: typedBox == nil ? myDrafting?.box?.element : nil, pid: myDrafting?.box?.pid ?? 0) : nil
+                        // Only a newer press or Escape ends this ending.
+                        let mine: () -> Bool = { self.delivery == gen && self.enterRevision == endingEnterRevision && !s.isCancelled }
+                        if let early, !early.isEmpty, !rest.isEmpty, !newer,
+                           DictationEnding.typesNow(kind: Insert.focus().kind, ownWindow: Insert.ownWindowInFront),
                            let (now, nowPid) = Insert.focusedElement() {
-                            let inFirst = typedBox.map { $0.pid == nowPid && self.sameBoxAndConversation($0, now) }
-                                ?? (myDrafting?.box.map { $0.pid == nowPid && CFEqual($0.element, now) } ?? false)
-                            let lateWords = myDrafting?.lateDraft?.insertion.text ?? ""
-                            if !earlyWords.trimmingCharacters(in: .whitespaces).isEmpty || !lateWords.isEmpty {
-                                if inFirst, let b = typedBox, b.sent { back = .hold }
-                                else {
-                                    back = await self.landOverEarlyWords(typed: earlyWords, late: lateWords, checked: text, sameBox: inFirst,
-                                        still: { self.delivery == gen && self.enterRevision == endingEnterRevision && !s.isCancelled
-                                            && typedBox.map({ !$0.sent }) != false })
-                                }
-                                newer = self.delivery != gen || self.enterRevision != endingEnterRevision
-                                if inFirst { earlyWordsStayed = false; takeBack = nil }
-                                if case .rest(let after) = back { rest = after; joinRest = true }
-                            } else if inFirst, myDrafting?.deliveryUncertain == true,
-                                      typedBox?.print.text.map({ expected in Insert.value(now).map { FinishInBox.exact(expected, $0) } == true }) != true {
-                                // A draft may have arrived unseen and nothing says which words: the whole text on top could repeat them.
-                                back = .hold
-                            }
+                            let inFirst = self.isIn(early, now, pid: nowPid)
+                            back = await self.landOverEarlyWords(early, checked: text, long: long, still: mine)
+                            newer = self.delivery != gen || self.enterRevision != endingEnterRevision
+                            if inFirst { earlyWordsStayed = false; takeBack = nil }
+                            if case .rest(let after) = back { rest = after; joinRest = true }
                         }
                         let focus = Insert.focus()
+                        var noBox = !DictationEnding.typesNow(kind: focus.kind, ownWindow: Insert.ownWindowInFront)
+                        if case .noBox = back { noBox = true }
                         if rest.isEmpty {
                             // Everything already went in live. A page/control now in focus must not leave Writing up.
                             inserted = true
@@ -3076,6 +3256,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 if handsFree { self.hud.flash("Hands-free done", ok: true) } else { self.hud.hide() }
                             }
                         } else if newer {
+                            // A newer press began, or a held Enter went out before the words were in.
                             Log.note("insert: delivery superseded, kept for paste")
                         } else if case .landed = back {
                             // The checked text replaced the early words where they were.
@@ -3085,51 +3266,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             if let takeBack { _ = await takeBack() }
                             if handsFree { self.hud.flash("Hands-free done", ok: true) } else { self.hud.hide() }
                             Log.note("insert: early words were in the box you finished in, checked text swapped in there")
-                        } else if case .hold = back {
-                            // A send was seen in that box (D-998), or the early words can't be told apart: nothing typed again.
-                            self.keptAfterChange(typedBox, typed: earlyWords, checked: text)
-                        } else if !DictationEnding.typesNow(kind: focus.kind, ownWindow: Insert.ownWindowInFront) {
-                            if newer { Log.note("insert: cursor not in a text box (\(focus.role)) and a new press began, kept for paste") }
-                            else if let b = typedBox, takeBack == nil {
-                                // Early words stayed in the first box and nothing can take them back: waiting for a click would
-                                // type the whole dictation after them if that click is back in the first box. Paste last has it.
-                                self.keptAfterChange(b, typed: typedText.isEmpty ? (myDrafting?.runs.map(\.text).joined() ?? "") : typedText, checked: text)
-                                Log.note("insert: cursor not in a text box and early words stayed in the first box, kept for paste")
-                            }
-                            else if !rest.isEmpty {
-                                Log.note("insert: cursor not in a text box (\(focus.role)), waiting for a click"); self.holdForClick(rest, long: long)
-                                if let takeBack { _ = await takeBack() }
-                            }
+                        } else if case .sent = back {
+                            // Enter or a send was seen going into the box the early words were in (D-998).
+                            self.keptAfterSend(typedBox, typed: earlyWords, checked: text)
+                        } else if case .superseded = back {
+                            Log.note("insert: thrown away while the words were going in, kept for paste")
+                        } else if case .unconfirmed = back {
+                            // Voice's own swap stopped partway and couldn't be finished or told from a read.
+                            self.keepForPaste(WordsLand.checkNote)
+                            Log.note("insert: the box couldn't be confirmed after Voice's fix, kept for paste")
+                        } else if noBox {
+                            // Not in a text box: the words wait for a click into one. Early words left in the first
+                            // box wait with them, so a click back into that box completes them there, never twice.
+                            Log.note("insert: cursor not in a text box (\(focus.role)), waiting for a click")
+                            self.holdForClick(whole ? text : rest, long: long, early: early)
+                            if let takeBack { _ = await takeBack() }
                         } else {
-                            if rest.isEmpty { inserted = true }
+                            let appended = (typedLive > 0 && !whole) || joinRest
+                            let typing: () -> Bool = { mine() && typedBox?.sent != true }
                             // A long talk's words go in with one paste (D-1023), after the pieces typed live or as the whole.
-                            else if long {
-                                let appended = (typedLive > 0 && !whole) || joinRest
-                                let r = await Insert.paste(rest, shape: appended ? .append : .whole,
-                                                           while: { self.delivery == gen && self.enterRevision == endingEnterRevision
-                                    && !s.isCancelled && typedBox.map({ !self.sendSeen($0) }) != false })
-                                inserted = r.landed
-                                // The start is already in the box: ⌃⌥V would paste it again.
-                                if appended, !inserted, self.delivery == gen {
-                                    self.keepForPaste(r.copied ? "Check the box. If the end is missing, ⌘V pastes it" : "Check the box. If the end is missing, History has it")
-                                }
+                            var longPaste = Insert.PasteResult(landed: false, copied: false)
+                            if long {
+                                longPaste = await Insert.paste(rest, shape: appended ? .append : .whole, while: typing)
+                                inserted = longPaste.landed
                                 // Take back can't remove the pieces typed live together with this paste: nothing rather than half.
                                 if appended { Insert.forgetLast() }
-                                newer = self.delivery != gen || self.enterRevision != endingEnterRevision
                             }
-                            else { inserted = await Insert.finishingText(rest, joining: (typedLive > 0 && !whole) || joinRest ? gen : nil,
-                                while: { self.delivery == gen && self.enterRevision == endingEnterRevision
-                                    && !s.isCancelled && typedBox.map({ !self.sendSeen($0) }) != false }) }
+                            else { inserted = await Insert.finishingText(rest, joining: appended ? gen : nil, while: typing) }
                             newer = self.delivery != gen || self.enterRevision != endingEnterRevision
                             // The words were seen where you are: only now do the typed words leave the first box.
                             if inserted, !Insert.unconfirmed, let takeBack { earlyWordsStayed = !(await takeBack()) }
                             if inserted, !newer { self.fixWatch.watch(text) }
                             if inserted, !newer, draftHandled == false, !s.hadMedia { self.pointOutWords(text, audio: s.recorded, gen: gen) }
-                            if !newer {
-                                if inserted, Insert.unconfirmed { self.keepForPaste("Didn't see it land. Press ⌃⌥V to paste it") }
-                                else if inserted, earlyWordsStayed { self.hud.flash(DictationEnding.earlyWordsNote, for: 3.5) }
-                                else if inserted { if handsFree { self.hud.flash("Hands-free done", ok: true) } else { self.hud.hide() } }
-                                else if !(long && ((typedLive > 0 && !whole) || joinRest)) { self.keepForPaste("Words kept. Click a text box and press ⌃⌥V to paste") }
+                            if inserted {
+                                if newer {}
+                                else if Insert.unconfirmed { self.keepForPaste("Didn't see it land. Press ⌃⌥V to paste it") }
+                                else if earlyWordsStayed { self.hud.flash(DictationEnding.earlyWordsNote, for: 3.5) }
+                                else if handsFree { self.hud.flash("Hands-free done", ok: true) } else { self.hud.hide() }
+                            } else if long {
+                                if newer { Log.note("insert: delivery superseded, kept for paste") }
+                                else if typedBox?.sent == true { self.keptAfterSend(typedBox, typed: earlyWords, checked: text) }
+                                else if !longPaste.posted, Insert.focus().kind != .text {
+                                    // The paste never went out and this is no real text box: the words wait for a click.
+                                    Log.note("insert: cursor not in a text box (\(focus.role)), waiting for a click")
+                                    self.holdForClick(whole ? text : rest, long: true, early: early, textBoxOnly: true)
+                                }
+                                // The one paste was tried and not confirmed. With the start already in the box,
+                                // ⌃⌥V would paste it again, so the bar points at the box.
+                                else if appended {
+                                    self.keepForPaste(longPaste.copied ? "Check the box. If the end is missing, ⌘V pastes it" : "Check the box. If the end is missing, History has it")
+                                }
+                                else { self.keepForPaste("Paste not confirmed. Check the box. ⌃⌥V has it") }
+                            } else {
+                                // Not in: the words wait for a click when nothing arrived and this is no real text
+                                // box. Otherwise a send seen, a newer press, or typing and the one paste not confirmed.
+                                self.settleNotLanded(checked: text, waiting: whole ? text : rest, early: early, long: false,
+                                                     newer: newer, cancelled: s.isCancelled)
                             }
                             Log.note("insert: focus \(focus.role), \(focus.kind.rawValue)")
                         }

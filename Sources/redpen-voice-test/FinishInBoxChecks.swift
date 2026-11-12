@@ -47,7 +47,9 @@ func finishInBoxChecks(_ check: (String, Bool) -> Void) {
         cursor: NSRange(location: NSMaxRange(range), length: 0), draft: typed,
         replacement: " " + checked, exactRange: range)
     check("finish.outsideEditsAndExtraSpacePreserved", replacement?.expected == "My edited heading.  Voice words are checked. My pasted tail.")
-    check("finish.duplicateKeeps", FinishInBox.ending(typed: typed, checked: checked, actual: typed + typed, sent: false) == .keep)
+    // `.keep` from `ending` is not a hold: no simple swap or append is safe, so the box is read and `landing` decides.
+    check("finish.duplicateKeeps", FinishInBox.ending(typed: typed, checked: checked, actual: typed + typed, sent: false) == .keep
+          && FinishInBox.landing(typed: typed, checked: checked, actual: typed + typed) == .rest("are checked."))
     check("finish.overlappingDuplicateKeeps", FinishInBox.span(of: "...", in: "....") == nil)
     check("finish.uncertainKeeps", FinishInBox.ending(typed: typed, checked: checked, actual: actual, sent: false, uncertain: true) == .keep)
     check("finish.sentKeeps", FinishInBox.ending(typed: typed, checked: checked, actual: actual, sent: true) == .keep)
@@ -119,16 +121,28 @@ func finishInBoxChecks(_ check: (String, Bool) -> Void) {
     check("d1603.alreadyAfterSwap", land(" one two", "One two three.", "Mine One two three.") == .already)
     check("d1603.alreadySameWords", land(" one two", "one two", "Mine one two") == .already)
     check("d1603.alreadyNotAPrefixOfAWord", land("one", "one two", "one twofold") == .swap(NSRange(location: 0, length: 3)))
-    check("d1603.repeatedSpanHolds", land("one two", "One two three.", "one two and one two") == .hold)
+    // The early words are there more than once: they stay, and only the words said after them go in.
+    check("d1603.repeatedSpanLandsTheRest", land("one two", "One two three.", "one two and one two") == .rest("three."))
+    check("d1603.repeatedSpanNothingAfter", land("one two", "One two.", "one two and one two") == .already)
+    check("d1603.earlyWordInsideAnotherLandsWhole", land("word", "Word two.", "sword") == .whole)
     // A draft that arrived unseen sits right after the confirmed words: it is swapped with them, in full or in part.
     check("d1603.lateDraftSwappedToo", land(" one", "One two three.", "Mine one two", late: " two") == .swap(NSRange(location: 4, length: 8)))
     check("d1603.latePartSwappedToo", land(" one", "One two three.", "Mine one tw", late: " two") == .swap(NSRange(location: 4, length: 7)))
     check("d1603.lateNotThereSwapsConfirmedOnly", land(" one", "One two.", "Mine one", late: " two") == .swap(NSRange(location: 4, length: 4)))
     check("d1603.lateOnlySwaps", land("", "One two.", "Mine one two", late: " one two") == .swap(NSRange(location: 4, length: 8)))
     check("d1603.lateOnlyAbsentLandsWhole", land("", "One two.", "Mine", late: " one two") == .whole)
-    check("d1603.lateEndingInsideAWordHolds", land(" one", "One two.", "Mine one twx", late: " tw") == .hold)
-    // D-998 kept for a send seen: the same conversation's box reads empty after words went in.
-    check("d1603.sameBoxEmptyHolds", land("one two", "One two three.", "") == .hold && land("one two", "One two three.", "\n") == .hold)
+    // A late part that ends inside another word is left alone: the confirmed words alone are swapped.
+    check("d1603.lateEndingInsideAWordSwapsConfirmedOnly", land(" one", "One two.", "Mine one twx", late: " tw") == .swap(NSRange(location: 4, length: 4)))
+    // A box that reads empty is not a send seen: the whole dictation goes in.
+    check("d1603.sameBoxEmptyLandsWhole", land("one two", "One two three.", "") == .whole && land("one two", "One two three.", "\n") == .whole)
+    // The swap has had its tries, or a long talk: the early words stay and only the words after them go in.
+    check("d1603.noSwapLandsTheRest", FinishInBox.landing(typed: " one two", checked: "One two three.", actual: "Mine one two", canSwap: false) == .rest("three.")
+          && FinishInBox.landing(typed: " one two", checked: "One two.", actual: "Mine one two", canSwap: false) == .already
+          && FinishInBox.landing(typed: "", late: " one two", checked: "One two three.", actual: "Mine one two", canSwap: false) == .rest("three."))
+    check("d1603.wordsAfterEarly", FinishInBox.wordsAfter(early: "one two", checked: "One, two three.") == "three."
+          && FinishInBox.wordsAfter(early: "one two", checked: "One two.") == nil
+          && FinishInBox.wordsAfter(early: "", checked: " One two. ") == "One two."
+          && FinishInBox.wordsAfter(early: "one too three", checked: "One two, three four.") == "four.")
     // 2. Another conversation or another box: only an exact span counts, otherwise the whole dictation lands there.
     check("d1603.otherBoxEmptyLandsWhole", land("one two", "One two three.", "", same: false) == .whole)
     check("d1603.otherBoxCommonWordsLandWhole", land("one two three", "One two three four.", "one TWO, three", same: false) == .whole)
@@ -148,33 +162,56 @@ func finishInBoxChecks(_ check: (String, Bool) -> Void) {
     check("d1603.swapReadShowsChecked", FinishInBox.afterFailedSwap(wanted: "Mine One two.", asLeft: "Mine one two", actual: "Mine One two.", retried: false) == .landed)
     check("d1603.swapReadAllowsBoxSpacing", FinishInBox.afterFailedSwap(wanted: "Mine One two.", asLeft: "Mine one two", actual: "Mine One two.\n", retried: false) == .landed)
     check("d1603.swapUntouchedRetriesOnce", FinishInBox.afterFailedSwap(wanted: "Mine One two.", asLeft: "Mine one two", actual: "Mine one two", retried: false) == .retry
-          && FinishInBox.afterFailedSwap(wanted: "Mine One two.", asLeft: "Mine one two", actual: "Mine one two", retried: true) == .hold)
-    check("d1603.swapHalfDoneNeverRetried", FinishInBox.afterFailedSwap(wanted: "Mine One two.", asLeft: "Mine one two", actual: "Mine on", retried: false) == .hold)
-    check("d1603.swapSpacingChangedNotRetried", FinishInBox.afterFailedSwap(wanted: "Mine One two.", asLeft: "Mine one two", actual: "Mine one  two", retried: false) == .hold)
-    check("d1603.swapUnreadableHolds", FinishInBox.afterFailedSwap(wanted: "x", asLeft: "y", actual: nil, retried: false) == .hold)
-    check("d1603.swapSentHolds", FinishInBox.afterFailedSwap(wanted: "Mine One two.", asLeft: "Mine one two", actual: "", retried: false) == .hold)
+          && FinishInBox.afterFailedSwap(wanted: "Mine One two.", asLeft: "Mine one two", actual: "Mine one two", retried: true) == .reread)
+    // Never a stop: anything else is read again, and `landing` decides from what is there.
+    let swapRange = NSRange(location: 4, length: 8)
+    func recover(_ actual: String?, retried: Bool = false) -> FinishInBox.SwapRecovery {
+        FinishInBox.afterFailedSwap(wanted: "Mine One two.", asLeft: "Mine one two", actual: actual, range: swapRange, fixed: " One two.", retried: retried)
+    }
+    check("d1603.swapHalfErasedIsFinished", recover("Mine on") == .finish(NSRange(location: 4, length: 3)))
+    check("d1603.swapAllErasedIsFinished", recover("Mine") == .finish(NSRange(location: 4, length: 0)))
+    check("d1603.swapHalfRetypedIsFinished", recover("Mine One t") == .finish(NSRange(location: 4, length: 6)))
+    check("d1603.swapHalfDoneKeepsTextAfterIt", FinishInBox.unfinished(asLeft: "Mine one two tail", range: swapRange, fixed: " One two.", actual: "Mine One tail") == NSRange(location: 4, length: 4)
+          && FinishInBox.unfinished(asLeft: "Mine one two tail", range: swapRange, fixed: " One two.", actual: "Mine One tale") == nil)
+    check("d1603.swapSpacingChangedIsReread", recover("Mine one  two") == .reread)
+    check("d1603.swapYourEditIsReread", recover("Yours one two") == .reread && recover("Mine one two and more") == .reread)
+    check("d1603.swapUnreadableIsReread", FinishInBox.afterFailedSwap(wanted: "x", asLeft: "y", actual: nil, retried: false) == .reread)
+    check("d1603.swapEmptiedBoxIsReread", recover("") == .reread && FinishInBox.landing(typed: " one two", checked: "One two.", actual: "") == .whole)
     check("d1603.swapNeverStartedRetries", FinishInBox.afterFailedSwap(wanted: nil, asLeft: "Mine one two", actual: "Mine one two", retried: false) == .retry)
+    // Finishing a half-done swap replaces exactly what is left of it, and no word is lost or typed twice.
+    for (label, half, left) in [("erased", "Mine on", NSRange(location: 4, length: 3)), ("retyped", "Mine One t", NSRange(location: 4, length: 6)),
+                                ("empty", "Mine", NSRange(location: 4, length: 0))] {
+        let edit = DraftReplacement(expectedBox: half, actual: half, cursor: NSRange(location: NSMaxRange(left), length: 0),
+                                    draft: (half as NSString).substring(with: left), replacement: " One two.", exactRange: left, proven: true)
+        check("d1603.halfSwapFinishes.\(label)", edit?.expected == "Mine One two.")
+    }
+    check("d1603.provenRangeStillNeedsItsText", DraftReplacement(expectedBox: "Mine on", actual: "Mine on", cursor: NSRange(location: 7, length: 0),
+          draft: " ox", replacement: " One two.", exactRange: NSRange(location: 4, length: 3), proven: true) == nil)
+    // A long talk's erase that stopped partway: what is left of the rough words comes out.
+    check("d1603.longEraseHalfDoneIsFinished", FinishInBox.afterFailedSwap(wanted: "Checked part.", asLeft: "Checked part. rough tail", actual: "Checked part. rou",
+          range: NSRange(location: 13, length: 11), fixed: "", retried: false) == .finish(NSRange(location: 13, length: 4)))
     // 4. A finishing attempt Voice couldn't confirm in time counts on one exact read.
     check("d1603.finishReadShowsWords", FinishInBox.landedOnRead(expected: "old One two.", actual: "old One two."))
     check("d1603.finishReadPartIsNotLanded", !FinishInBox.landedOnRead(expected: "old One two.", actual: "old One"))
     check("d1603.finishReadUnreadableIsNotLanded", !FinishInBox.landedOnRead(expected: "old One two.", actual: nil)
           && !FinishInBox.landedOnRead(expected: nil, actual: "old"))
-    // 6. A click stopped the attempt before any word arrived: once more where the cursor is. A key never.
-    func again(first: String? = "old", settled: String? = "old", keys: Bool = true, part: Bool = false,
-               clicked: Bool = true, retried: Bool = false) -> Bool {
-        FinishInBox.mayRetryAfterClick(before: "old", first: first, settled: settled, keysQuiet: keys, partArrived: part,
-                                       clickedOrMoved: clicked, retried: retried)
+    // 6. The attempt stopped before any word arrived (a click, a key that typed nothing, a moved cursor): once more
+    // where the cursor is. Two reads must show the box exactly as it was.
+    func again(first: String? = "old", settled: String? = "old", part: Bool = false, retried: Bool = false) -> Bool {
+        FinishInBox.mayRetryAfterStop(before: "old", first: first, settled: settled, partArrived: part, retried: retried)
     }
-    check("d1603.clickRetriesOnce", again() && !again(retried: true))
-    check("d1603.keyNeverRetries", !again(keys: false))
+    check("d1603.stopRetriesOnce", again() && !again(retried: true))
     check("d1603.partArrivedNeverRetries", !again(part: true) && !again(first: "old On") && !again(settled: "old One two."))
     check("d1603.unreadableNeverRetries", !again(first: nil) && !again(settled: nil))
-    check("d1603.noClickUsesThePasteRule", !again(clicked: false))
-    // Unchecked start box with words typed early (widening D-1565): only a send seen keeps the dictation out.
-    check("d1603.uncheckedStartLands", !DictationEnding.holdsUncheckedStart(typedEarly: true, enterSeen: false, earlyBoxReadsEmpty: false))
-    check("d1603.uncheckedStartEnterHolds", DictationEnding.holdsUncheckedStart(typedEarly: true, enterSeen: true, earlyBoxReadsEmpty: false))
-    check("d1603.uncheckedStartEmptyBoxHolds", DictationEnding.holdsUncheckedStart(typedEarly: true, enterSeen: false, earlyBoxReadsEmpty: true))
-    check("d1603.uncheckedStartNothingEarlyLands", !DictationEnding.holdsUncheckedStart(typedEarly: false, enterSeen: true, earlyBoxReadsEmpty: true))
+    // Selected words are never replaced: the cursor goes to the end of the selection, and the paste rule uses that.
+    let selection = NSRange(location: 4, length: 3), past = FinishInBox.caretPastSelection(selection)
+    check("d1603.selectionKeptWordsGoAfterIt", past == NSRange(location: 7, length: 0)
+          && !FinishInBox.mayPaste(before: "old one", first: "old one", settled: "old one", range: selection, currentRange: selection, sameTarget: true)
+          && FinishInBox.mayPaste(before: "old one", first: "old one", settled: "old one", range: past, currentRange: past, sameTarget: true))
+    // Unchecked start box with words typed early (widening D-1565): only Enter seen keeps the dictation out.
+    check("d1603.uncheckedStartLands", !DictationEnding.holdsUncheckedStart(typedEarly: true, enterSeen: false))
+    check("d1603.uncheckedStartEnterHolds", DictationEnding.holdsUncheckedStart(typedEarly: true, enterSeen: true))
+    check("d1603.uncheckedStartNothingEarlyLands", !DictationEnding.holdsUncheckedStart(typedEarly: false, enterSeen: true))
     // Not in a text box still waits for a click; a text box takes the words at once.
     check("d1603.noBoxStillWaits", !DictationEnding.typesNow(kind: .notText, ownWindow: false) && DictationEnding.typesNow(kind: .text, ownWindow: false))
     // The 07:11:21 rebuilt composer: same window and conversation, text off by whitespace only, matches and is followed.

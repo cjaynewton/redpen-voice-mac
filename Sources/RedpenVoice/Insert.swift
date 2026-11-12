@@ -23,7 +23,7 @@ enum Insert {
         var focusedRef: CFTypeRef?
         let hasFocus = AXUIElementCopyAttributeValue(sys, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success
         guard await still(), hasFocus, let focusedRef, CFGetTypeID(focusedRef) == AXUIElementGetTypeID() else {
-            Log.note("insert: no focused element, kept for Paste last")
+            Log.note("insert: no focused element, not typed")
             return false
         }
         let el = focusedRef as! AXUIElement
@@ -40,7 +40,7 @@ enum Insert {
             return (value as NSString).replacingCharacters(in: range, with: padded)
         } }
         // Draft bookkeeping needs readable evidence, rather than a successful event post.
-        if confirmed, expected == nil { Log.note("insert: draft target unreadable, kept for Paste last"); return false }
+        if confirmed, expected == nil { Log.note("insert: draft target unreadable, not typed"); return false }
         if confirmed, let oldValue, let oldRange {
             draftAttempt = (el, .init(before: oldValue, range: oldRange, text: padded))
             if let expected { pendingEdit = (el, oldValue, oldRange, padded, expected) }
@@ -59,7 +59,7 @@ enum Insert {
                 }
                 // An accepted edit can arrive late. Only fall back when neither text nor cursor changed.
                 guard value(el) == oldValue, selectedRange(el) == oldRange else {
-                    unconfirmed = true; Log.note("insert: draft AX edit not confirmed, kept for Paste last"); return false
+                    unconfirmed = true; Log.note("insert: draft AX edit not confirmed"); return false
                 }
             }
             // Moved by the length of the text: it landed. Otherwise the app said yes and did nothing.
@@ -90,7 +90,7 @@ enum Insert {
         if confirmed, let expected {
             let landed = ok ? await confirm(expected, in: el, while: still) : false
             if landed { unconfirmed = false; recordEdit(padded); remember(padded) }
-            else { unconfirmed = true; Log.note("insert: draft typing not confirmed, kept for Paste last") }
+            else { unconfirmed = true; Log.note("insert: draft typing not confirmed") }
             return landed
         }
         if ok { recordEdit(padded); remember(padded) }
@@ -138,8 +138,10 @@ enum Insert {
     }
 
     /// Replace only the known suffix, using the editor's actual length and checking what landed afterward.
+    /// `proven`: `exactRange` is what is left of Voice's own unfinished edit (`FinishInBox.unfinished`).
     @MainActor static func replaceDraft(_ draft: String, with replacement: String, expectedBox: String,
-                             in element: AXUIElement, exactRange: NSRange? = nil, while still: @escaping () async -> Bool) async -> Bool {
+                             in element: AXUIElement, exactRange: NSRange? = nil, proven: Bool = false,
+                             while still: @escaping () async -> Bool) async -> Bool {
         lastEdit = nil
         guard EditBoundary.shared.begin() else { return false }
         var posting = true
@@ -148,7 +150,7 @@ enum Insert {
         guard await still(), let (now, _) = focusedElement(), CFEqual(now, element),
               let value = value(element), let cursor = selectedRange(element),
               let edit = DraftReplacement(expectedBox: expectedBox, actual: value, cursor: cursor,
-                                          draft: draft, replacement: replacement, exactRange: exactRange) else { return false }
+                                          draft: draft, replacement: replacement, exactRange: exactRange, proven: proven) else { return false }
         let began = ProcessInfo.processInfo.systemUptime
         let count = ((value as NSString).substring(with: edit.range)).count
         let unchanged = edit.landed(value)
@@ -179,7 +181,7 @@ enum Insert {
             // Which step failed, in counts only (D-972): the 124 s dictation at 03:54 Oct 31 couldn't be told apart.
             let now: String = Insert.value(element).map { String($0.utf16.count) } ?? "unreadable"
             let want = edit.expected.utf16.count
-            Log.note("draft: replacement not confirmed (deleted \(deleted) of \(count), retyped \(retyped), box \(now) of \(want) expected); checked words kept for Paste last")
+            Log.note("draft: replacement not confirmed (deleted \(deleted) of \(count), retyped \(retyped), box \(now) of \(want) expected); the box is read before anything more is typed")
             return false
         }
         StartTrace.note(.replacementConfirmed, gesture: 0)
@@ -206,24 +208,23 @@ enum Insert {
     /// One finishing attempt, followed by one paste only when two reads prove nothing arrived.
     /// Live drafts and uncertain replacements never use this fallback.
     /// D-1603: a box that won't say what it holds still takes the words, typed as keys. An attempt Voice couldn't
-    /// confirm counts when one read shows exactly the text it was making. An attempt a click stopped before any
-    /// word arrived runs once more where the cursor now is.
+    /// confirm counts when one read shows exactly the text it was making. An attempt that stopped before any word
+    /// arrived (two reads show the box as it was) runs once more where the cursor now is. Selected words are never
+    /// replaced: the cursor goes to the end of the selection first, and the words go in after it.
     @MainActor static func finishingText(_ words: String, joining: Int? = nil,
                                          while still: @escaping () -> Bool, retried: Bool = false) async -> Bool {
+        finishLeftNothing = false
         guard still(), canTypeAtFocus, let (element, pid) = focusedElement() else {
-            Log.note("finish typing: refused before typing (no text box in focus, or a newer dictation)"); return false
+            finishLeftNothing = true
+            Log.note("finish typing: not typed (no text box in focus, or a newer dictation)"); return false
         }
-        let before = value(element), range = selectedRange(element), context = pasteContext(element)
+        let before = value(element), context = pasteContext(element)
+        var range = selectedRange(element)
         let began = ProcessInfo.processInfo.systemUptime
         func sameTarget() -> Bool {
             still() && canTypeAtFocus && NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
                 && focusedElement().map({ CFEqual($0.0, element) && $0.1 == pid }) == true
                 && pasteContext(element) == context
-        }
-        func keysQuiet() -> Bool {
-            let now = ProcessInfo.processInfo.systemUptime
-            let ago = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .keyDown)
-            return ago >= now - began || EnterSendTap.shared.held(at: now - ago, tolerance: DraftSafety.talkKeyTolerance)
         }
         func quiet() -> Bool {
             let now = ProcessInfo.processInfo.systemUptime
@@ -258,11 +259,21 @@ enum Insert {
         }
         // The box won't say what it holds or where its cursor is (some Electron and terminal boxes). Nothing can be
         // confirmed there, so the words are typed as keys, as a whole dictation always was before the confirmed ending.
-        guard before != nil, let range else {
+        guard let before, let found = range else {
             Log.note("finish typing: the box can't be read, typing without a confirming read")
-            return await text(words, joining: joining, while: guarded)
+            let ok = await text(words, joining: joining, while: guarded)
+            if !ok { finishLeftNothing = !typedSome }
+            return ok
         }
-        guard range.length == 0 else { Log.note("finish typing: refused, text is selected in the box"); return false }
+        if found.length > 0 {
+            // Words you selected are never replaced (D-1603). The cursor goes to the end of the selection, read back.
+            guard await positionAfter(found, expected: before, in: element, while: { still() }) else {
+                finishLeftNothing = true
+                Log.note("finish typing: text is selected and the cursor couldn't be moved past it, not typed"); return false
+            }
+            range = FinishInBox.caretPastSelection(found)
+            Log.note("finish typing: text was selected, the words go in after the selection")
+        }
         let ok = await text(words, joining: joining, confirmed: true, while: guarded)
         if ok { return true }
         let first = value(element)
@@ -276,31 +287,39 @@ enum Insert {
             Log.note("finish typing: exact box read after the wait stopped")
             return true
         }
-        guard !observedInsertion, sameTarget(), quiet(), FinishInBox.mayPaste(before: before, first: first, settled: first,
-            range: range, currentRange: selectedRange(element), sameTarget: true) else {
-            let moved = !sameTarget(), clicked = !quiet()
-            Log.note("finish typing: not confirmed, no paste retry (part arrived \(observedInsertion), same box \(!moved), you typed or clicked \(clicked))")
-            // A click stopped it before any word arrived (the click that put the cursor in the box, a second click
-            // in it, or a click into another box). The words go where the cursor is now, once.
-            guard FinishInBox.mayRetryAfterClick(before: before, first: first, settled: first, keysQuiet: keysQuiet(),
-                    partArrived: observedInsertion, clickedOrMoved: moved || clicked, retried: retried) else { return false }
-            try? await Task.sleep(for: .milliseconds(Int(FinishInBox.mouseSettle * 1000)))
-            guard !Task.isCancelled, still(), keysQuiet(),
-                  FinishInBox.mayRetryAfterClick(before: before, first: first, settled: value(element), keysQuiet: true,
-                    partArrived: observedInsertion, clickedOrMoved: true, retried: retried) else { return false }
-            Log.note("finish typing: a click stopped it before any word arrived, trying once more where the cursor is")
-            return await finishingText(words, joining: joining, while: still, retried: true)
+        let pasteable = !observedInsertion && sameTarget() && quiet()
+            && FinishInBox.mayPaste(before: before, first: first, settled: first, range: range,
+                                    currentRange: selectedRange(element), sameTarget: true)
+        if !pasteable {
+            Log.note("finish typing: not confirmed, no paste yet (part arrived \(observedInsertion), same box \(sameTarget()), you typed or clicked \(!quiet()))")
         }
-        try? await Task.sleep(for: .milliseconds(150))
-        guard !Task.isCancelled, !observedInsertion, sameTarget(), quiet(),
-              FinishInBox.mayPaste(before: before, first: first, settled: value(element), range: range,
-                                  currentRange: selectedRange(element), sameTarget: true) else { return false }
-        Log.note("insert: finishing box unchanged, trying one paste")
-        let result = await paste(words, shape: joining == nil ? .whole : .append,
-                                 while: { sameTarget() && quiet() })
-        return result.landed
+        // Part of the words arrived, or the box can't be read now: nothing more is typed on top.
+        guard !observedInsertion, let first, FinishInBox.exact(before, first) else { return false }
+        // Nothing has arrived so far. A second read after the box settles decides.
+        try? await Task.sleep(for: .milliseconds(Int(FinishInBox.mouseSettle * 1000)))
+        let settled = value(element)
+        guard !Task.isCancelled, !observedInsertion, settled.map({ FinishInBox.exact(before, $0) }) == true else { return false }
+        finishLeftNothing = true
+        if pasteable, sameTarget(), quiet(),
+           FinishInBox.mayPaste(before: before, first: first, settled: settled, range: range,
+                                currentRange: selectedRange(element), sameTarget: true) {
+            Log.note("insert: finishing box unchanged, trying one paste")
+            let result = await paste(words, shape: joining == nil ? .whole : .append,
+                                     while: { sameTarget() && quiet() })
+            // A paste that went out and wasn't confirmed may still arrive: the box has to be checked.
+            finishLeftNothing = !result.posted
+            return result.landed
+        }
+        // Your click or key stopped it, or the cursor moved, before any word arrived: once more where the cursor is.
+        guard still(), FinishInBox.mayRetryAfterStop(before: before, first: first, settled: settled,
+                                                    partArrived: observedInsertion, retried: retried) else { return false }
+        Log.note("finish typing: stopped before any word arrived, trying once more where the cursor is")
+        return await finishingText(words, joining: joining, while: still, retried: true)
     }
 
+    /// After a finishing attempt that returned false: none of its words reached a box. It was refused before typing,
+    /// or two reads show the box exactly as it was. False after a paste went out, or when part of the words arrived.
+    private(set) static var finishLeftNothing = false
     /// True after the last insert when typing was sent but not seen in the box.
     private(set) static var unconfirmed = false
     /// Sticky within one insertion attempt. A partial arrival followed by a revert still vetoes a paste retry.
@@ -326,6 +345,8 @@ enum Insert {
     struct PasteResult {
         let landed: Bool
         let copied: Bool
+        /// Command-V went out. False: the paste was refused or stopped before it, so nothing reached a box.
+        var posted = false
     }
 
     /// How a paste fits the text around it. `exact`: as given (Paste last). `whole`: a whole dictation, fitted to the
@@ -348,10 +369,11 @@ enum Insert {
             text = spaced(shape == .whole ? fit(text, in: element) : text, before: element)
         }
         guard let clipboard = PasteClipboardLoan(text) else { return PasteResult(landed: false, copied: false) }
+        var posted = false
         func failed(_ reason: String) -> PasteResult {
             let copied = clipboard.finish(confirmed: false) == .kept
             Log.note("paste: \(reason); clipboard \(copied ? "kept for Command-V" : "changed, left alone")")
-            return PasteResult(landed: false, copied: copied)
+            return PasteResult(landed: false, copied: copied, posted: posted)
         }
         guard let (element, pid) = target else { return failed("no text target") }
         let evidence = PasteEvidence(before: value(element), range: selectedRange(element), text: text, loose: shape != .exact)
@@ -382,11 +404,12 @@ enum Insert {
                 }
                 Log.note("paste: shortcut keys released, posting Command-V; value readable \(evidence.before != nil), cursor readable \(evidence.range != nil)")
                 pair.down.post(tap: .cgSessionEventTap); pair.up.post(tap: .cgSessionEventTap)
+                posted = true
             case .confirmed:
                 if clipboard.finish(confirmed: true) == .restored { Log.note("clipboard: put back after confirmed paste") }
                 else { Log.note("clipboard: something new was copied meanwhile, left as it is") }
                 remember(text)
-                return PasteResult(landed: true, copied: false)
+                return PasteResult(landed: true, copied: false, posted: true)
             case .failed(let reason): return failed(reason)
             case .wait: break
             }

@@ -1121,9 +1121,14 @@ do {
     // Oct 31 2026, reported: you sent in one T3 chat and clicked into another before the checked text came. It went into the
     // second chat as well. Sent, then somewhere else: kept, never typed there.
     check("ending.sentThenOtherChatKeeps", DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: sentNow, inStartBox: false, sent: true) == P.keep)
-    check("ending.otherChatNeverTypedAgain", DictationEnding.plan(typedInStartBox: true,
+    // D-1603: that send was your Enter, which Voice saw. Seen: never typed again. The same switch with no send seen
+    // is not a send, and the whole dictation goes where the cursor is.
+    check("ending.otherChatAfterSeenSendNeverTypedAgain", DictationEnding.plan(typedInStartBox: true,
           startBoxAsLeft: BoxMatch.same(start: sentBox, now: anotherThread, nowText: "", sameElement: true), inStartBox: false,
-          sent: DictationEnding.wasSent(start: sentBox, now: anotherThread, value: "")) == P.keep)
+          sent: DictationEnding.sendSeen(start: sentBox, now: anotherThread, value: "", observedSend: true)) == P.keep)
+    check("ending.otherChatNoSendSeenDelivers", DictationEnding.plan(typedInStartBox: true,
+          startBoxAsLeft: BoxMatch.same(start: sentBox, now: anotherThread, nowText: "", sameElement: true), inStartBox: false,
+          sent: DictationEnding.sendSeen(start: sentBox, now: anotherThread, value: "")) == P.deliver)
     // A key or click earlier that didn't change the box: still as Voice left it, so the ending swaps in place.
     let untouched = BoxMatch.same(start: sentBox, now: t3Grew, nowText: "Words the drafts typed so far", sameElement: true)
     check("ending.keyThatChangedNothingStillSwaps", untouched && DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: untouched, inStartBox: true) == P.inPlace)
@@ -1155,27 +1160,37 @@ do {
           startBoxAsLeft: BoxMatch.same(start: notesA, now: notesA, nowText: early, sameElement: true), inStartBox: false) == .takeBackThenDeliver)
     check("ending.enterSentKeepsEverywhere", [true, false].allSatisfy { here in
         DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: false, inStartBox: here,
-                            sent: DictationEnding.wasSent(start: notesA, now: notesA, value: "\n")) == .keep
+                            sent: DictationEnding.sendSeen(start: notesA, now: notesA, value: "\n", observedSend: true)) == .keep
     })
-    check("ending.chatSwitchKeepsNonemptyComposer", DictationEnding.wasSent(start: sentBox, now: anotherThread, value: "Different draft")
-          && DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: false, inStartBox: false, sent: true) == .keep)
+    // D-1603: a box that only reads as sent (one stray character left) with no Enter seen is not a send.
+    check("ending.readsSentWithNoEnterSeenDelivers", [true, false].allSatisfy { here in
+        DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: false, inStartBox: here,
+                            sent: DictationEnding.sendSeen(start: notesA, now: notesA, value: "\n")) == .deliver
+    })
+    // A chat switch keeps Voice's own drafts out of the other chat's composer (wasSent), and never holds the ending.
+    check("ending.chatSwitchStopsDraftsAndDelivers", DictationEnding.wasSent(start: sentBox, now: anotherThread, value: "Different draft")
+          && DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: false, inStartBox: false,
+                                  sent: DictationEnding.sendSeen(start: sentBox, now: anotherThread, value: "Different draft")) == .deliver)
     let renamed = BoxPrint(role: sentBox.role, identifier: sentBox.identifier, frame: f0, text: early, title: "Renamed", url: sentBox.url)
     check("ending.sameURLNewTitleNotSent", !DictationEnding.wasSent(start: sentBox, now: renamed, value: early))
-    // D-1601: only a send Voice saw keeps the words out.
+    // D-1601, narrowed by D-1603: only a send Voice saw keeps the words out. An emptied box is not one.
     check("d1601.switchIsNotASend", !DictationEnding.sendSeen(start: sentBox, now: anotherThread, value: ""))
     check("d1601.switchWithDraftIsNotASend", !DictationEnding.sendSeen(start: sentBox, now: anotherThread, value: "Different draft"))
     check("d1601.switchDelivers", DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: false, inStartBox: false,
           sent: DictationEnding.sendSeen(start: sentBox, now: anotherThread, value: "")) == .deliver)
     check("d1601.enterSeenKeeps", DictationEnding.sendSeen(start: sentBox, now: anotherThread, value: "", observedSend: true))
-    check("d1601.sameChatEmptyIsSend", DictationEnding.sendSeen(start: sentBox, now: sentBox, value: ""))
-    check("d1601.sameChatStrayCharIsSend", DictationEnding.sendSeen(start: sentBox, now: sentBox, value: "\n"))
+    check("d1603.sameChatEmptyIsNotASendSeen", !DictationEnding.sendSeen(start: sentBox, now: sentBox, value: ""))
+    check("d1603.sameChatStrayCharIsNotASendSeen", !DictationEnding.sendSeen(start: sentBox, now: sentBox, value: "\n"))
     check("d1601.sameChatWithWordsNotSent", !DictationEnding.sendSeen(start: sentBox, now: sentBox, value: early))
-    check("d1601.sendSeenKeeps", DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: false, inStartBox: false,
-          sent: DictationEnding.sendSeen(start: sentBox, now: sentBox, value: "")) == .keep)
+    check("d1603.sameChatEmptyDelivers", DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: false, inStartBox: false,
+          sent: DictationEnding.sendSeen(start: sentBox, now: sentBox, value: "")) == .deliver)
+    check("d1603.sameChatEmptyAfterEnterSeenKeeps", DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: false, inStartBox: false,
+          sent: DictationEnding.sendSeen(start: sentBox, now: sentBox, value: "", observedSend: true)) == .keep)
     check("d1601.goneBoxIsNotASend", !DictationEnding.sendSeen(start: sentBox, now: BoxPrint(role: nil, identifier: nil, frame: nil, text: nil), value: nil))
     check("d1601.sameURLNewTitleNotSent", !DictationEnding.sendSeen(start: renamed, now: sentBox, value: early))
     let otherNote = BoxPrint(role: notesA.role, identifier: notesA.identifier, frame: f0, text: early, title: "Other note")
-    check("ending.noURLConversationSwitchStillKept", DictationEnding.wasSent(start: notesA, now: otherNote, value: early))
+    check("ending.noURLConversationSwitchStopsDraftsOnly", DictationEnding.wasSent(start: notesA, now: otherNote, value: early)
+          && !DictationEnding.sendSeen(start: notesA, now: otherNote, value: early))
     check("ending.unreadableFixNotSent", !DictationEnding.wasSent(start: notesA, now: notesA, value: nil))
     check("ending.unconfirmedFixDelivers", DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: false,
           inStartBox: false, sent: DictationEnding.wasSent(start: notesA, now: notesA, value: nil)) == .deliver)
@@ -1199,7 +1214,7 @@ do {
     // Even a contradictory stale as-left snapshot cannot override explicit send evidence.
     check("ending.sentEvidenceWins", DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: true, inStartBox: false, sent: true) == .keep)
     check("ending.enterSentThenRefilledStillKept", DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: false,
-          inStartBox: false, sent: DictationEnding.wasSent(start: notesA, now: notesA, value: "New draft after sending", observedSend: true)) == .keep)
+          inStartBox: false, sent: DictationEnding.sendSeen(start: notesA, now: notesA, value: "New draft after sending", observedSend: true)) == .keep)
     check("ending.shiftEnterIsNotSendEvidence", !EnterSend.owns(keyCode: 36, flags: EnterSend.shift))
 
     // Nov 8: a complete unconfirmed draft arrived late, without a user edit. Only that exact insertion can
@@ -1243,8 +1258,11 @@ do {
     check("ending.lateDraftDifferentWindowKeeps", reconcile(window: false) == nil)
     check("ending.lateDraftDifferentBoxDelivers", reconcile(here: false) == nil && DictationEnding.plan(
         typedInStartBox: true, startBoxAsLeft: false, inStartBox: false) == .deliver)
-    check("ending.lateDraftEmptySentKeeps", reconcile("") == nil && DictationEnding.plan(
-        typedInStartBox: true, startBoxAsLeft: false, inStartBox: true, sent: true) == .keep)
+    // D-1603: an emptied box never adopts the late draft, and with no send seen the whole dictation lands in it.
+    check("ending.lateDraftEmptyBoxNotAdoptedAndLands", reconcile("") == nil && DictationEnding.plan(
+        typedInStartBox: true, startBoxAsLeft: false, inStartBox: true,
+        sent: DictationEnding.sendSeen(start: lateBox, now: lateBox, value: "")) == .deliver
+        && FinishInBox.landing(typed: " early words", late: lateText, checked: "Checked words.", actual: "") == .whole)
     check("ending.lateDraftObservedSendKeeps", reconcile(sent: true) == nil && DictationEnding.plan(
         typedInStartBox: true, startBoxAsLeft: false, inStartBox: true, sent: true) == .keep)
     let switchedLate = BoxPrint(role: lateBox.role, identifier: lateBox.identifier, frame: f0, text: beforeLate, title: "Other note")
@@ -1274,17 +1292,19 @@ do {
         pending: unicodeAttempt, start: unicodeBox) == nil)
     let (lateKeep, lateErase) = LongTalk.split([(" early words", true), (adopted?.text ?? "", false)])
     check("ending.longLateDraftErasesOnlyRoughRun", lateKeep == 1 && lateErase == lateText)
-    // Simulate the existing in-place branch's single failed swap. A failure ends as kept, with no deliver action.
-    var swapAttempts = 0, wholeDeliveries = 0
-    var keptAfterSwap = false
-    switch DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: adopted != nil, inStartBox: true) {
-    case .inPlace:
-        swapAttempts += 1
-        keptAfterSwap = lateSwap?.landed("Mine stays. partial") != true
-    case .deliver, .takeBackThenDeliver: wholeDeliveries += 1
-    case .keep: keptAfterSwap = true
-    }
-    check("ending.lateDraftFailedSwapKeepsWithoutSecondDelivery", keptAfterSwap && swapAttempts == 1 && wholeDeliveries == 0)
+    // The in-place swap wasn't confirmed (D-1603): one read of the box decides, and the words land once. Unrelated
+    // text there: the whole checked text goes in. The swap stopped partway: exactly what is left of it is finished.
+    let lateTyped = " early words" + lateText
+    let lateRange = FinishInBox.span(of: lateTyped, in: arrived)!
+    let unrelated = "Mine stays. partial"
+    check("ending.lateDraftFailedSwapReadsTheBox", lateSwap?.landed(unrelated) != true
+          && FinishInBox.afterFailedSwap(wanted: lateSwap?.expected, asLeft: arrived, actual: unrelated, range: lateRange,
+                                         fixed: " Checked words.", retried: false) == .reread
+          && FinishInBox.landing(typed: lateTyped, checked: "Checked words.", actual: unrelated) == .whole)
+    check("ending.lateDraftHalfSwapIsFinished", FinishInBox.afterFailedSwap(wanted: lateSwap?.expected, asLeft: arrived,
+          actual: "Mine stays. early wo", range: lateRange, fixed: " Checked words.", retried: false) == .finish(NSRange(location: 11, length: 9)))
+    check("ending.lateDraftSwapSeenOnReadIsLanded", FinishInBox.afterFailedSwap(wanted: lateSwap?.expected, asLeft: arrived,
+          actual: "Mine stays. Checked words.", range: lateRange, fixed: " Checked words.", retried: false) == .landed)
     check("ending.lateDraftSwapStillRequiresExpectedBox", DraftReplacement(expectedBox: arrived, actual: arrived + "x",
         cursor: NSRange(location: arrived.utf16.count, length: 0), draft: " early words" + lateText, replacement: " Checked words.") == nil)
 
@@ -2507,9 +2527,11 @@ do {
     check("lockin.namesJoined", Meeting.unknownNames("Donations go through CanadaHelps. The CI pipeline runs.", transcript: "[00:01] Others: on CanadaHelps.org and our CI/CD") == []
           && Meeting.unknownNames("Tickets go through Ticketmaster.", transcript: "[00:01] Others: tickets online") == ["Ticketmaster"])
     let sentPrint = BoxPrint(role: "AXTextArea", identifier: nil, frame: nil, text: "hi", title: "Chat", url: "https://chat.example/1")
-    check("d1297.goneIsSent", DictationEnding.wasSent(start: sentPrint, now: sentPrint, value: nil, boxGone: true)
+    // A box that is gone keeps Voice's own draft typing out (wasSent). It is not a send seen, so the ending lands (D-1603).
+    check("d1297.goneStopsDraftsNotTheEnding", DictationEnding.wasSent(start: sentPrint, now: sentPrint, value: nil, boxGone: true)
           && !DictationEnding.wasSent(start: sentPrint, now: sentPrint, value: nil)
-          && !DictationEnding.wasSent(start: sentPrint, now: sentPrint, value: "hi there, edited"))
+          && !DictationEnding.wasSent(start: sentPrint, now: sentPrint, value: "hi there, edited")
+          && !DictationEnding.sendSeen(start: sentPrint, now: BoxPrint(role: nil, identifier: nil, frame: nil, text: nil), value: nil))
     check("review.byEmail", Meeting.todoMark("Send the file (by email)") == ("Send the file (by email)", nil, false) && Meeting.todoMark("Send it (by Friday)") == ("Send it", "Friday", false))
     check("steps.markPlain", Meeting.todoMark("Book the room (10:30)") == ("Book the room (10:30)", nil, false) && Meeting.todoMark("Ship it (critical)") == ("Ship it", nil, true))
     let renamed = Meeting.renaming([(Speaker(rawValue: "Marco"), "Marc")], in: "## Summary\n\n### To-dos\n\n- " + Meeting.todoLine(rc.summary.todos[0]) + " [16:00]\n\n## Transcript\n\n" + room)
@@ -3304,6 +3326,7 @@ do {
 }
 
 finishInBoxChecks { name, ok in check(name, ok) }
+landingReplayChecks { name, ok in check(name, ok) }
 // R3 talking bar: detached/stacked displays, shape changes, and the mouse entry to the existing talk gesture.
 do {
     let main = CGRect(x: 0, y: 0, width: 1440, height: 900)

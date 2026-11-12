@@ -21,15 +21,22 @@ public struct DraftReplacement {
     public let expected: String
     public let keptCharacters: Int
 
-    public init?(expectedBox: String, actual: String, cursor: NSRange, draft: String, replacement: String, exactRange: NSRange? = nil) {
+    /// `proven`: `exactRange` is what is left of Voice's own unfinished edit, placed by the literal text before and
+    /// after it (`FinishInBox.unfinished`), so it needn't be the only such span in the box. It may be empty.
+    public init?(expectedBox: String, actual: String, cursor: NSRange, draft: String, replacement: String,
+                 exactRange: NSRange? = nil, proven: Bool = false) {
         guard BoxText.same(expectedBox, actual), cursor.length == 0, cursor.location >= 0,
               cursor.location <= actual.utf16.count,
               cursor.location == actual.utf16.count || actual.indices.contains(where: { $0.utf16Offset(in: actual) == cursor.location }) else { return nil }
         let wholeRange: NSRange
         if let exactRange {
-            guard FinishInBox.exact(expectedBox, actual),
-                  FinishInBox.span(of: draft, in: actual) == exactRange,
-                  NSMaxRange(exactRange) == cursor.location else { return nil }
+            guard FinishInBox.exact(expectedBox, actual), NSMaxRange(exactRange) == cursor.location else { return nil }
+            if proven {
+                guard exactRange.location >= 0, NSMaxRange(exactRange) <= actual.utf16.count, Range(exactRange, in: actual) != nil,
+                      FinishInBox.exact((actual as NSString).substring(with: exactRange), draft) else { return nil }
+            } else {
+                guard FinishInBox.span(of: draft, in: actual) == exactRange else { return nil }
+            }
             wholeRange = exactRange
         } else {
             let prefix = (actual as NSString).substring(to: cursor.location)
