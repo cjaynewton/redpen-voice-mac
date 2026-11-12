@@ -1161,6 +1161,19 @@ do {
           && DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: false, inStartBox: false, sent: true) == .keep)
     let renamed = BoxPrint(role: sentBox.role, identifier: sentBox.identifier, frame: f0, text: early, title: "Renamed", url: sentBox.url)
     check("ending.sameURLNewTitleNotSent", !DictationEnding.wasSent(start: sentBox, now: renamed, value: early))
+    // D-1601: only a send Voice saw keeps the words out.
+    check("d1601.switchIsNotASend", !DictationEnding.sendSeen(start: sentBox, now: anotherThread, value: ""))
+    check("d1601.switchWithDraftIsNotASend", !DictationEnding.sendSeen(start: sentBox, now: anotherThread, value: "Different draft"))
+    check("d1601.switchDelivers", DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: false, inStartBox: false,
+          sent: DictationEnding.sendSeen(start: sentBox, now: anotherThread, value: "")) == .deliver)
+    check("d1601.enterSeenKeeps", DictationEnding.sendSeen(start: sentBox, now: anotherThread, value: "", observedSend: true))
+    check("d1601.sameChatEmptyIsSend", DictationEnding.sendSeen(start: sentBox, now: sentBox, value: ""))
+    check("d1601.sameChatStrayCharIsSend", DictationEnding.sendSeen(start: sentBox, now: sentBox, value: "\n"))
+    check("d1601.sameChatWithWordsNotSent", !DictationEnding.sendSeen(start: sentBox, now: sentBox, value: early))
+    check("d1601.sendSeenKeeps", DictationEnding.plan(typedInStartBox: true, startBoxAsLeft: false, inStartBox: false,
+          sent: DictationEnding.sendSeen(start: sentBox, now: sentBox, value: "")) == .keep)
+    check("d1601.goneBoxIsNotASend", !DictationEnding.sendSeen(start: sentBox, now: BoxPrint(role: nil, identifier: nil, frame: nil, text: nil), value: nil))
+    check("d1601.sameURLNewTitleNotSent", !DictationEnding.sendSeen(start: renamed, now: sentBox, value: early))
     let otherNote = BoxPrint(role: notesA.role, identifier: notesA.identifier, frame: f0, text: early, title: "Other note")
     check("ending.noURLConversationSwitchStillKept", DictationEnding.wasSent(start: notesA, now: otherNote, value: early))
     check("ending.unreadableFixNotSent", !DictationEnding.wasSent(start: notesA, now: notesA, value: nil))

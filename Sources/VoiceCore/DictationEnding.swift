@@ -101,6 +101,16 @@ public enum DictationEnding {
         observedSend || start.url != now.url || (start.url == nil && start.title != now.title) || (value == nil && boxGone) || looksSent(value)
     }
 
+    /// Where the finished words go (D-1601, Nov 12 2026, narrowing D-998 and D-1297): only a send Voice saw stops
+    /// them. A send seen means Enter or send went to the first box, or that same conversation now reads empty (a send by
+    /// mouse). Another conversation in the same box, a different title or address, or a box that is gone is a switch, not
+    /// a send: the whole dictation goes where the cursor is, and the early words stay in the first conversation's draft.
+    public static func sendSeen(start: BoxPrint, now: BoxPrint, value: String?, observedSend: Bool = false) -> Bool {
+        if observedSend { return true }
+        let sameConversation = start.url == now.url && (start.url != nil || start.title == now.title)
+        return sameConversation && looksSent(value)
+    }
+
     public static let earlyWordsNote = "A few early words stayed on the other screen."
 
     /// The first box reads as sent: empty, or the one stray character some apps leave.

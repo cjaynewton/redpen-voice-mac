@@ -205,9 +205,11 @@ enum Insert {
     /// Live drafts and uncertain replacements never use this fallback.
     @MainActor static func finishingText(_ words: String, joining: Int? = nil,
                                          while still: @escaping () -> Bool) async -> Bool {
-        guard still(), canTypeAtFocus, let (element, pid) = focusedElement() else { return false }
+        guard still(), canTypeAtFocus, let (element, pid) = focusedElement() else {
+            Log.note("finish typing: refused before typing (no text box in focus, or a newer dictation)"); return false
+        }
         let before = value(element), range = selectedRange(element), context = pasteContext(element)
-        guard range?.length == 0 else { return false }
+        guard range?.length == 0 else { Log.note("finish typing: refused, text is selected in the box"); return false }
         let began = ProcessInfo.processInfo.systemUptime
         func sameTarget() -> Bool {
             still() && canTypeAtFocus && NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
@@ -248,7 +250,10 @@ enum Insert {
         if ok { return true }
         let first = value(element)
         guard !observedInsertion, sameTarget(), quiet(), FinishInBox.mayPaste(before: before, first: first, settled: first,
-            range: range, currentRange: selectedRange(element), sameTarget: true) else { return false }
+            range: range, currentRange: selectedRange(element), sameTarget: true) else {
+            Log.note("finish typing: not confirmed, no paste retry (part arrived \(observedInsertion), same box \(sameTarget()), you typed or clicked \(!quiet()))")
+            return false
+        }
         try? await Task.sleep(for: .milliseconds(150))
         guard !Task.isCancelled, !observedInsertion, sameTarget(), quiet(),
               FinishInBox.mayPaste(before: before, first: first, settled: value(element), range: range,

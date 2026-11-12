@@ -2118,6 +2118,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if text.isEmpty { draftBlocked(d, .emptyText, during: "ending"); end = .kept; if delivery == d.generation { hud.hide() } }
         else {
             await reconcileAtEnding(d)
+            if let start = d.startBox { followRebuiltStart(start) }
             if let start = d.startBox, focusedStart(start) != nil {
                 let result = await finishInStartBox(d, start, text: text)
                 logDraftEnd(d, result, released: released)
@@ -2131,7 +2132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // same-box guard, but D-1297 still delivers the whole text once when you finish in another box.
             let typedThere = d.typedAny || (d.deliveryUncertain && !asLeft)
             switch DictationEnding.plan(typedInStartBox: typedThere, startBoxAsLeft: asLeft, inStartBox: start.map { isAt($0) } ?? false,
-                                       sent: start.map { wasSent($0) } == true) {
+                                       sent: start.map { sendSeen($0) } == true) {
             case .inPlace:
                 if let start { end = await swapEnding(d, start, text: text) ? .landed : .kept }
                 else { end = .kept }
@@ -2211,6 +2212,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return end
     }
 
+    /// D-1601: only a send Voice saw keeps the words out. A switch to another conversation delivers where you are.
+    private func sendSeen(_ start: StartBox) -> Bool {
+        DictationEnding.sendSeen(start: start.print, now: Self.boxPrint(start.element, withText: false),
+                                 value: Insert.value(start.element), observedSend: start.sent)
+    }
+
+    /// The focused box is the box you started in, rebuilt by the app: a different element in the same window and
+    /// conversation, reading exactly as Voice left it, with nothing of yours typed. Follow it so the ending goes in there.
+    private func followRebuiltStart(_ start: StartBox) {
+        guard !start.sent, !start.userEdited, NSWorkspace.shared.frontmostApplication?.processIdentifier == start.pid,
+              let (element, _) = Insert.focusedElement(), !CFEqual(element, start.element),
+              let window = Self.boxWindow(element), start.window.map({ CFEqual($0, window) }) == true,
+              matches(start, element) else { return }
+        start.follow(element, window: window)
+        Log.note("box check: the box you started in was rebuilt, following it")
+    }
+
     private func wasSent(_ start: StartBox) -> Bool {
         var role: CFTypeRef?
         let gone = AXUIElementCopyAttributeValue(start.element, kAXRoleAttribute as CFString, &role) != .success
@@ -2275,9 +2293,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// talk are checked against it. Since D-965 (Oct 30 2026) the finished words go where you are, not back here.
     final class StartBox {
         let pid: pid_t
-        let element: AXUIElement
+        private(set) var element: AXUIElement
         let app: String
-        let window: AXUIElement?
+        private(set) var window: AXUIElement?
         var print: BoxPrint
         var lastDiagnostic: String?
         var userEdited = false
@@ -2286,6 +2304,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         init(pid: pid_t, element: AXUIElement, app: String, window: AXUIElement?, print: BoxPrint) {
             self.pid = pid; self.element = element; self.app = app; self.window = window; self.print = print
         }
+        /// The app rebuilt the box (web and Electron composers do): same window, conversation and text as Voice left it.
+        func follow(_ rebuilt: AXUIElement, window: AXUIElement?) { element = rebuilt; self.window = window ?? self.window }
     }
     private var startBox: StartBox?
 
@@ -2753,7 +2773,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         if !newer {
                             let asLeft = self.unchanged(b)
                             switch DictationEnding.plan(typedInStartBox: !typedText.isEmpty, startBoxAsLeft: asLeft, inStartBox: false,
-                                                       sent: !asLeft && self.wasSent(b)) {
+                                                       sent: !asLeft && self.sendSeen(b)) {
                             case .keep:
                                 kept = true
                                 self.keptAfterChange(b, typed: typedText, checked: text)
@@ -2815,7 +2835,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 let appended = typedLive > 0 && !whole
                                 let r = await Insert.paste(rest, shape: appended ? .append : .whole,
                                                            while: { self.delivery == gen && self.enterRevision == endingEnterRevision
-                                    && !s.isCancelled && typedBox.map({ !self.wasSent($0) }) != false })
+                                    && !s.isCancelled && typedBox.map({ !self.sendSeen($0) }) != false })
                                 inserted = r.landed
                                 // The start is already in the box: ⌃⌥V would paste it again.
                                 if appended, !inserted, self.delivery == gen {
@@ -2827,7 +2847,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             }
                             else { inserted = await Insert.finishingText(rest, joining: typedLive > 0 && !whole ? gen : nil,
                                 while: { self.delivery == gen && self.enterRevision == endingEnterRevision
-                                    && !s.isCancelled && typedBox.map({ !self.wasSent($0) }) != false }) }
+                                    && !s.isCancelled && typedBox.map({ !self.sendSeen($0) }) != false }) }
                             newer = self.delivery != gen || self.enterRevision != endingEnterRevision
                             // The words were seen where you are: only now do the typed words leave the first box.
                             if inserted, !Insert.unconfirmed, let takeBack { earlyWordsStayed = !(await takeBack()) }
