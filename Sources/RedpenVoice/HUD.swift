@@ -25,6 +25,9 @@ final class HUD {
     /// Also tracked by offscreen checks, where ordering a real desktop window is deliberately disabled.
     private var wantsVisible = false
     var onDismissPopup: () -> Bool = { false }
+    /// Told whenever the bar goes back to idle, however it got there (Esc, a click, a timeout, a finish).
+    var onRested: () -> Void = {}
+    private var stuckSince: Date?
     var menuAvailability: () -> (finish: Bool, cancel: Bool, paste: Bool) = { (true, true, true) }
     var talkKey = "Fn" { didSet { box.talkKey = talkKey } }
     private let panel: TalkingBarPanel
@@ -159,6 +162,31 @@ final class HUD {
             box.state = .resting; box.stateAge = 0
             wantsVisible = false; panel.orderOut(nil)
         }
+        stuckSince = nil
+        onRested()
+    }
+
+    /// A notice (kept for paste, didn't land) clears by itself, so it never hangs around. Paste last keeps the words.
+    /// Questions and word suggestions keep their own rules.
+    func expireNotice(after seconds: Double) {
+        schedule(after: seconds) { hud in
+            guard hud.box.state == .message, hud.waitAction == nil, hud.wordAction == nil else { return }
+            Log.note("bar: notice cleared by itself after \(Int(seconds)) s")
+            hud.rest()
+        }
+    }
+
+    /// Safety net: a listening or writing bar with nothing running behind it goes away after a few seconds.
+    /// Returns true when it hid the bar.
+    @discardableResult
+    func restIfStuck(idle: Bool, now: Date = Date(), after limit: TimeInterval = 3) -> Bool {
+        let live = box.state == .listening || box.state == .writing || (box.state == .needs && listeningActive)
+        guard idle, wantsVisible, live else { stuckSince = nil; return false }
+        guard let since = stuckSince else { stuckSince = now; return false }
+        guard now.timeIntervalSince(since) >= limit else { return false }
+        Log.note("bar: \(box.state.rawValue) left up with nothing running, hid it")
+        rest()
+        return true
     }
 
     func show(_ text: String, level: Bool, ok: Bool = false) {
@@ -529,6 +557,31 @@ final class HUD {
         hud.show("Press ⌃⌥V to paste your words", level: false)
         check("paste notice stays until dismissed", hud.wantsVisible && hud.box.state == .message)
         hud.dismissExtras(); captureHidden("r3-paste-dismissed-hidden")
+        hud.show("Kept it. Press ⌃⌥V to paste", level: false); hud.expireNotice(after: 0.05)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.12))
+        check("paste notice clears by itself", hud.box.state == .resting && !hud.wantsVisible)
+        var rested = 0; hud.onRested = { rested += 1 }
+        hud.show("Kept it. Press ⌃⌥V to paste", level: false)
+        let noticeClick = NSEvent.mouseEvent(with: .leftMouseDown, location: CGPoint(x: 40, y: 20), modifierFlags: [],
+            timestamp: 1, windowNumber: hud.panel.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+        hud.box.mouseDown(with: noticeClick); hud.box.mouseUp(with: noticeClick)
+        check("click on a notice clears it", hud.box.state == .resting && !hud.wantsVisible && rested == 1)
+        hud.ask("These words are waiting.", yes: "Copy", no: "Throw away") { _ in }; hud.expireNotice(after: 0.05)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.12))
+        check("a question does not time out", hud.box.state == .message && hud.wantsVisible)
+        hud.rest(); hud.onRested = {}
+        hud.show("", level: true)
+        let t0 = Date()
+        check("live bar not hidden while busy", !hud.restIfStuck(idle: false, now: t0) && hud.box.state == .listening)
+        check("idle bar waits before hiding", !hud.restIfStuck(idle: true, now: t0) && !hud.restIfStuck(idle: true, now: t0.addingTimeInterval(2)))
+        check("idle live bar hidden after 3 s", hud.restIfStuck(idle: true, now: t0.addingTimeInterval(3.1)) && !hud.wantsVisible)
+        hud.show("", level: true); hud.restIfStuck(idle: true, now: t0)
+        hud.restIfStuck(idle: false, now: t0.addingTimeInterval(1))
+        check("busy again resets the idle clock", !hud.restIfStuck(idle: true, now: t0.addingTimeInterval(3.5)))
+        hud.rest()
+        hud.show("Transcribing… 42%", level: false)
+        check("messages are not hidden by the idle guard", !hud.restIfStuck(idle: true, now: t0) && !hud.restIfStuck(idle: true, now: t0.addingTimeInterval(10)))
+        hud.rest()
         var answer: Bool?
         hud.ask("These words are waiting. Copy them or throw them away?", yes: "Copy", no: "Throw away") { answer = $0 }
         capture("r3-recovery-question")

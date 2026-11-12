@@ -669,6 +669,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let armTimer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.refreshEnterArm() } }
         RunLoop.main.add(armTimer, forMode: .common)
         enterArmTimer = armTimer
+        hud.onRested = { [weak self] in self?.pasteNotice = false }
+        let barGuard = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.hud.restIfStuck(idle: self.session == nil && self.pendingStart == nil && self.writing == 0 && !self.busy
+                                     && self.testFile == nil && self.finishingDrafting == nil && self.meeting == nil)
+            }
+        }
+        RunLoop.main.add(barGuard, forMode: .common)
         pasteKey = Shortcut(id: 1, keyCode: kVK_ANSI_V, name: "Control-Option-V") { [weak self] in self?.pasteLastNow(triggerKey: CGKeyCode(kVK_ANSI_V)) }
         undoKey = Shortcut(id: 2, keyCode: kVK_ANSI_Z, name: "Control-Option-Z") { [weak self] in self?.takeBack() }
         updateSwapKey()
@@ -710,6 +719,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func keepForPaste(_ text: String = "Press ⌃⌥V to paste your words") {
         pasteNotice = true
         hud.show(text, level: false)
+        hud.expireNotice(after: 8)
     }
 
     private func dismissPasteNotice() {
@@ -2730,7 +2740,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // Paste last has the checked text in every case.
                     // Missing/stale protection must never turn into an unguarded send to a new composer.
                     // Keep the complete result in lastSaid/History below, without discarding the opening audio.
-                    var kept = targetUncertain && !(self.firstRun?.isOpen == true && Insert.ownWindowInFront)
+                    // An unchecked start box only matters if words went into it early. Nothing typed yet: the words go
+                    // where you are when you finish, under the normal ending rules (D-1565).
+                    let typedEarly = draftHandled || typedLive > 0
+                    var kept = targetUncertain && typedEarly && !(self.firstRun?.isOpen == true && Insert.ownWindowInFront)
+                    if targetUncertain, !typedEarly, !text.isEmpty { Log.note("insert: start box unchecked, nothing typed early, the words go where you are") }
                     if kept, !newer, !text.isEmpty {
                         self.keepForPaste("Couldn't confirm the box. Press ⌃⌥V to paste your words")
                         Log.note("insert: unverified start target, kept for Paste last")

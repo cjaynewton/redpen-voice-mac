@@ -163,7 +163,14 @@ enum Insert {
         let retyped = deleted == count ? (edit.replacement.isEmpty ? true : await type(edit.replacement, while: safe)) : false
         Log.note("ending replace post: elapsed_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime - began)) deleted=\(deleted) retyped=\(retyped ? 1 : 0)")
         endPosting() // Return can now send, even if the following AX read takes seconds.
-        let confirmed = retyped ? await confirm(edit.expected, in: element, while: still) : false
+        var confirmed = retyped ? await confirm(edit.expected, in: element, while: still) : false
+        // A key you pressed (Enter, say) stops the wait, not the edit. One direct read showing exactly the expected
+        // text in the same focused box counts as landed.
+        if retyped, !confirmed, focusedElement().map({ CFEqual($0.0, element) }) == true,
+           let landedText = Insert.value(element), BoxText.same(edit.expected, landedText) {
+            confirmed = true
+            Log.note("ending replace confirm: exact box read after the wait stopped")
+        }
         Log.note("ending replace confirm: elapsed_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime - began)) confirmed=\(confirmed ? 1 : 0)")
         guard confirmed else {
             forgetLast()

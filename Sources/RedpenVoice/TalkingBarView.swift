@@ -176,6 +176,8 @@ final class TalkingBarView: NSView {
         dragStart = nil
         if moved { onDrag(window?.frame.origin ?? dragOrigin, true) }
         else if state == .resting { onAction("start") }
+        // A click on a notice clears it, like Esc. Listening ignores it (dismissal never stops a recording).
+        else if state == .message || state == .done || state == .needs { onAction("dismiss") }
         NSCursor.openHand.set()
     }
     override func keyDown(with event: NSEvent) {
