@@ -10,6 +10,7 @@ enum Insert {
     /// `joining`: the dictation this text belongs to, when it is typed in pieces, so Take back removes all of it.
     @MainActor static func text(_ text: String, joining: Int? = nil, confirmed: Bool = false, while still: () async -> Bool = { true }) async -> Bool {
         typedSome = false; typedCount = 0; typedPadding = 0; unconfirmed = false; lastEdit = nil; draftAttempt = nil; observedInsertion = false
+        pendingEdit = nil
         guard !text.isEmpty else { return true }  // nothing to type; replacing the selection with "" would delete it
         guard EditBoundary.shared.begin() else { return false }
         var posting = true
@@ -42,6 +43,7 @@ enum Insert {
         if confirmed, expected == nil { Log.note("insert: draft target unreadable, kept for Paste last"); return false }
         if confirmed, let oldValue, let oldRange {
             draftAttempt = (el, .init(before: oldValue, range: oldRange, text: padded))
+            if let expected { pendingEdit = (el, oldValue, oldRange, padded, expected) }
         }
         func recordEdit(_ inserted: String) {
             guard let oldValue, let oldRange, oldRange.location <= oldValue.utf16.count,
@@ -203,18 +205,25 @@ enum Insert {
 
     /// One finishing attempt, followed by one paste only when two reads prove nothing arrived.
     /// Live drafts and uncertain replacements never use this fallback.
+    /// D-1603: a box that won't say what it holds still takes the words, typed as keys. An attempt Voice couldn't
+    /// confirm counts when one read shows exactly the text it was making. An attempt a click stopped before any
+    /// word arrived runs once more where the cursor now is.
     @MainActor static func finishingText(_ words: String, joining: Int? = nil,
-                                         while still: @escaping () -> Bool) async -> Bool {
+                                         while still: @escaping () -> Bool, retried: Bool = false) async -> Bool {
         guard still(), canTypeAtFocus, let (element, pid) = focusedElement() else {
             Log.note("finish typing: refused before typing (no text box in focus, or a newer dictation)"); return false
         }
         let before = value(element), range = selectedRange(element), context = pasteContext(element)
-        guard range?.length == 0 else { Log.note("finish typing: refused, text is selected in the box"); return false }
         let began = ProcessInfo.processInfo.systemUptime
         func sameTarget() -> Bool {
             still() && canTypeAtFocus && NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
                 && focusedElement().map({ CFEqual($0.0, element) && $0.1 == pid }) == true
                 && pasteContext(element) == context
+        }
+        func keysQuiet() -> Bool {
+            let now = ProcessInfo.processInfo.systemUptime
+            let ago = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .keyDown)
+            return ago >= now - began || EnterSendTap.shared.held(at: now - ago, tolerance: DraftSafety.talkKeyTolerance)
         }
         func quiet() -> Bool {
             let now = ProcessInfo.processInfo.systemUptime
@@ -243,16 +252,44 @@ enum Insert {
             }
             return sample.failure(since: began) == nil
         }
-        let ok = await text(words, joining: joining, confirmed: true, while: {
+        let guarded: () async -> Bool = {
             let quiet = await quietAfterListener()
             return sameTarget() && quiet
-        })
+        }
+        // The box won't say what it holds or where its cursor is (some Electron and terminal boxes). Nothing can be
+        // confirmed there, so the words are typed as keys, as a whole dictation always was before the confirmed ending.
+        guard before != nil, let range else {
+            Log.note("finish typing: the box can't be read, typing without a confirming read")
+            return await text(words, joining: joining, while: guarded)
+        }
+        guard range.length == 0 else { Log.note("finish typing: refused, text is selected in the box"); return false }
+        let ok = await text(words, joining: joining, confirmed: true, while: guarded)
         if ok { return true }
         let first = value(element)
+        // Your key or click stops the confirming wait, not the typing already sent. One read of the same box
+        // showing exactly the text being made counts as landed.
+        if let edit = pendingEdit, CFEqual(edit.element, element),
+           FinishInBox.landedOnRead(expected: edit.expected, actual: first) {
+            unconfirmed = false
+            lastEdit = (edit.element, edit.before, edit.range, edit.inserted)
+            dictation = joining; remember(edit.inserted); dictation = nil
+            Log.note("finish typing: exact box read after the wait stopped")
+            return true
+        }
         guard !observedInsertion, sameTarget(), quiet(), FinishInBox.mayPaste(before: before, first: first, settled: first,
             range: range, currentRange: selectedRange(element), sameTarget: true) else {
-            Log.note("finish typing: not confirmed, no paste retry (part arrived \(observedInsertion), same box \(sameTarget()), you typed or clicked \(!quiet()))")
-            return false
+            let moved = !sameTarget(), clicked = !quiet()
+            Log.note("finish typing: not confirmed, no paste retry (part arrived \(observedInsertion), same box \(!moved), you typed or clicked \(clicked))")
+            // A click stopped it before any word arrived (the click that put the cursor in the box, a second click
+            // in it, or a click into another box). The words go where the cursor is now, once.
+            guard FinishInBox.mayRetryAfterClick(before: before, first: first, settled: first, keysQuiet: keysQuiet(),
+                    partArrived: observedInsertion, clickedOrMoved: moved || clicked, retried: retried) else { return false }
+            try? await Task.sleep(for: .milliseconds(Int(FinishInBox.mouseSettle * 1000)))
+            guard !Task.isCancelled, still(), keysQuiet(),
+                  FinishInBox.mayRetryAfterClick(before: before, first: first, settled: value(element), keysQuiet: true,
+                    partArrived: observedInsertion, clickedOrMoved: true, retried: retried) else { return false }
+            Log.note("finish typing: a click stopped it before any word arrived, trying once more where the cursor is")
+            return await finishingText(words, joining: joining, while: still, retried: true)
         }
         try? await Task.sleep(for: .milliseconds(150))
         guard !Task.isCancelled, !observedInsertion, sameTarget(), quiet(),
@@ -270,6 +307,8 @@ enum Insert {
     private static var observedInsertion = false
     /// The exact edit just sent by Voice, for the starting box's expected text. Not arbitrary text read afterward.
     private(set) static var lastEdit: (element: AXUIElement, before: String, range: NSRange, replacement: String)?
+    /// The confirmed insertion in flight: where it goes and the text the box should then read.
+    private static var pendingEdit: (element: AXUIElement, before: String, range: NSRange, inserted: String, expected: String)?
     /// Attempted AX draft or exact posted-key prefix. Never a confirmed edit record.
     private(set) static var draftAttempt: (element: AXUIElement, draft: DictationEnding.LateDraft)?
 

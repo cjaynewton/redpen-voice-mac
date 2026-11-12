@@ -15,7 +15,7 @@ public enum DictationEnding {
         /// The whole checked dictation goes where you are. Any early words in a changed or unconfirmed first box
         /// stay there, because taking them back is unsafe (D-1297).
         case deliver
-        /// Words of this dictation were sent, including a conversation switch read as a send (D-998). Nothing more
+        /// Words of this dictation were sent, and Voice saw the send (D-998, narrowed by D-1603). Nothing more
         /// is typed anywhere, so a sent message never repeats in the next chat. Paste last has the checked text.
         case keep
     }
@@ -107,8 +107,19 @@ public enum DictationEnding {
     /// a send: the whole dictation goes where the cursor is, and the early words stay in the first conversation's draft.
     public static func sendSeen(start: BoxPrint, now: BoxPrint, value: String?, observedSend: Bool = false) -> Bool {
         if observedSend { return true }
-        let sameConversation = start.url == now.url && (start.url != nil || start.title == now.title)
-        return sameConversation && looksSent(value)
+        return sameConversation(start: start, now: now) && looksSent(value)
+    }
+
+    /// The same web address, or with no address the same window title.
+    public static func sameConversation(start: BoxPrint, now: BoxPrint) -> Bool {
+        start.url == now.url && (start.url != nil || start.title == now.title)
+    }
+
+    /// A dictation whose start box couldn't be checked, with words typed early (D-1603, widening D-1565). It used to
+    /// be kept for Paste last every time. Now only a send Voice saw keeps it: Enter went out while you talked, or
+    /// the box the early words went into reads empty. Otherwise the words land where the cursor is.
+    public static func holdsUncheckedStart(typedEarly: Bool, enterSeen: Bool, earlyBoxReadsEmpty: Bool) -> Bool {
+        typedEarly && (enterSeen || earlyBoxReadsEmpty)
     }
 
     public static let earlyWordsNote = "A few early words stayed on the other screen."
