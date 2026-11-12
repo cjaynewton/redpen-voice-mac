@@ -700,31 +700,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.note("keyboard: AppleFnUsageType \(FnKey.usage)\(FnKey.problem.map { ", \($0)" } ?? "")")
     }
 
+    private var pasteNotice = false
+    private var pasteNoticeWatch: Any?
+
+    private func keepForPaste(_ text: String = "Press ⌃⌥V to paste your words") {
+        pasteNotice = true
+        hud.show(text, level: false)
+    }
+
+    private func dismissPasteNotice() {
+        guard pasteNotice else { return }
+        pasteNotice = false
+        hud.hide()
+    }
+
     /// Watches for your own typing and clicks. Set up again when Accessibility arrives (watchers made before it can
     /// stay deaf).
     private func installWatches() {
         if let t = typingWatch { NSEvent.removeMonitor(t) }
         if let c = clickWatch { NSEvent.removeMonitor(c) }
+        if let monitor = pasteNoticeWatch { NSEvent.removeMonitor(monitor) }
+        pasteNoticeWatch = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown]) { [weak self] event in
+            MainActor.assumeIsolated { self?.dismissPasteNotice() }
+            return event
+        }
         // Any key you type yourself after a dictation means take-back must not guess. Our own typing is skipped.
         let me = Int64(ProcessInfo.processInfo.processIdentifier)
         typingWatch = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] e in
             if e.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) != me, self?.enterTap.held(at: e.timestamp) != true {
                 MainActor.assumeIsolated {
-                    Insert.typedSince = true
-                    if self?.keys.keys.contains(where: { $0.code == Int(e.keyCode) }) != true {
-                        self?.userActedAt = Date()
+                    self?.dismissPasteNotice()
+                    if let self, !DraftInput.isTalkKey(Int(e.keyCode), configured: self.keys.keys.map(\.code)) {
+                        Insert.typedSince = true
+                        self.userActedAt = Date()
                         // Escape now reaches your app while you talk (D-987). It types nothing, so the box still
                         // reads as Voice left it; its text is still checked at the ending.
                         if EscapeTwice.marksBoxEdited(keyCode: Int(e.keyCode)) {
-                            self?.userTypedInStartBox(sent: EnterSend.owns(keyCode: Int(e.keyCode), flags: UInt64(e.modifierFlags.rawValue)))
+                            self.userTypedInStartBox(sent: EnterSend.owns(keyCode: Int(e.keyCode), flags: UInt64(e.modifierFlags.rawValue)))
                         }
                     }
                 }
             }
         }
-        // A click anywhere means you may have moved the cursor: draft fixing stops for that dictation.
+        // A click pauses drafts. Recovery reads the original element after the mouse settles.
         clickWatch = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-            MainActor.assumeIsolated { self?.userActedAt = Date() }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.dismissPasteNotice()
+                self.userActedAt = Date()
+                guard let d = self.drafting, !d.draftsStopped || d.clickPaused else { return }
+                d.clickPaused = true; d.checksStopped = true; d.stopWhy = .paused
+                self.stopDrafts(d)
+                self.scheduleClickRecovery(d)
+            }
         }
     }
 
@@ -899,6 +927,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var slowTargets = 0, cappedTargets = 0
 
     private func begin() {
+        dismissPasteNotice()
         if pendingStart != nil { cancel(reason: .tapTimeout) }
         if meeting != nil { hud.flash("Meeting notes are on", for: 1.5); return }
         guard !busy, session == nil, testFile == nil else { return }
@@ -1415,6 +1444,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// normal and the recording goes on; a second press within half a second throws it away. Returns false when
     /// nothing is recording, so the key is ordinary.
     private func escapePressed(at time: Double, repeated: Bool) -> Bool {
+        dismissPasteNotice()
         guard session != nil || pendingStart != nil, var presses = escapePresses else { return false }
         let twice = presses.press(at: time, repeated: repeated)
         escapePresses = presses
@@ -1599,6 +1629,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let startedUptime: Double
         let input: DraftInput
         var hardwareSample: DraftSafety.HardwareSample?
+        var quietUptime: Double
+        var quietAt: Date
+        var clickPaused = false
+        var clickRecovery = 0
+        var pendingDrafts: [(index: Int, text: String)] = []
         var reportedFailures: Set<DraftSafety.Failure> = []
         var runs: [Run] = []
         var nextDraft = 0
@@ -1622,6 +1657,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.owner = owner; self.generation = generation; self.startBox = startBox
             startedAt = since
             startedUptime = uptime ?? (ProcessInfo.processInfo.systemUptime - Date().timeIntervalSince(since))
+            quietUptime = startedUptime; quietAt = since
             self.input = input ?? keys.trackDraft(since: startedUptime)
         }
         /// Anything actually typed (empty drafts leave nothing in the box).
@@ -1635,7 +1671,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return config.mode == "noUms" ? Fillers.strip(n) : n
     }
 
-    /// Drafts stop for good in this dictation. The bar says why and keeps counting the words still to go in (D-972).
+    /// Stop or pause live typing. A click pause can resume after a fresh box and caret proof.
     private func stopDrafts(_ d: Drafting) {
         d.draftsStopped = true
         // Late callbacks from an older dictation must never replace a newer one's bar.
@@ -1645,6 +1681,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @discardableResult
     private func draftBlocked(_ d: Drafting, _ reason: DraftSafety.Failure, during path: String) -> Bool {
+        if reason == .hardwareClick {
+            d.clickPaused = true; d.checksStopped = true; d.stopWhy = .paused
+        } else if reason == .hardwareKey {
+            d.clickPaused = false; d.stopWhy = .typed
+        }
         // The first reason is the one the bar gives.
         if d.stopWhy == nil { d.stopWhy = TalkingWords.Stop(reason) }
         if d.reportedFailures.insert(reason).inserted {
@@ -1663,7 +1704,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func draftQuiet(_ d: Drafting, during path: String) async -> Bool {
         guard !d.owner.isCancelled, d.startBox?.sent != true, delivery == d.generation,
               session === d.owner || (session == nil && finishingDrafting?.owner === d.owner) else { return false }
-        let sample = await DraftSafety.resolveHardwareAsync(since: d.startedUptime, sample: {
+        let sample = await DraftSafety.resolveHardwareAsync(since: d.quietUptime, sample: {
             // Read counters before taking the listener snapshot, giving that thread time to identify the key.
             let now = ProcessInfo.processInfo.systemUptime
             let keyAgo = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .keyDown)
@@ -1678,8 +1719,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !d.owner.isCancelled, d.startBox?.sent != true, delivery == d.generation,
               session === d.owner || (session == nil && finishingDrafting?.owner === d.owner) else { return false }
         d.hardwareSample = sample
-        if let failure = sample.failure(since: d.startedUptime) { return draftBlocked(d, failure, during: path) }
-        if userActedAt >= d.startedAt { return draftBlocked(d, .userActed, during: path) }
+        if sample.typingKeyDownAt.map({ $0 >= d.startedUptime }) == true {
+            return draftBlocked(d, .hardwareKey, during: path)
+        }
+        if let failure = sample.failure(since: d.quietUptime) { return draftBlocked(d, failure, during: path) }
+        if userActedAt >= d.quietAt { return draftBlocked(d, .userActed, during: path) }
         return true
     }
 
@@ -1736,8 +1780,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return sample.failure(since: start) == nil
     }
 
+    private func mouseAge() -> Double {
+        min(CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .leftMouseDown),
+            CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .rightMouseDown))
+    }
+
+    private func scheduleClickRecovery(_ d: Drafting) {
+        d.clickRecovery += 1
+        let revision = d.clickRecovery
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard let self, d.clickRecovery == revision, self.session === d.owner else { return }
+            await self.edits.enqueue {
+                guard self.session === d.owner, d.clickRecovery == revision else { return }
+                if self.mouseAge() < FinishInBox.mouseSettle { self.scheduleClickRecovery(d); return }
+                self.reconcileLateDraft(d, afterClick: true)
+                _ = self.resumeAfterClick(d)
+            }
+        }
+    }
+
+    @discardableResult
+    private func resumeAfterClick(_ d: Drafting) -> Bool {
+        guard d.clickPaused, !d.owner.isCancelled, delivery == d.generation, session === d.owner,
+              let start = d.startBox else { return false }
+        reconcileLateDraft(d, afterClick: true)
+        let proofUptime = ProcessInfo.processInfo.systemUptime, proofDate = Date()
+        let keyPressed = d.input.snapshot().typingAt != nil
+        if keyPressed { d.clickPaused = false; d.stopWhy = .typed; return false }
+        guard FinishInBox.mayResume(typed: d.runs.map(\.text).joined(), expected: start.print.text,
+            actual: Insert.value(start.element), cursor: Insert.selectionRange(start.element),
+            focused: isAt(start), sent: wasSent(start), userEdited: start.userEdited, keyPressed: keyPressed,
+            uncertain: d.deliveryUncertain, longTalk: LongTalk.isLong(seconds: Date().timeIntervalSince(d.startedAt)),
+            mouseAge: mouseAge()),
+            d.input.snapshot().typingAt == nil,
+            mouseAge() >= max(FinishInBox.mouseSettle, ProcessInfo.processInfo.systemUptime - proofUptime) else { return false }
+        d.quietUptime = proofUptime; d.quietAt = proofDate
+        d.clickPaused = false; d.draftsStopped = false; d.stopWhy = nil
+        // Skipped checks must not advance the long-talk checked-prefix count. Final checking still runs.
+        d.checksStopped = true
+        hud.resumeTyping(TalkingWords.typingLine(words: d.heard, handsFree: keys.handsFree, key: talkKeyName))
+        Log.note("draft: back in the unchanged box, typing resumed")
+        return true
+    }
+
     /// A draft from the fast engine: typed at once if the cursor is in a text box (D-763), in order, never after a
-    /// draft that couldn't go in, never over a selection.
+    /// unconfirmed draft, never over a selection. Click-paused drafts wait in order for a proved return.
     private func draft(_ i: Int, _ text: String, from s: Transcriber.Session) async {
         // The current dictation's drafts, or the last ones of the dictation you just let go of (so its record has no gap).
         guard let d = (drafting?.owner === s && session === s ? drafting : finishingDrafting?.owner === s ? finishingDrafting : nil),
@@ -1747,17 +1835,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         d.heard += TalkingWords.words(out)
         // A long talk (D-1023): nothing more is typed into the box, so the ending never has thousands of letters to
         // swap. The bar counts the words instead.
-        if !d.draftsStopped, LongTalk.isLong(seconds: Date().timeIntervalSince(d.startedAt)) {
+        if !d.longStopped, LongTalk.isLong(seconds: Date().timeIntervalSince(d.startedAt)) {
             d.longStopped = true
-            if d.stopWhy == nil { d.stopWhy = .longTalk }
+            d.stopWhy = .longTalk
             Log.note("long talk: \(Log.int(LongTalk.after))s in, drafts stop typing, the rest goes in when you stop")
             stopDrafts(d)
         }
+        if d.clickPaused { _ = resumeAfterClick(d) }
         // Stopped: only the count on the bar moves, so you can see it is still listening (D-972).
         if d.draftsStopped {
+            if d.clickPaused, !d.longStopped { d.pendingDrafts.append((i, out)) }
             if session === d.owner { hud.stoppedTyping(TalkingWords.stoppedLine(d.stopWhy, words: d.heard)) }
             return
         }
+        let pending = d.pendingDrafts + [(index: i, text: out)]
+        d.pendingDrafts.removeAll()
+        for (index, words) in pending {
+            if d.draftsStopped {
+                if d.clickPaused { d.pendingDrafts.append((index, words)) }
+            } else { await typeDraft(index, words, into: d, from: s) }
+        }
+    }
+
+    private func typeDraft(_ i: Int, _ out: String, into d: Drafting, from s: Transcriber.Session) async {
         if out.trimmingCharacters(in: .whitespaces).isEmpty { d.runs.append(.init(drafts: i..<i + 1, text: "", checked: false)); return }
         if d.box == nil {
             // The first words fix where this dictation goes: a text box with a plain cursor (no selected words, which
@@ -1769,7 +1869,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             d.box = (pid, el)
         }
-        guard await draftSafe(d, during: "draft") else { stopDrafts(d); return }
+        guard await draftSafe(d, during: "draft") else {
+            if d.clickPaused { d.pendingDrafts.append((i, out)); scheduleClickRecovery(d) }
+            stopDrafts(d); return
+        }
         let typed = await Insert.text(out, joining: delivery, confirmed: true, while: { await self.draftQuiet(d, during: "typing draft") })
         rememberOwnTyping(in: d.startBox)
         if typed {
@@ -1785,6 +1888,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if d.deliveryUncertain { d.checksStopped = true }  // the box no longer matches the record
             draftBlocked(d, .editUnconfirmed, during: "typing draft")
             stopDrafts(d)
+            if d.clickPaused {
+                if !d.deliveryUncertain { d.pendingDrafts.append((i, out)) }
+                scheduleClickRecovery(d)
+            }
             Log.note("draft: could not type, drafts stopped")
         }
     }
@@ -1859,19 +1966,107 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The only allowed correction to an uncertain record: our full insertion arrived late in the same box.
     /// Keep the ordinary swap's expected-value, cursor and quiet guards, and never retry a failed swap.
-    private func reconcileLateDraft(_ d: Drafting) {
-        guard let late = d.lateDraft, let start = d.startBox,
-              NSWorkspace.shared.frontmostApplication?.processIdentifier == start.pid,
-              let (element, _) = Insert.focusedElement() else { return }
+    private func reconcileLateDraft(_ d: Drafting, afterClick: Bool = false) {
+        guard let late = d.lateDraft, let start = d.startBox else { return }
+        if afterClick {
+            guard mouseAge() >= FinishInBox.mouseSettle, d.input.snapshot().typingAt == nil,
+                  !d.owner.isCancelled, delivery == d.generation else { return }
+        }
+        let focused = NSWorkspace.shared.frontmostApplication?.processIdentifier == start.pid
+            && Insert.focusedElement().map({ CFEqual($0.0, start.element) }) == true
+        guard focused || afterClick else { return }
+        let element = start.element
         let sameWindow = start.window.flatMap { old in Self.boxWindow(element).map { CFEqual(old, $0) } } ?? false
         guard let match = DictationEnding.reconcileLateDraft(late.insertion, confirmedDrafts: d.runs.map(\.text).joined(),
-            start: start.print, now: Self.boxPrint(element, withText: false), actual: Insert.value(element),
-            cursor: Insert.selectionRange(element), sameElement: CFEqual(element, start.element), sameWindow: sameWindow,
-            userEdited: start.userEdited, inStartBox: true, observedSend: start.sent) else { return }
+            start: start.print, now: Self.boxPrint(element, withText: false), actual: Insert.value(start.element),
+            cursor: Insert.selectionRange(element), sameElement: true, sameWindow: sameWindow,
+            userEdited: start.userEdited, inStartBox: focused, observedSend: wasSent(start),
+            allowUnfocused: afterClick) else { return }
+        if afterClick, d.input.snapshot().typingAt != nil { return }
         start.print = match.box
         d.runs.append(.init(drafts: late.drafts, text: match.text, checked: false))
-        d.lateDraft = nil
+        d.lateDraft = nil; d.deliveryUncertain = false
         Log.note("draft: reconciled late own insertion, \(match.text.utf16.count) letters; ending still needs confirmation")
+    }
+
+    /// During an owned deletion the box can be temporarily empty. Check identity and observed sends there;
+    /// the unchanged wasSent/looksSent rules apply before the edit, not to our own intermediate empty value.
+    private func sameStartContext(_ start: StartBox) -> Bool {
+        guard !start.sent, let old = start.window, let now = Self.boxWindow(start.element), CFEqual(old, now) else { return false }
+        return BoxMatch.same(start: start.print, now: Self.boxPrint(start.element, withText: false),
+                             nowText: start.print.text, sameElement: true, sameWindow: true)
+    }
+
+    /// Same actual text element, window and conversation, independent of edits elsewhere in its value.
+    private func focusedStart(_ start: StartBox, duringOwnEdit: Bool = false) -> AXUIElement? {
+        guard Insert.canTypeAtFocus, NSWorkspace.shared.frontmostApplication?.processIdentifier == start.pid,
+              let (element, _) = Insert.focusedElement(), CFEqual(element, start.element),
+              sameStartContext(start), duringOwnEdit || !wasSent(start) else { return nil }
+        return element
+    }
+
+    /// At the ending a moved caret can first be aligned to a fully proved late insertion. The ordinary
+    /// reconciliation then still requires focus and the cursor readback; key-interrupted attempts stay strict.
+    private func reconcileAtEnding(_ d: Drafting) async {
+        reconcileLateDraft(d, afterClick: d.clickPaused)
+        guard let late = d.lateDraft, let start = d.startBox, let element = focusedStart(start),
+              d.clickPaused, d.input.snapshot().typingAt == nil, mouseAge() >= FinishInBox.mouseSettle,
+              let actual = Insert.value(element),
+              let match = DictationEnding.reconcileLateDraft(late.insertion, confirmedDrafts: d.runs.map(\.text).joined(),
+                start: start.print, now: Self.boxPrint(element, withText: false), actual: actual, cursor: nil,
+                sameElement: true, sameWindow: true, userEdited: start.userEdited, inStartBox: false,
+                observedSend: wasSent(start), allowUnfocused: true),
+              let range = FinishInBox.span(of: d.runs.map(\.text).joined() + match.text, in: actual) else { return }
+        let after = Date()
+        guard await Insert.positionAfter(range, expected: actual, in: element, while: {
+            let quiet = await AppDelegate.userQuietSinceAsync(after)
+            return quiet && !d.owner.isCancelled && self.delivery == d.generation && !start.sent && !self.wasSent(start)
+        }) else { return }
+        reconcileLateDraft(d)
+    }
+
+    /// The final editor snapshot is local to this edit. Never adopt someone else's surrounding edits as ours.
+    private func prepareEndingSpan(_ d: Drafting, _ start: StartBox) async -> (element: AXUIElement, value: String, range: NSRange)? {
+        guard !d.deliveryUncertain, let element = focusedStart(start), let value = Insert.value(element),
+              let range = FinishInBox.span(of: d.runs.map(\.text).joined(), in: value) else { return nil }
+        let after = Date()
+        guard await Insert.positionAfter(range, expected: value, in: element, while: {
+            let quiet = await AppDelegate.userQuietSinceAsync(after)
+            return quiet && !d.owner.isCancelled && !start.sent && self.delivery == d.generation && !self.wasSent(start)
+        }) else { return nil }
+        return (element, value, range)
+    }
+
+    private func finishInStartBox(_ d: Drafting, _ start: StartBox, text: String) async -> DraftEnd {
+        guard let element = focusedStart(start), let actual = Insert.value(element) else {
+            if delivery == d.generation { keepForPaste() }
+            return .kept
+        }
+        let typed = d.runs.map(\.text).joined()
+        let decision = FinishInBox.ending(typed: typed, checked: text, actual: actual,
+                                         sent: wasSent(start), uncertain: d.deliveryUncertain)
+        let landed: Bool
+        switch decision {
+        case .replace:
+            landed = await swapEnding(d, start, text: text)
+        case .append(let rest):
+            // No replacement. The exact checked prefix proves which words remain; this attempt cannot erase a selection.
+            guard Insert.selectionRange(element)?.length == 0 else {
+                if delivery == d.generation { keepForPaste() }
+                return .kept
+            }
+            let after = Date()
+            landed = await Insert.finishingText(rest, joining: d.generation, while: {
+                !d.owner.isCancelled && !start.sent && self.delivery == d.generation && !self.wasSent(start)
+                    && self.focusedStart(start) != nil && self.userActedAt < after
+            })
+            Insert.forgetLast()
+        case .keep: landed = false
+        }
+        if delivery == d.generation {
+            if landed { hud.hide() } else { keepForPaste() }
+        }
+        return landed ? .landed : .kept
     }
 
     /// The ending in draft mode (D-965). Still in the box the drafts went into, and it reads as Voice left it: the
@@ -1885,7 +2080,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // An empty ending types nothing, so the bar goes instead of staying on Writing until the next press.
         if text.isEmpty { draftBlocked(d, .emptyText, during: "ending"); end = .kept; if delivery == d.generation { hud.hide() } }
         else {
-            reconcileLateDraft(d)
+            await reconcileAtEnding(d)
+            if let start = d.startBox, focusedStart(start) != nil {
+                let result = await finishInStartBox(d, start, text: text)
+                logDraftEnd(d, result, released: released)
+                return result
+            }
             // An uncertain draft only matters if it changed the box: one that reads exactly as Voice's confirmed
             // record still holds just the drafts in d.runs.
             let start = d.startBox
@@ -1900,7 +2100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 else { end = .kept }
                 if delivery == d.generation {
                     if case .landed = end { hud.hide() }
-                    else { hud.flash("Didn't confirm all the words. Press ⌃⌥V to paste the checked text", for: 3.5) }
+                    else { keepForPaste("Didn't confirm all the words. Press ⌃⌥V to paste the checked text") }
                 }
             case .takeBackThenDeliver: end = .deliver(takeBack: true)
             case .deliver: end = .deliver(takeBack: false)
@@ -1930,10 +2130,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// where long endings broke. Anywhere else the ordinary ending decides.
     private func finishLongDrafts(_ d: Drafting, _ s: Transcriber.Session, text: String, released: Date, gen: Int) async -> DraftEnd {
         guard !text.isEmpty, let start = d.startBox else { return await finishDrafts(d, s, text: text, released: released) }
-        reconcileLateDraft(d)
-        let asLeft = unchanged(start)
-        let typedThere = d.typedAny || (d.deliveryUncertain && !asLeft)
-        guard case .inPlace = DictationEnding.plan(typedInStartBox: typedThere, startBoxAsLeft: asLeft, inStartBox: isAt(start), sent: wasSent(start)) else {
+        await reconcileAtEnding(d)
+        guard let owned = await prepareEndingSpan(d, start) else {
             return await finishDrafts(d, s, text: text, released: released)
         }
         d.draftsStopped = true; d.checksStopped = true
@@ -1944,30 +2142,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var pasted = Insert.PasteResult(landed: false, copied: false)
         let needsPaste = !rest.trimmingCharacters(in: .whitespaces).isEmpty
         // Nothing comes out of the box until the paste can run: an earlier paste still settling would refuse it.
-        let after = Date().addingTimeInterval(0.05)
+        let after = Date()
         let quiet: () async -> Bool = {
-            let quiet = Date() < after ? true : await AppDelegate.userQuietSinceAsync(after)
-            return quiet && !d.owner.isCancelled && !start.sent && self.delivery == gen
+            let quiet = await AppDelegate.userQuietSinceAsync(after)
+            return quiet && !d.owner.isCancelled && !start.sent && self.sameStartContext(start) && self.delivery == gen
         }
         // The bar is this dictation's only while no newer press has begun.
         let mine = { self.delivery == gen }
         // ⌃⌥V pastes every word, which would put the part already in the box in twice: the bar points at History.
-        if mine(), !(needsPaste && Insert.pasteBusy), isAt(start), let expected = start.print.text, let (element, _) = Insert.focusedElement(),
-           (erase.isEmpty ? true : await Insert.replaceDraft(erase, with: "", expectedBox: expected, in: element, while: quiet)) {
+        if mine(), !(needsPaste && Insert.pasteBusy), focusedStart(start) != nil,
+           Insert.value(owned.element).map({ FinishInBox.exact(owned.value, $0) }) == true,
+           (erase.isEmpty ? true : await Insert.replaceDraft(erase, with: "", expectedBox: owned.value, in: owned.element,
+               exactRange: NSRange(location: NSMaxRange(owned.range) - erase.utf16.count, length: erase.utf16.count), while: quiet)) {
             if !erase.isEmpty { rememberOwnTyping(in: start) }
             // An override may have sent Return when the deletion finished. Never append into its new composer.
-            if needsPaste, mine(), !start.sent, !d.owner.isCancelled, isAt(start) {
-                pasted = await Insert.paste(rest, shape: .append, while: { mine() && !start.sent && !d.owner.isCancelled })
+            if needsPaste, mine(), !start.sent, !d.owner.isCancelled, focusedStart(start, duringOwnEdit: true) != nil {
+                pasted = await Insert.paste(rest, shape: .append, while: { mine() && !start.sent && self.sameStartContext(start) && !d.owner.isCancelled })
             } else if !needsPaste { pasted = .init(landed: true, copied: false) }
             // Take back can't remove the whole long talk, so it removes nothing, as after any draft ending.
             Insert.forgetLast()
             if pasted.landed { end = .landed; if mine() { hud.hide() } }
             else if mine() {
-                hud.flash(pasted.copied ? "Check the box. If the end is missing, ⌘V pastes it" : "Check the box. If the end is missing, History has it", for: 5)
+                keepForPaste(pasted.copied ? "Check the box. If the end is missing, ⌘V pastes it" : "Check the box. If the end is missing, History has it")
             }
         } else {
             draftBlocked(d, .editUnconfirmed, during: "long ending")
-            if mine() { hud.flash("Couldn't confirm the box. Check it. History has every word", for: 5) }
+            if mine() { keepForPaste("Couldn't confirm the box. Check it. History has every word") }
         }
         Log.note("long talk: kept \(keep) checked runs, took out \(erase.utf16.count) letters, pasted \(rest.utf16.count) letters of \(s.written.count - d.piecesIn) pieces, \(pasted.landed ? "confirmed" : "not confirmed")")
         logDraftEnd(d, end, released: released)
@@ -1991,16 +2191,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let now = Self.boxPrint(b.element, withText: false)
             return now.url == b.print.url && now.title == b.print.title && DictationEnding.looksSent(Insert.value(b.element))
         } ?? false
-        if let note = DictationEnding.keptNote(sent: sent, voiceUnsure: voiceUnsure, typed: typed, checked: checked) { hud.flash(note, for: 3.5) }
+        if let note = DictationEnding.keptNote(sent: sent, voiceUnsure: voiceUnsure, typed: typed, checked: checked) { keepForPaste(note) }
         else { hud.hide() }
         Log.note("insert: the box you started in was \(sent ? "sent" : voiceUnsure ? "left unconfirmed by Voice's own fix" : "changed") after Voice typed into it, nothing typed again, kept for paste")
     }
 
-    /// Swaps the drafts for the checked text in the box you are still in. A key or click from earlier in the dictation
-    /// doesn't stop it (Oct 30 log: most endings were lost that way): the box must read as Voice left it, the cursor
-    /// must still sit right after the drafts, and you must press nothing while it swaps. Never retried.
+    /// Prove a unique literal span, align and confirm the caret, then swap only Voice's own words.
+    /// Surrounding user edits stay. Any new input while swapping stops it, and an uncertain swap is never retried.
     private func swapEnding(_ d: Drafting, _ start: StartBox, text: String) async -> Bool {
-        guard let expected = start.print.text, let (element, _) = Insert.focusedElement() else {
+        guard let owned = await prepareEndingSpan(d, start) else {
             return draftBlocked(d, .elementChanged, during: "ending")
         }
         let typed = d.runs.map(\.text).joined()
@@ -2008,12 +2207,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fixed = lead + text.trimmingCharacters(in: .whitespaces)
         d.checks += 1
         if fixed != typed { d.changed += 1; d.words += Corrections.wordsChanged(typed, fixed) }
-        let after = Date().addingTimeInterval(0.05)
+        let after = Date()
         let quiet: () async -> Bool = {
-            let quiet = Date() < after ? true : await AppDelegate.userQuietSinceAsync(after)
-            return quiet && !d.owner.isCancelled && !start.sent && self.delivery == d.generation
+            let quiet = await AppDelegate.userQuietSinceAsync(after)
+            return quiet && !d.owner.isCancelled && !start.sent && self.sameStartContext(start) && self.delivery == d.generation
         }
-        guard await Insert.replaceDraft(typed, with: fixed, expectedBox: expected, in: element, while: quiet) else {
+        guard await Insert.replaceDraft(typed, with: fixed, expectedBox: owned.value, in: owned.element,
+                                        exactRange: owned.range, while: quiet) else {
             return draftBlocked(d, .editUnconfirmed, during: "ending")
         }
         rememberOwnTyping(in: start)
@@ -2026,7 +2226,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func takeBackTyped(_ typed: String, from element: AXUIElement, start: StartBox) async -> Bool {
         guard !typed.isEmpty else { return true }
         guard let expected = start.print.text else { return false }
-        let ok = unchanged(start) ? await Insert.takeBack(typed, expectedBox: expected, from: element) : false
+        let ok = unchanged(start) ? await Insert.takeBack(typed, expectedBox: expected, from: element,
+            while: { !start.sent && self.sameStartContext(start) && !self.wasSent(start) }) : false
         if ok { rememberOwnTyping(in: start) }
         Log.note(ok ? "insert: took this dictation's typed words back out of the box you started in"
                     : "insert: couldn't confirm taking the typed words back out of the box you started in, they stay there")
@@ -2177,7 +2378,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let text = waitingText, session == nil else { return }
         if Date() > until {
             stopWaiting()
-            hud.flash("Kept it. Press ⌃⌥V to paste", for: 3)
+            keepForPaste("Kept it. Press ⌃⌥V to paste")
             Log.note("insert: nobody clicked a text box in 10 minutes, kept for paste")
             return
         }
@@ -2201,16 +2402,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let gen = delivery
             let r = await Insert.paste(text, shape: .whole, while: { self.session == nil && self.delivery == gen })
             guard session == nil else { return }
-            hud.flash(r.landed ? "Pasted" : r.copied ? "Didn't see it land. ⌘V pastes it" : "Couldn't paste it here. Press ⌃⌥V",
-                      ok: r.landed, for: r.landed ? 1.0 : 3)
+            if r.landed { hud.flash("Pasted", ok: true) }
+            else { keepForPaste(r.copied ? "Didn't see it land. ⌘V pastes it" : "Couldn't paste it here. Press ⌃⌥V") }
             Log.note("insert: long talk pasted after a click into \(focus.role), \(r.landed)")
             return
         }
         let gen = delivery
-        let ok = await Insert.text(text, while: { self.session == nil && self.delivery == gen })
+        let ok = await Insert.finishingText(text, while: { self.session == nil && self.delivery == gen })
         guard session == nil, delivery == gen else { return }
-        if ok, Insert.unconfirmed { hud.flash("Didn't see it land. Press ⌃⌥V to paste it", for: 3) }
-        else { hud.flash(ok ? "Pasted" : "Couldn't type it here. Press ⌃⌥V to paste", ok: ok, for: ok ? 1.0 : 2.5) }
+        if ok, Insert.unconfirmed { keepForPaste("Didn't see it land. Press ⌃⌥V to paste it") }
+        else if ok { hud.flash("Pasted", ok: true) }
+        else { keepForPaste("Couldn't type it here. Press ⌃⌥V to paste") }
         Log.note("insert: pasted after a click into \(focus.role), \(ok)")
     }
 
@@ -2237,10 +2439,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stopWaiting()
         if copy {
             let ok = PasteClipboardLoan(text) != nil
-            hud.flash(ok ? DictationEnding.copiedNote : "Couldn't copy. Press ⌃⌥V to paste", ok: ok, for: ok ? 1.0 : 2.5)
+            if ok { hud.flash(DictationEnding.copiedNote, ok: true) }
+            else { keepForPaste("Couldn't copy. Press ⌃⌥V to paste") }
             Log.note("insert: waiting words copied, \(ok)")
         } else {
-            hud.flash(DictationEnding.thrownAwayNote, for: 2)
+            keepForPaste(DictationEnding.thrownAwayNote)
             Log.note("insert: waiting words thrown away, kept for paste")
         }
     }
@@ -2502,7 +2705,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // Keep the complete result in lastSaid/History below, without discarding the opening audio.
                     var kept = targetUncertain && !(self.firstRun?.isOpen == true && Insert.ownWindowInFront)
                     if kept, !newer, !text.isEmpty {
-                        self.hud.flash("Couldn't confirm the box. Press ⌃⌥V to paste your words", for: 5)
+                        self.keepForPaste("Couldn't confirm the box. Press ⌃⌥V to paste your words")
                         Log.note("insert: unverified start target, kept for Paste last")
                     }
                     if !draftHandled, !text.isEmpty, typedLive > 0, let b = box, !self.isAt(b) {
@@ -2570,34 +2773,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             else if long {
                                 let appended = typedLive > 0 && !whole
                                 let r = await Insert.paste(rest, shape: appended ? .append : .whole,
-                                                           while: { self.delivery == gen && self.enterRevision == endingEnterRevision })
+                                                           while: { self.delivery == gen && self.enterRevision == endingEnterRevision
+                                    && !s.isCancelled && typedBox.map({ !self.wasSent($0) }) != false })
                                 inserted = r.landed
                                 // The start is already in the box: ⌃⌥V would paste it again.
                                 if appended, !inserted, self.delivery == gen {
-                                    self.hud.flash(r.copied ? "Check the box. If the end is missing, ⌘V pastes it" : "Check the box. If the end is missing, History has it", for: 5)
+                                    self.keepForPaste(r.copied ? "Check the box. If the end is missing, ⌘V pastes it" : "Check the box. If the end is missing, History has it")
                                 }
                                 // Take back can't remove the pieces typed live together with this paste: nothing rather than half.
                                 if appended { Insert.forgetLast() }
                                 newer = self.delivery != gen || self.enterRevision != endingEnterRevision
                             }
-                            else { inserted = await Insert.text(rest, joining: typedLive > 0 && !whole ? gen : nil, confirmed: myDrafting != nil,
-                                                                while: { self.delivery == gen && self.enterRevision == endingEnterRevision }) }
+                            else { inserted = await Insert.finishingText(rest, joining: typedLive > 0 && !whole ? gen : nil,
+                                while: { self.delivery == gen && self.enterRevision == endingEnterRevision
+                                    && !s.isCancelled && typedBox.map({ !self.wasSent($0) }) != false }) }
                             newer = self.delivery != gen || self.enterRevision != endingEnterRevision
                             // The words were seen where you are: only now do the typed words leave the first box.
                             if inserted, !Insert.unconfirmed, let takeBack { earlyWordsStayed = !(await takeBack()) }
                             if inserted, !newer { self.fixWatch.watch(text) }
                             if inserted, !newer, draftHandled == false, !s.hadMedia { self.pointOutWords(text, audio: s.recorded, gen: gen) }
                             if !newer {
-                                if inserted, Insert.unconfirmed { self.hud.flash("Didn't see it land. Press ⌃⌥V to paste it", for: 3) }
+                                if inserted, Insert.unconfirmed { self.keepForPaste("Didn't see it land. Press ⌃⌥V to paste it") }
                                 else if inserted, earlyWordsStayed { self.hud.flash(DictationEnding.earlyWordsNote, for: 3.5) }
                                 else if inserted { if handsFree { self.hud.flash("Hands-free done", ok: true) } else { self.hud.hide() } }
-                                else if !(long && typedLive > 0 && !whole) { self.hud.flash("Words kept. Click a text box and press ⌃⌥V to paste", for: 3) }
+                                else if !(long && typedLive > 0 && !whole) { self.keepForPaste("Words kept. Click a text box and press ⌃⌥V to paste") }
                             }
                             Log.note("insert: focus \(focus.role), \(focus.kind.rawValue)")
                         }
                     }
                     if typedLive > 0 { Log.note("live: \(typedLive) of \(s.written.count) pieces typed while talking") }
-                    if s.endingLost, !newer { self.hud.flash("The last few words didn't come through. Say them again.", for: 3.5) }
+                    if s.endingLost, !newer, !self.pasteNotice { self.hud.flash("The last few words didn't come through. Say them again.", for: 3.5) }
                     if !raw.isEmpty, ["whisper", "parakeet", "live"].contains(self.config.engine) {
                         self.talk.add(s.recorded, words: raw.split(separator: " ").count)
                         self.talk.save(AppDelegate.talkURL)
@@ -2760,6 +2965,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Control-Option-V: the last dictation again, at the cursor.
     private func pasteLastNow(triggerKey: CGKeyCode? = nil) {
+        dismissPasteNotice()
         guard session == nil, let e = history.lastSpoken() ?? lastSaid else { hud.flash("Nothing to paste yet"); return }
         stopWaiting()
         deliveries.supersede()  // a dictation still being written won't start its own wait after this
@@ -2776,9 +2982,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let result = await Insert.paste(e.text, triggerKey: triggerKey,
                                             while: { self.session == nil && self.delivery == gen })
             guard self.session == nil, self.delivery == gen else { return }
-            self.hud.flash(result.landed ? "Pasted" : result.copied
-                            ? "Paste not confirmed. Text copied. Press ⌘V"
-                            : "Paste not confirmed. Try ⌃⌥V again", ok: result.landed, for: 3)
+            if result.landed { self.hud.flash("Pasted", ok: true) }
+            else { self.keepForPaste(result.copied ? "Paste not confirmed. Text copied. Press ⌘V"
+                                                    : "Paste not confirmed. Try ⌃⌥V again") }
             Log.note("paste last: \(result.landed)")
         }
     }

@@ -9,7 +9,7 @@ import VoiceCore
 enum Insert {
     /// `joining`: the dictation this text belongs to, when it is typed in pieces, so Take back removes all of it.
     @MainActor static func text(_ text: String, joining: Int? = nil, confirmed: Bool = false, while still: () async -> Bool = { true }) async -> Bool {
-        typedSome = false; typedCount = 0; typedPadding = 0; unconfirmed = false; lastEdit = nil; draftAttempt = nil
+        typedSome = false; typedCount = 0; typedPadding = 0; unconfirmed = false; lastEdit = nil; draftAttempt = nil; observedInsertion = false
         guard !text.isEmpty else { return true }  // nothing to type; replacing the selection with "" would delete it
         guard EditBoundary.shared.begin() else { return false }
         var posting = true
@@ -109,16 +109,20 @@ enum Insert {
                                 attempts: Int = 20) async -> Bool {
         await EditWait.confirm(attempts: attempts, while: still) {
             // Read-only AX work can itself block inside another app, even without a polling sleep.
-            await Task.detached(priority: .userInitiated) { () -> Bool? in
-                guard let (now, _) = focusedElement(), CFEqual(now, element) else { return nil }
-                return value(element).map { BoxText.same(expected, $0) } == true
+            let read = await Task.detached(priority: .userInitiated) { () -> (focused: Bool, value: String?) in
+                let focused = focusedElement().map { CFEqual($0.0, element) } == true
+                return (focused, value(element))
             }.value
+            if let actual = read.value, let attempt = draftAttempt, CFEqual(attempt.element, element),
+               !FinishInBox.exact(attempt.draft.before, actual) { observedInsertion = true }
+            guard read.focused else { return nil }
+            return read.value.map { BoxText.same(expected, $0) } == true
         }
     }
 
     /// Replace only the known suffix, using the editor's actual length and checking what landed afterward.
     @MainActor static func replaceDraft(_ draft: String, with replacement: String, expectedBox: String,
-                             in element: AXUIElement, while still: @escaping () async -> Bool) async -> Bool {
+                             in element: AXUIElement, exactRange: NSRange? = nil, while still: @escaping () async -> Bool) async -> Bool {
         lastEdit = nil
         guard EditBoundary.shared.begin() else { return false }
         var posting = true
@@ -127,7 +131,7 @@ enum Insert {
         guard await still(), let (now, _) = focusedElement(), CFEqual(now, element),
               let value = value(element), let cursor = selectedRange(element),
               let edit = DraftReplacement(expectedBox: expectedBox, actual: value, cursor: cursor,
-                                          draft: draft, replacement: replacement) else { return false }
+                                          draft: draft, replacement: replacement, exactRange: exactRange) else { return false }
         let began = ProcessInfo.processInfo.systemUptime
         let count = ((value as NSString).substring(with: edit.range)).count
         let unchanged = edit.landed(value)
@@ -160,8 +164,62 @@ enum Insert {
         return true
     }
 
+    /// Move only the caret, then read both caret and box back before permitting a replacement.
+    @MainActor static func positionAfter(_ range: NSRange, expected: String, in element: AXUIElement,
+                                         while still: () async -> Bool) async -> Bool {
+        guard await still(), canTypeAtFocus,
+              focusedElement().map({ CFEqual($0.0, element) }) == true,
+              value(element).map({ FinishInBox.exact(expected, $0) }) == true else { return false }
+        var cursor = CFRange(location: NSMaxRange(range), length: 0)
+        guard let value = AXValueCreate(.cfRange, &cursor),
+              AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, value) == .success,
+              await still(), focusedElement().map({ CFEqual($0.0, element) }) == true,
+              selectedRange(element) == NSRange(location: cursor.location, length: 0),
+              Self.value(element).map({ FinishInBox.exact(expected, $0) }) == true else { return false }
+        return true
+    }
+
+    /// One finishing attempt, followed by one paste only when two reads prove nothing arrived.
+    /// Live drafts and uncertain replacements never use this fallback.
+    @MainActor static func finishingText(_ words: String, joining: Int? = nil,
+                                         while still: @escaping () -> Bool) async -> Bool {
+        guard still(), canTypeAtFocus, let (element, pid) = focusedElement() else { return false }
+        let before = value(element), range = selectedRange(element), context = pasteContext(element)
+        guard range?.length == 0 else { return false }
+        let began = ProcessInfo.processInfo.systemUptime
+        func sameTarget() -> Bool {
+            still() && canTypeAtFocus && NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+                && focusedElement().map({ CFEqual($0.0, element) && $0.1 == pid }) == true
+                && pasteContext(element) == context
+        }
+        func quiet() -> Bool {
+            let elapsed = ProcessInfo.processInfo.systemUptime - began
+            return [CGEventType.keyDown, .leftMouseDown, .rightMouseDown].allSatisfy {
+                let ago = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: $0)
+                if $0 == .keyDown, EnterSendTap.shared.held(at: ProcessInfo.processInfo.systemUptime - ago,
+                                                          tolerance: DraftSafety.talkKeyTolerance) { return true }
+                return ago >= elapsed
+            }
+        }
+        let ok = await text(words, joining: joining, confirmed: true, while: { sameTarget() && quiet() })
+        if ok { return true }
+        let first = value(element)
+        guard !observedInsertion, sameTarget(), quiet(), FinishInBox.mayPaste(before: before, first: first, settled: first,
+            range: range, currentRange: selectedRange(element), sameTarget: true) else { return false }
+        try? await Task.sleep(for: .milliseconds(150))
+        guard !Task.isCancelled, !observedInsertion, sameTarget(), quiet(),
+              FinishInBox.mayPaste(before: before, first: first, settled: value(element), range: range,
+                                  currentRange: selectedRange(element), sameTarget: true) else { return false }
+        Log.note("insert: finishing box unchanged, trying one paste")
+        let result = await paste(words, shape: joining == nil ? .whole : .append,
+                                 while: { sameTarget() && quiet() })
+        return result.landed
+    }
+
     /// True after the last insert when typing was sent but not seen in the box.
     private(set) static var unconfirmed = false
+    /// Sticky within one insertion attempt. A partial arrival followed by a revert still vetoes a paste retry.
+    private static var observedInsertion = false
     /// The exact edit just sent by Voice, for the starting box's expected text. Not arbitrary text read afterward.
     private(set) static var lastEdit: (element: AXUIElement, before: String, range: NSRange, replacement: String)?
     /// Full attempted draft, even when it arrives after confirmation timed out. Never a confirmed edit record.
@@ -355,20 +413,25 @@ enum Insert {
     /// bringing it forward, never by typing keys into a window behind. Only the known words right before that box's
     /// cursor, only while it reads as Voice left it, and it counts only when the box then reads as expected. Tried
     /// once: when nothing changed, the cursor goes back, so a key pressed there later can't replace a selection.
-    @MainActor static func takeBack(_ typed: String, expectedBox: String, from el: AXUIElement) async -> Bool {
+    @MainActor static func takeBack(_ typed: String, expectedBox: String, from el: AXUIElement,
+                                     while still: () -> Bool) async -> Bool {
         lastEdit = nil
-        guard let before = value(el), let cursor = selectedRange(el),
-              let edit = DraftReplacement(expectedBox: expectedBox, actual: before, cursor: cursor, draft: typed, replacement: "") else { return false }
+        guard still(), let before = value(el), let cursor = selectedRange(el),
+              let owned = FinishInBox.span(of: typed, in: before),
+              let edit = DraftReplacement(expectedBox: expectedBox, actual: before,
+                  cursor: NSRange(location: NSMaxRange(owned), length: 0), draft: typed, replacement: "", exactRange: owned) else { return false }
         var words = CFRange(location: edit.range.location, length: edit.range.length)
         guard let range = AXValueCreate(.cfRange, &words) else { return false }
         let selected = AXUIElementSetAttributeValue(el, kAXSelectedTextRangeAttribute as CFString, range) == .success
-        if selected, AXUIElementSetAttributeValue(el, kAXSelectedTextAttribute as CFString, "" as CFString) == .success {
+        if selected, still(), selectedRange(el) == edit.range,
+           value(el).map({ FinishInBox.exact(before, $0) }) == true,
+           AXUIElementSetAttributeValue(el, kAXSelectedTextAttribute as CFString, "" as CFString) == .success {
             for _ in 0..<6 {
                 if edit.landed(value(el)) { lastEdit = (el, edit.before, edit.range, ""); return true }
                 try? await Task.sleep(for: .milliseconds(50))
             }
         }
-        if selected, value(el) == before {
+        if selected, selectedRange(el) == edit.range, value(el) == before {
             var back = CFRange(location: cursor.location, length: 0)
             if let r = AXValueCreate(.cfRange, &back) { AXUIElementSetAttributeValue(el, kAXSelectedTextRangeAttribute as CFString, r) }
         }
@@ -549,7 +612,7 @@ enum Insert {
         AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
     }
 
-    private static var canTypeAtFocus: Bool {
+    static var canTypeAtFocus: Bool {
         let current = focus()
         return FocusGate.canType(kind: current.kind, hasFocusedElement: current.role != "none" && current.role != "Redpen Voice")
     }

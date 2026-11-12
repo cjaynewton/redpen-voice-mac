@@ -207,6 +207,12 @@ final class HUD {
         place()
     }
 
+    /// Resume the existing listening bar without resetting its timer or drawing.
+    func resumeTyping(_ line: String) {
+        typingStopped = false
+        listeningCaption(line)
+    }
+
     /// The listening bar, as it is when already showing (its time keeps running), or brought back over a hidden bar,
     /// a message or an older dictation's Writing.
     private func listen() {

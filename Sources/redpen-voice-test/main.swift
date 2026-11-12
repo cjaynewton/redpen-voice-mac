@@ -3290,5 +3290,7 @@ do {
     }
 }
 
+finishInBoxChecks { name, ok in check(name, ok) }
+
 print("\(pass) passed, \(fail) failed")
 exit(fail == 0 ? 0 : 1)

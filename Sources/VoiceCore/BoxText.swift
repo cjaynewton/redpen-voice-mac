@@ -21,26 +21,34 @@ public struct DraftReplacement {
     public let expected: String
     public let keptCharacters: Int
 
-    public init?(expectedBox: String, actual: String, cursor: NSRange, draft: String, replacement: String) {
+    public init?(expectedBox: String, actual: String, cursor: NSRange, draft: String, replacement: String, exactRange: NSRange? = nil) {
         guard BoxText.same(expectedBox, actual), cursor.length == 0, cursor.location >= 0,
               cursor.location <= actual.utf16.count,
               cursor.location == actual.utf16.count || actual.indices.contains(where: { $0.utf16Offset(in: actual) == cursor.location }) else { return nil }
-        let prefix = (actual as NSString).substring(to: cursor.location)
-        let words = prefix.split(whereSeparator: \.isWhitespace)
-        let wanted = draft.split(whereSeparator: \.isWhitespace)
-        guard !wanted.isEmpty, words.count >= wanted.count,
-              words.suffix(wanted.count).elementsEqual(wanted) else { return nil }
-        var start = words[words.count - wanted.count].startIndex
-        if draft.first?.isWhitespace == true {
-            while start > prefix.startIndex {
-                let previous = prefix.index(before: start)
-                guard prefix[previous].isWhitespace else { break }
-                start = previous
+        let wholeRange: NSRange
+        if let exactRange {
+            guard FinishInBox.exact(expectedBox, actual),
+                  FinishInBox.span(of: draft, in: actual) == exactRange,
+                  NSMaxRange(exactRange) == cursor.location else { return nil }
+            wholeRange = exactRange
+        } else {
+            let prefix = (actual as NSString).substring(to: cursor.location)
+            let words = prefix.split(whereSeparator: \.isWhitespace)
+            let wanted = draft.split(whereSeparator: \.isWhitespace)
+            guard !wanted.isEmpty, words.count >= wanted.count,
+                  words.suffix(wanted.count).elementsEqual(wanted) else { return nil }
+            var start = words[words.count - wanted.count].startIndex
+            if draft.first?.isWhitespace == true {
+                while start > prefix.startIndex {
+                    let previous = prefix.index(before: start)
+                    guard prefix[previous].isWhitespace else { break }
+                    start = previous
+                }
             }
+            let offset = start.utf16Offset(in: prefix)
+            wholeRange = NSRange(location: offset, length: cursor.location - offset)
         }
-        let offset = start.utf16Offset(in: prefix)
         self.before = actual
-        let wholeRange = NSRange(location: offset, length: cursor.location - offset)
         let suffix = (actual as NSString).substring(with: wholeRange)
         // Compare exact encodings, not Swift's canonically equivalent Character equality. Keep only
         // complete graphemes shared by the actual editor suffix and the checked replacement.
@@ -51,7 +59,7 @@ public struct DraftReplacement {
             a = nextA; b = nextB; kept += 1
         }
         let units = a.utf16Offset(in: suffix)
-        range = NSRange(location: offset + units, length: wholeRange.length - units)
+        range = NSRange(location: wholeRange.location + units, length: wholeRange.length - units)
         self.replacement = String(replacement[b...])
         keptCharacters = kept
         expected = (actual as NSString).replacingCharacters(in: wholeRange, with: replacement)

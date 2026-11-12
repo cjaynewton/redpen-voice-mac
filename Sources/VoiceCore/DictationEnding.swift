@@ -46,11 +46,11 @@ public enum DictationEnding {
     /// vary. The returned text is the editor's actual inserted suffix, so replacement never deletes by a guess.
     public static func reconcileLateDraft(_ draft: LateDraft, confirmedDrafts: String, start: BoxPrint, now: BoxPrint,
                                           actual: String?, cursor: NSRange?, sameElement: Bool, sameWindow: Bool,
-                                          userEdited: Bool, inStartBox: Bool, observedSend: Bool = false) -> (box: BoxPrint, text: String)? {
+                                          userEdited: Bool, inStartBox: Bool, observedSend: Bool = false, allowUnfocused: Bool = false) -> (box: BoxPrint, text: String)? {
         // Compare UTF-16 literally too: normalization of letters outside the join isn't a whitespace change.
         func exact(_ a: String, _ b: String) -> Bool { a.utf16.elementsEqual(b.utf16) }
-        guard inStartBox, sameElement, sameWindow, !userEdited,
-              let actual, let cursor, cursor.length == 0,
+        guard (inStartBox || allowUnfocused), sameElement, sameWindow, !userEdited,
+              let actual,
               !wasSent(start: start, now: now, value: actual, observedSend: observedSend),
               BoxMatch.same(start: start, now: now, nowText: start.text, sameElement: sameElement,
                             sameWindow: sameWindow),
@@ -70,8 +70,9 @@ public enum DictationEnding {
            inserted.first?.isWhitespace != true { return nil }
         if !suffix.isEmpty, suffix.first?.isWhitespace != true, draft.text.last?.isWhitespace == true,
            inserted.last?.isWhitespace != true { return nil }
-        guard cursor.location == draft.range.location + added,
-              DraftReplacement(expectedBox: actual, actual: actual, cursor: cursor,
+        let end = NSRange(location: draft.range.location + added, length: 0)
+        guard (!inStartBox && allowUnfocused) || cursor == end,
+              DraftReplacement(expectedBox: actual, actual: actual, cursor: end,
                                draft: confirmedDrafts + inserted, replacement: "") != nil else { return nil }
         var box = start
         guard box.recordEdit(before: draft.before, range: draft.range, replacement: inserted),

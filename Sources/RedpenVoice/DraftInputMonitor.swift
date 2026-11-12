@@ -63,7 +63,7 @@ final class DraftInputMonitor: @unchecked Sendable {
         guard !VoiceEvents.isOwn(pid: event.getIntegerValueField(.eventSourceUnixProcessID),
                                  userData: event.getIntegerValueField(.eventSourceUserData)) else { return }
         let code = Int(event.getIntegerValueField(.keyboardEventKeycode))
-        lock.lock(); let talk = talkCodes.contains(code); lock.unlock()
+        lock.lock(); let talk = DraftInput.isTalkKey(code, configured: Array(talkCodes)); lock.unlock()
         if type == .flagsChanged {
             // Both directions: the Mac's key-down counter moves on the Fn release too (Oct 30: every blocked
             // ending sat within 0.1 ms of the stop tap's release, 120 to 180 ms after its press).

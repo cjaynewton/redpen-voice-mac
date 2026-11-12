@@ -139,6 +139,11 @@ final class HoldKey {
 
     private func key(_ e: NSEvent) {
         let code = Int(e.keyCode)
+        if code == 179, DraftInput.isTalkKey(code, configured: keys.map(\.code)), !isOwn(e) {
+            // Companion input evidence only. Fn's flagsChanged remains the sole gesture owner.
+            if e.type == .keyDown { draftInputMonitor.record(talkKey: true, at: e.timestamp) }
+            return
+        }
         if isTalkKey(code) {
             if Self.modifiers[code] == nil { receive(e, down: e.type == .keyDown) }
             else if e.type == .keyDown, !isOwn(e) {

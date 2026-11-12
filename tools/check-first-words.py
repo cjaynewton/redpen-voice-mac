@@ -152,6 +152,23 @@ wiring_checks += [
     ("Enter override invalidates ending across cleanup waits", end_source.index("let endingEnterRevision = enterRevision") < end_source.index("s.finish()") and "var newer = self.delivery != gen || self.enterRevision != endingEnterRevision" in queued_finish),
     ("main hardware check asynchronously awaits listener", "await DraftSafety.resolveHardwareAsync" in block(app_source, "private func draftQuiet(") and "await DraftSafety.resolveHardwareAsync" in block(app_source, "private static func userQuietSinceAsync(")),
 ]
+# Finish-in-box wiring retains the existing send/discard gates and uses the exact-span adapter.
+wiring_checks += [
+    ("click recovery waits then reads start element", "Task.sleep(for: .milliseconds(150))" in block(app_source, "private func scheduleClickRecovery(") and "Insert.value(start.element)" in block(app_source, "private func reconcileLateDraft(")),
+    ("click recovery refuses keys and stale owner", all(x in block(app_source, "private func reconcileLateDraft(") for x in ["d.input.snapshot().typingAt == nil", "!d.owner.isCancelled", "delivery == d.generation", "observedSend: wasSent(start)"])),
+    ("resume requires original box caret and long-talk guard", all(x in block(app_source, "private func resumeAfterClick(") for x in ["FinishInBox.mayResume", "focused: isAt(start)", "sent: wasSent(start)", "cursor: Insert.selectionRange", "LongTalk.isLong"])),
+    ("resume does not pretend skipped checks were applied", "d.checksStopped = true" in block(app_source, "private func resumeAfterClick(")),
+    ("ending replacement has exact range and caret proof", "prepareEndingSpan(d, start)" in block(app_source, "private func swapEnding(") and "exactRange: owned.range" in block(app_source, "private func swapEnding(")),
+    ("caret setter confirms range and unchanged value", all(x in block(insert_source, "static func positionAfter(") for x in ["kAXSelectedTextRangeAttribute", "selectedRange(element) ==", "FinishInBox.exact(expected, $0)"])),
+    ("ending fallback gets one paste and two reads", block(insert_source, "static func finishingText(").count("await paste(") == 1 and block(insert_source, "static func finishingText(").count("FinishInBox.mayPaste") == 2),
+    ("own temporary deletion is not mistaken for a send", "self.sameStartContext(start)" in block(app_source, "private func swapEnding(") and "!self.wasSent(start)" not in block(app_source, "private func swapEnding(") and "focusedStart(start, duringOwnEdit: true)" in block(app_source, "private func finishLongDrafts(")),
+    ("take-back proves unique span and selected range", all(x in block(insert_source, "static func takeBack(_") for x in ["FinishInBox.span", "exactRange: owned", "selectedRange(el) == edit.range", "FinishInBox.exact(before, $0)"])),
+    ("confirmation remembers any partial arrival", "observedInsertion = true" in block(insert_source, "private static func confirm(") and "!observedInsertion" in block(insert_source, "static func finishingText(")),
+    ("finishing insertion cannot erase a user selection", "guard range?.length == 0" in block(insert_source, "static func finishingText(")),
+    ("paste notice has no timer", "hud.show(text, level: false)" in block(app_source, "private func keepForPaste(") and "asyncAfter" not in block(app_source, "private func keepForPaste(")),
+    ("paste notice dismisses on input and new recording", "dismissPasteNotice()" in begin and "dismissPasteNotice()" in block(app_source, "private func escapePressed(") and block(app_source, "private func installWatches()").count("dismissPasteNotice()") == 3),
+    ("Fn companion never marks starting box edited", "DraftInput.isTalkKey(Int(e.keyCode)" in block(app_source, "private func installWatches()") and "code == 179" in block(hold_source, "private func key(")),
+]
 for name, passed in wiring_checks:
     if not passed:
         raise AssertionError(name)
@@ -253,13 +270,43 @@ enum Transcriber {
 '''
 # Exercise the actual Insert.replaceDraft adapter with an inert editor, never AX or keyboard events.
 replacement_adapter = block(insert_source, "static func replaceDraft(")
+finishing_adapter = block(insert_source, "static func finishingText(")
+position_adapter = block(insert_source, "static func positionAfter(")
+takeback_adapter = block(insert_source, "static func takeBack(_")
 text_start = insert_source[insert_source.index("static func text("):]
 text_adapter = text_start[:text_start.index("async -> Bool {")] + block(text_start, "async -> Bool {")
 insert_stubs = r'''
 
+enum CGEventType { case keyDown, leftMouseDown, rightMouseDown }
+enum CGEventSource {
+    enum State { case hidSystemState }
+    static func secondsSinceLastEventType(_ state: State, eventType: CGEventType) -> Double { .infinity }
+}
+struct FakeFront { let processIdentifier = 1 }
+struct NSWorkspace {
+    static let shared = NSWorkspace()
+    var frontmostApplication: FakeFront? { FakeFront() }
+}
+struct EnterSendTap {
+    static let shared = EnterSendTap()
+    func held(at: Double, tolerance: Double) -> Bool { false }
+}
 typealias AXUIElement = NSObject
 let kAXFocusedUIElementAttribute = "focus"
 let kAXSelectedTextAttribute = "text"
+let kAXSelectedTextRangeAttribute = "range"
+enum FakeAXValueType { case cfRange }
+final class FakeAXRange: NSObject {
+    let range: CFRange
+    init(_ range: CFRange) { self.range = range }
+}
+func AXValueCreate(_ type: FakeAXValueType, _ range: UnsafePointer<CFRange>) -> FakeAXRange? { FakeAXRange(range.pointee) }
+func AXUIElementSetAttributeValue(_ el: AXUIElement, _ attr: CFString, _ value: FakeAXRange) -> FakeAXResult {
+    guard Insert.cursorAccepts else { return .failure }
+    if !Insert.cursorNoEffect { Insert.cursorOverride = NSRange(location: value.range.location, length: value.range.length) }
+    Insert.onCursorSet?()
+    return .success
+}
 enum FakeAXResult { case success, failure }
 func AXUIElementCreateSystemWide() -> AXUIElement { Insert.element }
 func AXUIElementCopyAttributeValue(_ el: AXUIElement, _ attr: CFString, _ result: inout CFTypeRef?) -> FakeAXResult {
@@ -268,7 +315,11 @@ func AXUIElementCopyAttributeValue(_ el: AXUIElement, _ attr: CFString, _ result
 func AXUIElementGetTypeID() -> CFTypeID { CFGetTypeID(Insert.element) }
 func AXUIElementSetAttributeValue(_ el: AXUIElement, _ attr: CFString, _ value: CFString) -> FakeAXResult {
     guard Insert.axAccepts else { return .failure }
-    Insert.box += value as String; return .success
+    if let range = Insert.cursorOverride {
+        Insert.box = (Insert.box as NSString).replacingCharacters(in: range, with: value as String)
+        Insert.cursorOverride = NSRange(location: range.location + (value as String).utf16.count, length: 0)
+    } else { Insert.box += value as String }
+    return .success
 }
 enum Insert {
     static let element = NSObject()
@@ -276,6 +327,19 @@ enum Insert {
     static var deleted = 0, typed = "", attempts = 0
     static var typedSome = false, typedCount = 0, typedPadding = 0, unconfirmed = false
     static var axAccepts = false
+    static var observedInsertion = false
+    static var dropTyping = false, partialTyping = false, pasteCalls = 0
+    static var cursorOverride: NSRange?
+    static var cursorAccepts = true, cursorNoEffect = false, focusIsOriginal = true
+    static var onCursorSet: (() -> Void)?
+    enum PasteShape { case whole, append }
+    struct PasteResult { let landed: Bool }
+    static func pasteContext(_ e: AXUIElement) -> [String] { ["same chat"] }
+    static func paste(_ words: String, shape: PasteShape, while still: () -> Bool) async -> PasteResult {
+        guard still() else { return .init(landed: false) }
+        pasteCalls += 1; box += words
+        return .init(landed: true)
+    }
     static var dictation: Int?
     static var draftAttempt: (element: AXUIElement, draft: DictationEnding.LateDraft)?
     static var onTypeChunk: (() -> Void)?
@@ -289,17 +353,23 @@ enum Insert {
     static var canConfirm = true
     static var onConfirm: (() -> Void)?
     static var lastEdit: (element: AXUIElement, before: String, range: NSRange, replacement: String)?
-    static func reset(_ value: String) { box = value; deleted = 0; typed = ""; attempts = 0; canConfirm = true; onConfirm = nil; onTypeChunk = nil; axAccepts = false; typedSome = false; typedCount = 0 }
+    static func reset(_ value: String) { box = value; deleted = 0; typed = ""; attempts = 0; canConfirm = true; onConfirm = nil; onTypeChunk = nil; axAccepts = false; typedSome = false; typedCount = 0; dropTyping = false; partialTyping = false; pasteCalls = 0; cursorOverride = nil; cursorAccepts = true; cursorNoEffect = false; focusIsOriginal = true; onCursorSet = nil }
     static func value(_ e: AXUIElement) -> String? { box }
-    static func selectedRange(_ e: AXUIElement) -> NSRange? { NSRange(location: box.utf16.count, length: 0) }
-    static func focusedElement() -> (AXUIElement, Int)? { (element, 1) }
+    static func selectedRange(_ e: AXUIElement) -> NSRange? { cursorOverride ?? NSRange(location: box.utf16.count, length: 0) }
+    static func focusedElement() -> (AXUIElement, Int)? { focusIsOriginal ? (element, 1) : nil }
     static func forgetLast() {}
     static func backspace(_ count: Int, while still: () async -> Bool) async -> Int {
         attempts += 1
         var n = 0
         while n < count {
             guard await still() else { break }
-            box.removeLast(); deleted += 1; n += 1
+            if let cursor = cursorOverride {
+                let prefix = (box as NSString).substring(to: cursor.location)
+                let units = String(prefix.last!).utf16.count
+                box = (box as NSString).replacingCharacters(in: NSRange(location: cursor.location - units, length: units), with: "")
+                cursorOverride = NSRange(location: cursor.location - units, length: 0)
+            } else { box.removeLast() }
+            deleted += 1; n += 1
         }
         return n
     }
@@ -309,7 +379,15 @@ enum Insert {
             guard await still() else { return false }
             let part = Array(units[from..<min(from + 20, units.count)])
             let posted = String(decoding: part, as: UTF16.self)
-            typed += posted; box += posted; typedSome = true; typedCount += part.count
+            typed += posted
+            if !dropTyping {
+                let landed = partialTyping ? String(posted.prefix(1)) : posted
+                if let cursor = cursorOverride {
+                    box = (box as NSString).replacingCharacters(in: cursor, with: landed)
+                    cursorOverride = NSRange(location: cursor.location + landed.utf16.count, length: 0)
+                } else { box += landed }
+            }
+            typedSome = true; typedCount += part.count
             if let onTypeChunk { await Task.yield(); onTypeChunk() }
         }
         return await still()
@@ -317,6 +395,7 @@ enum Insert {
     static func confirm(_ expected: String, in e: AXUIElement, while still: () async -> Bool, attempts: Int = 20) async -> Bool {
         if let onConfirm { await Task.yield(); onConfirm() }
         guard await still() else { return false }
+        if let attempt = draftAttempt, !FinishInBox.exact(attempt.draft.before, box) { observedInsertion = true }
         return canConfirm && BoxText.same(expected, box)
     }
 '''
@@ -352,6 +431,86 @@ final class Calls: @unchecked Sendable {
         return test()
     }
     @MainActor static func main() async throws {
+        // Real caret and take-back adapters, using inert AX setters and readbacks.
+        let caretBox = "Mine. Voice words My tail."
+        let caretSpan = FinishInBox.span(of: " Voice words", in: caretBox)!
+        Insert.reset(caretBox); Insert.cursorOverride = NSRange(location: 0, length: 0)
+        let positioned = await Insert.positionAfter(caretSpan, expected: caretBox, in: Insert.element, while: { true })
+        check("caret adapter moves to exact own end", positioned && Insert.selectedRange(Insert.element)?.location == NSMaxRange(caretSpan) && Insert.box == caretBox)
+        Insert.reset(caretBox); Insert.cursorOverride = NSRange(location: 0, length: 0); Insert.cursorNoEffect = true
+        let ignoredPosition = await Insert.positionAfter(caretSpan, expected: caretBox, in: Insert.element, while: { true })
+        check("caret adapter requires actual readback", !ignoredPosition && Insert.box == caretBox)
+        Insert.reset(caretBox); Insert.cursorAccepts = false
+        let refusedPosition = await Insert.positionAfter(caretSpan, expected: caretBox, in: Insert.element, while: { true })
+        check("caret adapter refuses failed setter", !refusedPosition && Insert.box == caretBox)
+        Insert.reset(caretBox); Insert.onCursorSet = { Insert.box = "User edited" }
+        let editedPosition = await Insert.positionAfter(caretSpan, expected: caretBox, in: Insert.element, while: { true })
+        check("caret adapter rejects concurrent edit", !editedPosition && Insert.box == "User edited")
+        Insert.reset(caretBox); Insert.onCursorSet = { Insert.focusIsOriginal = false }
+        let changedFocus = await Insert.positionAfter(caretSpan, expected: caretBox, in: Insert.element, while: { true })
+        check("caret adapter rejects focus change", !changedFocus && Insert.box == caretBox)
+        Insert.reset(caretBox); Insert.axAccepts = true; Insert.cursorOverride = NSRange(location: 0, length: 0)
+        let tookBack = await Insert.takeBack(" Voice words", expectedBox: caretBox, from: Insert.element, while: { true })
+        check("take-back adapter finds own words with moved caret", tookBack && Insert.box == "Mine. My tail.")
+        Insert.reset(caretBox); Insert.axAccepts = true; Insert.cursorNoEffect = true
+        let unselectedBack = await Insert.takeBack(" Voice words", expectedBox: caretBox, from: Insert.element, while: { true })
+        check("take-back adapter never deletes after ignored selection", !unselectedBack && Insert.box == caretBox)
+        Insert.reset(" Voice words Voice words"); Insert.axAccepts = true
+        let duplicateBack = await Insert.takeBack(" Voice words", expectedBox: Insert.box, from: Insert.element, while: { true })
+        check("take-back adapter never deletes duplicate spans", !duplicateBack && Insert.box == " Voice words Voice words")
+        Insert.reset(caretBox); Insert.axAccepts = true
+        let sentBack = await Insert.takeBack(" Voice words", expectedBox: caretBox, from: Insert.element, while: { false })
+        check("take-back adapter never deletes after send", !sentBack && Insert.box == caretBox)
+        // Execute the production finishing adapter against an inert editor.
+        Insert.reset("old")
+        Insert.dropTyping = true
+        let fallback = await Insert.finishingText(" complete", while: { true })
+        check("finishing adapter unchanged target pastes once", fallback && Insert.pasteCalls == 1 && Insert.box == "old complete")
+        Insert.reset("old")
+        let typed = await Insert.finishingText(" complete", while: { true })
+        check("finishing adapter landed typing never pastes", typed && Insert.pasteCalls == 0 && Insert.box == "old complete")
+        Insert.reset("old")
+        Insert.cursorOverride = NSRange(location: 0, length: 3)
+        let selection = await Insert.finishingText(" complete", while: { true })
+        check("finishing adapter preserves user's selection", !selection && Insert.typed.isEmpty && Insert.pasteCalls == 0 && Insert.box == "old")
+        Insert.reset("old")
+        Insert.partialTyping = true
+        let partial = await Insert.finishingText(" complete", while: { true })
+        check("finishing adapter partial typing never pastes", !partial && Insert.pasteCalls == 0 && Insert.box == "old ")
+        Insert.reset("old")
+        Insert.dropTyping = true
+        Insert.onConfirm = { Insert.observedInsertion = true }
+        let reverted = await Insert.finishingText(" complete", while: { true })
+        check("finishing adapter observed arrival then revert never pastes", !reverted && Insert.pasteCalls == 0 && Insert.box == "old")
+        Insert.reset("old")
+        Insert.dropTyping = true
+        let late = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(60))
+            Insert.box += " complete"
+        }
+        let delayed = await Insert.finishingText(" complete", while: { true })
+        await late.value
+        check("finishing adapter late arrival vetoes paste", !delayed && Insert.pasteCalls == 0 && Insert.box == "old complete")
+        Insert.reset("old")
+        Insert.dropTyping = true
+        var owns = true
+        let revoke = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(60)); owns = false
+        }
+        let finishRevoked = await Insert.finishingText(" complete", while: { owns })
+        await revoke.value
+        check("finishing adapter new dictation vetoes paste", !finishRevoked && Insert.pasteCalls == 0 && Insert.box == "old")
+        Insert.reset("My edit.  Voice words My pasted tail.")
+        let span = FinishInBox.span(of: " Voice words", in: Insert.box)!
+        Insert.cursorOverride = NSRange(location: NSMaxRange(span), length: 0)
+        let original = Insert.box
+        let middle = await Insert.replaceDraft(" Voice words", with: " Checked words.", expectedBox: original,
+                                               in: Insert.element, exactRange: span, while: { true })
+        check("exact adapter preserves surrounding edits and spaces", middle && Insert.box == "My edit.  Checked words. My pasted tail.")
+        Insert.reset(" Voice words Voice words")
+        let duplicate = await Insert.replaceDraft(" Voice words", with: " Checked words.", expectedBox: Insert.box,
+            in: Insert.element, exactRange: NSRange(location: 12, length: 12), while: { true })
+        check("exact adapter never deletes duplicate spans", !duplicate && Insert.deleted == 0 && Insert.typed.isEmpty)
         let video = noise(12, 16_000)
         let user = noise(92, 48_000)
         let beforeKeyVideo = noise(123, 9600)
@@ -989,10 +1148,12 @@ with tempfile.TemporaryDirectory(prefix="first-words-", dir=ROOT / ".build") as 
     tests = tests.replace("__UNSURE_REASONS__", ", ".join(json.dumps(reason) for reason in reasons))
     pause_checks = (ROOT / "Sources/redpen-voice-test/BrowserPauseChecks.swift").read_text().replace("import VoiceCore", "")
     tests = tests.replace('        print("quick tap:', '        browserPauseChecks { name, ok, detail in check(name + detail, ok) }\n        print("quick tap:')
-    source.write_text(pause_checks + "\n" + stubs.replace("__PRODUCTION_GATE__", gate) + session + "\n}\n" + recording + insert_stubs + replacement_adapter + "\n" + text_adapter + "\n}\n" + tests)
+    finish_checks = (ROOT / "Sources/redpen-voice-test/FinishInBoxChecks.swift").read_text().replace("import VoiceCore", "")
+    tests = tests.replace('        print("quick tap:', '        finishInBoxChecks(check)\n        print("quick tap:')
+    source.write_text(finish_checks + "\n" + pause_checks + "\n" + stubs.replace("__PRODUCTION_GATE__", gate) + session + "\n}\n" + recording + insert_stubs + replacement_adapter + "\n" + text_adapter + "\n" + finishing_adapter + "\n" + position_adapter + "\n" + takeback_adapter + "\n}\n" + tests)
     core = ROOT / "Sources/VoiceCore"
     files = [core / name for name in ["BrowserMedia.swift", "BrowserPauseOperation.swift", "BrowserResumeOperation.swift", "MediaPauseOwnership.swift", "MediaEcho.swift", "MediaAudio.swift", "MediaOpening.swift", "MediaGate.swift", "Chunker.swift",
-                                    "Silence.swift", "FocusGate.swift", "CheckedTail.swift", "BoxText.swift", "EnterSend.swift", "LongTalk.swift", "BoxMatch.swift", "DictationEnding.swift", "TalkKeyState.swift", "DictationDelivery.swift", "TalkTimingTrace.swift", "TalkCapture.swift", "StartTargetWait.swift", "FastFinish.swift", "EditWait.swift", "SerialEdits.swift", "EditBoundary.swift", "DraftSafety.swift", "DraftInput.swift", "Names.swift", "Fillers.swift"]]
+                                    "Silence.swift", "FocusGate.swift", "CheckedTail.swift", "BoxText.swift", "FinishInBox.swift", "TalkingWords.swift", "EnterSend.swift", "LongTalk.swift", "BoxMatch.swift", "DictationEnding.swift", "TalkKeyState.swift", "DictationDelivery.swift", "TalkTimingTrace.swift", "TalkCapture.swift", "StartTargetWait.swift", "FastFinish.swift", "EditWait.swift", "SerialEdits.swift", "EditBoundary.swift", "DraftSafety.swift", "DraftInput.swift", "Names.swift", "Fillers.swift"]]
     subprocess.run(["xcrun", "swiftc", "-O", "-parse-as-library", "-swift-version", "5", str(source),
                     *map(str, files), "-o", str(tmp / "check")], cwd=ROOT, check=True)
     subprocess.run([str(tmp / "check")], cwd=ROOT, check=True, env=os.environ)

@@ -32,10 +32,11 @@ public enum TalkingWords: String, Sendable {
 
     /// Why typing into the box stopped while you talked, in the bar's words.
     public enum Stop: Equatable, Sendable {
-        case typed, clicked, typedOrClicked, leftBox, boxChanged, noBox, unchecked, longTalk
+        case paused, typed, clicked, typedOrClicked, leftBox, boxChanged, noBox, unchecked, longTalk
 
         public var phrase: String {
             switch self {
+            case .paused: return "away from the box"
             case .longTalk: return "long talk"
             case .typed: return "you typed"
             case .clicked: return "you clicked"
@@ -64,6 +65,7 @@ public enum TalkingWords: String, Sendable {
     /// finish, so the bar no longer says the clipboard.
     public static func stoppedLine(_ why: Stop?, words: Int) -> String {
         // A long talk (D-1023) isn't a problem, so the bar doesn't say typing stopped.
+        if why == .paused { return "Typing paused. \(words) words so far. Return to keep typing." }
         if why == .longTalk { return "Long talk. \(words) \(words == 1 ? "word" : "words") so far, all go in when you stop." }
         let what = why.map { "Typing stopped (\($0.phrase))." } ?? "Typing stopped."
         guard words > 0 else { return what + " Your words go in at the end." }

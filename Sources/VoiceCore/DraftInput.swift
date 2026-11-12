@@ -11,6 +11,11 @@ public final class DraftInput: @unchecked Sendable {
     /// Oct 30: blocked endings matched the release to 0.05 ms and still counted as typing).
     public static let sameKeyGap = 0.0005
 
+    /// macOS posts key 179 with the Fn/globe key. It is a talk companion only when Fn is configured.
+    public static func isTalkKey(_ code: Int, configured: [Int]) -> Bool {
+        configured.contains(code) || (code == 179 && configured.contains(63))
+    }
+
     public init(since: Double) { self.since = since }
 
     public func record(talkKey: Bool, at time: Double) {
