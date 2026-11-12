@@ -715,7 +715,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func dismissPasteNotice() {
         guard pasteNotice else { return }
         pasteNotice = false
-        // Back to the resting bar, not hide(): in the new bar hide() shows a Done tick.
+        // Dismiss directly to the configured idle state, without a Done tick.
         hud.rest()
     }
 
@@ -725,8 +725,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let t = typingWatch { NSEvent.removeMonitor(t) }
         if let c = clickWatch { NSEvent.removeMonitor(c) }
         if let monitor = pasteNoticeWatch { NSEvent.removeMonitor(monitor) }
-        pasteNoticeWatch = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown]) { [weak self] event in
-            MainActor.assumeIsolated { self?.dismissPasteNotice() }
+        pasteNoticeWatch = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
+            if event.type != .keyDown {
+                OwnWindowClicks.shared.record(event.type == .leftMouseDown ? .left : event.type == .rightMouseDown ? .right : .other, at: event.timestamp)
+            } else { MainActor.assumeIsolated { self?.dismissPasteNotice() } }
             return event
         }
         // Any key you type yourself after a dictation means take-back must not guess. Our own typing is skipped.
@@ -748,13 +750,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         // A click pauses drafts. Recovery reads the original element after the mouse settles.
-        clickWatch = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+        clickWatch = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
             MainActor.assumeIsolated {
-                guard let self else { return }
+                guard OwnWindowClicks.shared.recordExternal(event.type == .leftMouseDown ? .left : .right, at: event.timestamp),
+                      let self else { return }
                 self.dismissPasteNotice()
                 self.userActedAt = Date()
                 guard let d = self.drafting, !d.draftsStopped || d.clickPaused else { return }
-                d.clickPaused = true; d.checksStopped = true; d.stopWhy = .paused
+                d.clickPaused = true; d.checksStopped = true; d.stopWhy = .clicked
                 self.stopDrafts(d)
                 self.scheduleClickRecovery(d)
             }
@@ -1687,7 +1690,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @discardableResult
     private func draftBlocked(_ d: Drafting, _ reason: DraftSafety.Failure, during path: String) -> Bool {
         if reason == .hardwareClick {
-            d.clickPaused = true; d.checksStopped = true; d.stopWhy = .paused
+            d.clickPaused = true; d.checksStopped = true; d.stopWhy = .clicked
         } else if reason == .hardwareKey {
             d.clickPaused = false; d.stopWhy = .typed
         }
@@ -1706,7 +1709,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Sample hardware throughout typing, when queued NSEvent callbacks may not have run yet.
-    private func draftQuiet(_ d: Drafting, during path: String) async -> Bool {
+    private func draftQuiet(_ d: Drafting, during path: String, completingDraft: Bool = false) async -> Bool {
         guard !d.owner.isCancelled, d.startBox?.sent != true, delivery == d.generation,
               session === d.owner || (session == nil && finishingDrafting?.owner === d.owner) else { return false }
         let sample = await DraftSafety.resolveHardwareAsync(since: d.quietUptime, sample: {
@@ -1716,9 +1719,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let leftAgo = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .leftMouseDown)
             let rightAgo = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .rightMouseDown)
             let input = d.input.snapshot()
+            let clicks = OwnWindowClicks.shared.snapshot()
             return DraftSafety.HardwareSample(now: now, keyDownAgo: keyAgo, leftClickAgo: leftAgo,
                 rightClickAgo: rightAgo, talkKeyDownTimes: input.talkTimes + EnterSendTap.shared.heldTimes(since: d.startedUptime),
-                typingKeyDownAt: input.typingAt)
+                typingKeyDownAt: input.typingAt, ownLeftClickTimes: clicks.left, ownRightClickTimes: clicks.right, userClickAt: clicks.userClickAt)
         })
         // The listener wait yields, so cancellation, a send or a newer press must be checked again.
         guard !d.owner.isCancelled, d.startBox?.sent != true, delivery == d.generation,
@@ -1727,7 +1731,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if sample.typingKeyDownAt.map({ $0 >= d.startedUptime }) == true {
             return draftBlocked(d, .hardwareKey, during: path)
         }
-        if let failure = sample.failure(since: d.quietUptime) { return draftBlocked(d, failure, during: path) }
+        let failure = sample.failure(since: d.quietUptime)
+        // Finish an insertion already in flight after a click only while its original unsent box still has focus.
+        // Future drafts still pause and require the ordinary exact-value/caret recovery. Keys never get this path.
+        if completingDraft, Insert.typedSome || Insert.unconfirmed, failure == .hardwareClick || (failure == nil && d.clickPaused),
+           let start = d.startBox, !start.userEdited, focusedStart(start) != nil,
+           Insert.canCompleteDraftAfterClick(in: start.element) {
+            _ = draftBlocked(d, .hardwareClick, during: path)
+            return true
+        }
+        if let failure { return draftBlocked(d, failure, during: path) }
         if userActedAt >= d.quietAt { return draftBlocked(d, .userActed, during: path) }
         return true
     }
@@ -1751,11 +1764,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `keys`: count hardware key presses too. Off when the talk key is an ordinary key (its own repeats would count).
     nonisolated static func userQuietSince(_ t: Date, keys: Bool = true) -> Bool {
         let since = Date().timeIntervalSince(t)
+        let start = ProcessInfo.processInfo.systemUptime - since
+        let clicks = OwnWindowClicks.shared.snapshot()
+        if clicks.userClickAt.map({ $0 >= start }) == true { return false }
         let kinds: [CGEventType] = keys ? [.keyDown, .leftMouseDown, .rightMouseDown] : [.leftMouseDown, .rightMouseDown]
         for e in kinds {
             var ago = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: e)
             guard ago < since else { continue }
-            guard e == .keyDown else { return false }
+            if e != .keyDown {
+                let times = e == .leftMouseDown ? clicks.left : clicks.right
+                guard OwnWindowClicks.matches(ProcessInfo.processInfo.systemUptime - ago, times: times) else { return false }
+                continue
+            }
             // An Enter Voice held back (D-1008) is still the keyboard's newest key, but it never reached the app. The
             // counter can move before the Enter tap notes the press. This synchronous worker helper keeps its
             // older allowance; editing paths use the short asynchronous listener wait below.
@@ -1776,11 +1796,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let start = ProcessInfo.processInfo.systemUptime - Date().timeIntervalSince(t)
         let sample = await DraftSafety.resolveHardwareAsync(since: start) {
             let now = ProcessInfo.processInfo.systemUptime
+            let clicks = OwnWindowClicks.shared.snapshot()
             return .init(now: now,
                 keyDownAgo: keys ? CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .keyDown) : .infinity,
                 leftClickAgo: CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .leftMouseDown),
                 rightClickAgo: CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .rightMouseDown),
-                talkKeyDownTimes: EnterSendTap.shared.heldTimes(since: start), typingKeyDownAt: nil)
+                talkKeyDownTimes: EnterSendTap.shared.heldTimes(since: start), typingKeyDownAt: nil,
+                ownLeftClickTimes: clicks.left, ownRightClickTimes: clicks.right, userClickAt: clicks.userClickAt)
         }
         return sample.failure(since: start) == nil
     }
@@ -1878,7 +1900,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if d.clickPaused { d.pendingDrafts.append((i, out)); scheduleClickRecovery(d) }
             stopDrafts(d); return
         }
-        let typed = await Insert.text(out, joining: delivery, confirmed: true, while: { await self.draftQuiet(d, during: "typing draft") })
+        let typed = await Insert.text(out, joining: delivery, confirmed: true, while: { await self.draftQuiet(d, during: "typing draft", completingDraft: true) })
         rememberOwnTyping(in: d.startBox)
         if typed {
             d.runs.append(.init(drafts: i..<i + 1, text: String(repeating: " ", count: Insert.typedPadding) + out, checked: false))
@@ -1969,7 +1991,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// where you are (after taking the drafts back out of the first box when `takeBack`).
     enum DraftEnd { case landed, kept, deliver(takeBack: Bool) }
 
-    /// The only allowed correction to an uncertain record: our full insertion arrived late in the same box.
+    /// Recover only our complete AX insertion or exact posted-key prefix in the original box.
     /// Keep the ordinary swap's expected-value, cursor and quiet guards, and never retry a failed swap.
     private func reconcileLateDraft(_ d: Drafting, afterClick: Bool = false) {
         guard let late = d.lateDraft, let start = d.startBox else { return }
@@ -2882,6 +2904,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let recording = self.session != nil || self.pendingStart != nil
             return (recording, recording, self.history.lastSpoken() != nil || self.lastSaid != nil)
         }
+        hud.onKeepBarOnScreen = { [weak self] on in
+            guard let self else { return }
+            var saved = Config.load(); saved.keepBarOnScreen = on; saved.save()
+            self.config.keepBarOnScreen = on; self.syncSettings()
+        }
+        hud.keepBarOnScreen = config.keepBarOnScreen ?? false
         hud.talkKey = talkKeyName
         hud.style = config.levelLook == "off" ? "pen" : config.levelLook
         hud.rest()
@@ -3612,7 +3640,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Settings keeps its own copy and saves all of it on any change: give it the saved file as it is now, so a change
     /// made in the first window or the history window is never written back over.
-    private func syncSettings() { settings?.model.config = Config.load() }
+    private func syncSettings() {
+        let saved = Config.load()
+        settings?.model.config = saved
+        hud.keepBarOnScreen = saved.keepBarOnScreen ?? false
+    }
 
     @objc private func openSettings() {
         syncSettings()

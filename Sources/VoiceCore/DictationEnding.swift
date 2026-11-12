@@ -36,12 +36,20 @@ public enum DictationEnding {
         public let before: String
         public let range: NSRange
         public let text: String
-        public init(before: String, range: NSRange, text: String) {
-            self.before = before; self.range = range; self.text = text
+        public let exactPostedPrefix: Bool
+        public init(before: String, range: NSRange, text: String, postedUTF16: Int? = nil) {
+            self.before = before; self.range = range
+            exactPostedPrefix = postedUTF16 != nil
+            if let count = postedUTF16 {
+                let units = Array(text.utf16.prefix(max(0, count)))
+                let prefix = String(decoding: units, as: UTF16.self)
+                // A split surrogate or invalid count cannot become proof of an insertion.
+                self.text = count > 0 && count <= text.utf16.count && prefix.utf16.elementsEqual(units) ? prefix : ""
+            } else { self.text = text }
         }
     }
 
-    /// Adopt only the complete attempted insertion, in its recorded place, while still in that exact box.
+    /// Adopt the complete attempted AX insertion or exactly the recorded posted-key prefix, at its recorded place.
     /// Surrounding text and the draft's contents are literal matches. Only the inserted joining whitespace may
     /// vary. The returned text is the editor's actual inserted suffix, so replacement never deletes by a guess.
     public static func reconcileLateDraft(_ draft: LateDraft, confirmedDrafts: String, start: BoxPrint, now: BoxPrint,
@@ -63,8 +71,12 @@ public enum DictationEnding {
         guard added > 0, exact(value.substring(to: draft.range.location), prefix),
               exact(value.substring(from: draft.range.location + added), suffix) else { return nil }
         let inserted = value.substring(with: NSRange(location: draft.range.location, length: added))
-        let words = draft.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !words.isEmpty, exact(inserted.trimmingCharacters(in: .whitespacesAndNewlines), words) else { return nil }
+        if draft.exactPostedPrefix {
+            guard !draft.text.isEmpty, exact(inserted, draft.text) else { return nil }
+        } else {
+            let words = draft.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !words.isEmpty, exact(inserted.trimmingCharacters(in: .whitespacesAndNewlines), words) else { return nil }
+        }
         // Whitespace may collapse or grow at a join, but a required word boundary cannot disappear.
         if !prefix.isEmpty, prefix.last?.isWhitespace != true, draft.text.first?.isWhitespace == true,
            inserted.first?.isWhitespace != true { return nil }

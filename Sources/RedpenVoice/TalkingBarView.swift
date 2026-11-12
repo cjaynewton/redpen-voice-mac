@@ -47,6 +47,8 @@ final class TalkingBarView: NSView {
     var canFinish = true
     var canCancel = true
     var canPaste = true
+    var canKeepBar = false
+    var keepBarOnScreen = false
     var talkKey = "Fn"
     var onAction: (String) -> Void = { _ in }
     var onDrag: (CGPoint, Bool) -> Void = { _, _ in }
@@ -59,7 +61,8 @@ final class TalkingBarView: NSView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override var acceptsFirstResponder: Bool { true }
     var railHeight: CGFloat { state == .resting || state == .done ? 40 : 52 }
-    var menuHeight: CGFloat { menuOpen ? (state == .resting ? 137 : 165) : 0 }
+    var menuHeight: CGFloat { menuOpen ? (state == .resting ? 137 : 165) + (canKeepBar ? 28 : 0) : 0 }
+    var menuSeparatorY: CGFloat { (state == .resting ? 40 : 68) + (canKeepBar ? 28 : 0) }
     var needsOverflow: Bool {
         state == .needs && (message as NSString).size(withAttributes: [.font: Self.font(15)]).width > bounds.width - (style == "dot" ? 146 : 168)
     }
@@ -72,6 +75,7 @@ final class TalkingBarView: NSView {
     }
     func desiredSize(maxWidth: CGFloat) -> CGSize {
         var size = TalkingBar.size(state, style: style, menu: menuOpen)
+        if menuOpen && canKeepBar { size.height += 28 }
         if !message.isEmpty && state != .needs {
             let measured = (message as NSString).size(withAttributes: [.font: Self.font(15)]).width + 32
             size.width = max(size.width, min(maxWidth, min(600, measured)))
@@ -114,6 +118,12 @@ final class TalkingBarView: NSView {
                 button("Finish", talkKey, "check", "finish", CGRect(x: 7, y: y, width: bounds.width - 14, height: 28), enabled: canFinish, primary: true)
                 y += 28
                 button("Cancel", "Esc ×2", "x", "cancel", CGRect(x: 7, y: y, width: bounds.width - 14, height: 28), enabled: canCancel)
+                y += 28
+            }
+            if canKeepBar {
+                button("Keep bar on screen", keepBarOnScreen ? "On" : "Off", keepBarOnScreen ? "check" : "", "keepBar",
+                       CGRect(x: 7, y: y, width: bounds.width - 14, height: 28))
+                buttons.last?.setAccessibilityValue(keepBarOnScreen ? "On" : "Off")
                 y += 28
             }
             y += 11
@@ -181,7 +191,7 @@ final class TalkingBarView: NSView {
         if menuOpen {
             NSColor.white.withAlphaComponent(0.2).setFill()
             CGRect(x: 0, y: menuHeight - 1, width: bounds.width, height: 1).fill()
-            CGRect(x: 16, y: state == .resting ? 40 : 68, width: bounds.width - 32, height: 1).fill()
+            CGRect(x: 16, y: menuSeparatorY, width: bounds.width - 32, height: 1).fill()
         }
         if hoverGrip { Self.dock.setFill(); CGRect(x: 8, y: center - 16, width: 20, height: 32).fill() }
         (hoverGrip ? Self.text : Self.label).setFill()

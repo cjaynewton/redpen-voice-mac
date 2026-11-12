@@ -3340,5 +3340,7 @@ do {
     check("talkingBar.eitherConfiguredKeyStops", single.event(key: 61, down: true, at: 11) == .end)
 }
 
+barClickChecks { name, ok in check(name, ok) }
+
 print("\(pass) passed, \(fail) failed")
 exit(fail == 0 ? 0 : 1)

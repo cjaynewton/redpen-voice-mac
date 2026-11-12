@@ -1,0 +1,936 @@
+Building for debugging...
+[Computing dependencies]
+[Constructing description]
+[Pre-planning 1 / 988]
+[Planning 329 / 988]
+[Planning deferred tasks]
+[Starting]
+warning: missing creator for mutated node: ('/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/out/Products/Debug/mlx-swift_Cmlx.bundle/Contents/MacOS')
+[197 / 621]
+[198 / 621]
+[200 / 627] VoiceCore
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/searchsorted.metal:6:
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/utils.h:9:
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:157:54: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex32_t) == 2 * sizeof(half));
+                                                     ^
+                                                     , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:158:55: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex64_t) == 2 * sizeof(float));
+                                                      ^
+                                                      , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:159:70: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex_t<bfloat16_t>) == 2 * sizeof(bfloat16_t));
+                                                                     ^
+                                                                     , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:299:78: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+    (complex_t<half>{1.0h, 2.0h} * complex_t<half>{3.0h, 4.0h}).real == -5.0h);
+                                                                             ^
+                                                                             , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:303:35: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+        .real == bfloat16_t(-5.0f));
+                                  ^
+                                  , ""
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/searchsorted.metal:6:
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/utils.h:80:3: warning: inline variables are a C++17 extension [-Wc++17-extensions]
+  inline static constexpr constant complex_t<T> max = complex_t<T>(
+  ^
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/utils.h:83:3: warning: inline variables are a C++17 extension [-Wc++17-extensions]
+  inline static constexpr constant complex_t<T> min = complex_t<T>(
+  ^
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/searchsorted.metal:7:
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/sort.h:43:8: warning: constexpr if is a C++17 extension [-Wc++17-extensions]
+    if constexpr (metal::is_floating_point_v<T>) {
+       ^
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/sort.h:49:15: warning: constexpr if is a C++17 extension [-Wc++17-extensions]
+    } else if constexpr (metal::is_same_v<T, complex64_t>) {
+              ^
+9 warnings generated.
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/rope.metal:5:
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/utils.h:9:
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:157:54: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex32_t) == 2 * sizeof(half));
+                                                     ^
+                                                     , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:158:55: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex64_t) == 2 * sizeof(float));
+                                                      ^
+                                                      , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:159:70: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex_t<bfloat16_t>) == 2 * sizeof(bfloat16_t));
+                                                                     ^
+                                                                     , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:299:78: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+    (complex_t<half>{1.0h, 2.0h} * complex_t<half>{3.0h, 4.0h}).real == -5.0h);
+                                                                             ^
+                                                                             , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:303:35: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+        .real == bfloat16_t(-5.0f));
+                                  ^
+                                  , ""
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/rope.metal:5:
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/utils.h:80:3: warning: inline variables are a C++17 extension [-Wc++17-extensions]
+  inline static constexpr constant complex_t<T> max = complex_t<T>(
+  ^
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/utils.h:83:3: warning: inline variables are a C++17 extension [-Wc++17-extensions]
+  inline static constexpr constant complex_t<T> min = complex_t<T>(
+  ^
+7 warnings generated.
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/random.metal:3:
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/utils.h:9:
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:157:54: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex32_t) == 2 * sizeof(half));
+                                                     ^
+                                                     , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:158:55: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex64_t) == 2 * sizeof(float));
+                                                      ^
+                                                      , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:159:70: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex_t<bfloat16_t>) == 2 * sizeof(bfloat16_t));
+                                                                     ^
+                                                                     , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:299:78: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+    (complex_t<half>{1.0h, 2.0h} * complex_t<half>{3.0h, 4.0h}).real == -5.0h);
+                                                                             ^
+                                                                             , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:303:35: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+        .real == bfloat16_t(-5.0f));
+                                  ^
+                                  , ""
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/random.metal:3:
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/utils.h:80:3: warning: inline variables are a C++17 extension [-Wc++17-extensions]
+  inline static constexpr constant complex_t<T> max = complex_t<T>(
+  ^
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/utils.h:83:3: warning: inline variables are a C++17 extension [-Wc++17-extensions]
+  inline static constexpr constant complex_t<T> min = complex_t<T>(
+  ^
+7 warnings generated.
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/dot.metal:3:
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/dot.h:5:
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/utils.h:9:
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:157:54: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex32_t) == 2 * sizeof(half));
+                                                     ^
+                                                     , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:158:55: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex64_t) == 2 * sizeof(float));
+                                                      ^
+                                                      , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:159:70: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex_t<bfloat16_t>) == 2 * sizeof(bfloat16_t));
+                                                                     ^
+                                                                     , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:299:78: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+    (complex_t<half>{1.0h, 2.0h} * complex_t<half>{3.0h, 4.0h}).real == -5.0h);
+                                                                             ^
+                                                                             , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:303:35: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+        .real == bfloat16_t(-5.0f));
+                                  ^
+                                  , ""
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/dot.metal:3:
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/dot.h:5:
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/utils.h:80:3: warning: inline variables are a C++17 extension [-Wc++17-extensions]
+  inline static constexpr constant complex_t<T> max = complex_t<T>(
+  ^
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/utils.h:83:3: warning: inline variables are a C++17 extension [-Wc++17-extensions]
+  inline static constexpr constant complex_t<T> min = complex_t<T>(
+  ^
+7 warnings generated.
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/rms_norm.metal:6:
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/utils.h:9:
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:157:54: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex32_t) == 2 * sizeof(half));
+                                                     ^
+                                                     , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:158:55: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex64_t) == 2 * sizeof(float));
+                                                      ^
+                                                      , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:159:70: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex_t<bfloat16_t>) == 2 * sizeof(bfloat16_t));
+                                                                     ^
+                                                                     , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:299:78: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+    (complex_t<half>{1.0h, 2.0h} * complex_t<half>{3.0h, 4.0h}).real == -5.0h);
+                                                                             ^
+                                                                             , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:303:35: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+        .real == bfloat16_t(-5.0f));
+                                  ^
+                                  , ""
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/rms_norm.metal:6:
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/utils.h:80:3: warning: inline variables are a C++17 extension [-Wc++17-extensions]
+  inline static constexpr constant complex_t<T> max = complex_t<T>(
+  ^
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/utils.h:83:3: warning: inline variables are a C++17 extension [-Wc++17-extensions]
+  inline static constexpr constant complex_t<T> min = complex_t<T>(
+  ^
+7 warnings generated.
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/layer_norm.metal:6:
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/utils.h:9:
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:157:54: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex32_t) == 2 * sizeof(half));
+                                                     ^
+                                                     , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:158:55: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex64_t) == 2 * sizeof(float));
+                                                      ^
+                                                      , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:159:70: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex_t<bfloat16_t>) == 2 * sizeof(bfloat16_t));
+                                                                     ^
+                                                                     , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:299:78: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+    (complex_t<half>{1.0h, 2.0h} * complex_t<half>{3.0h, 4.0h}).real == -5.0h);
+                                                                             ^
+                                                                             , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:303:35: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+        .real == bfloat16_t(-5.0f));
+                                  ^
+                                  , ""
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/layer_norm.metal:6:
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/utils.h:80:3: warning: inline variables are a C++17 extension [-Wc++17-extensions]
+  inline static constexpr constant complex_t<T> max = complex_t<T>(
+  ^
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/utils.h:83:3: warning: inline variables are a C++17 extension [-Wc++17-extensions]
+  inline static constexpr constant complex_t<T> min = complex_t<T>(
+  ^
+7 warnings generated.
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/conv.metal:8:
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/utils.h:9:
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:157:54: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex32_t) == 2 * sizeof(half));
+                                                     ^
+                                                     , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:158:55: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex64_t) == 2 * sizeof(float));
+                                                      ^
+                                                      , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:159:70: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex_t<bfloat16_t>) == 2 * sizeof(bfloat16_t));
+                                                                     ^
+                                                                     , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:299:78: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+    (complex_t<half>{1.0h, 2.0h} * complex_t<half>{3.0h, 4.0h}).real == -5.0h);
+                                                                             ^
+                                                                             , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:303:35: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+        .real == bfloat16_t(-5.0f));
+                                  ^
+                                  , ""
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/conv.metal:8:
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/utils.h:80:3: warning: inline variables are a C++17 extension [-Wc++17-extensions]
+  inline static constexpr constant complex_t<T> max = complex_t<T>(
+  ^
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/utils.h:83:3: warning: inline variables are a C++17 extension [-Wc++17-extensions]
+  inline static constexpr constant complex_t<T> min = complex_t<T>(
+  ^
+7 warnings generated.
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/arg_reduce.metal:5:
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/utils.h:9:
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:157:54: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex32_t) == 2 * sizeof(half));
+                                                     ^
+                                                     , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:158:55: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex64_t) == 2 * sizeof(float));
+                                                      ^
+                                                      , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:159:70: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex_t<bfloat16_t>) == 2 * sizeof(bfloat16_t));
+                                                                     ^
+                                                                     , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:299:78: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+    (complex_t<half>{1.0h, 2.0h} * complex_t<half>{3.0h, 4.0h}).real == -5.0h);
+                                                                             ^
+                                                                             , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:303:35: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+        .real == bfloat16_t(-5.0f));
+                                  ^
+                                  , ""
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/arg_reduce.metal:5:
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/utils.h:80:3: warning: inline variables are a C++17 extension [-Wc++17-extensions]
+  inline static constexpr constant complex_t<T> max = complex_t<T>(
+  ^
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/utils.h:83:3: warning: inline variables are a C++17 extension [-Wc++17-extensions]
+  inline static constexpr constant complex_t<T> min = complex_t<T>(
+  ^
+7 warnings generated.
+[206 / 627] mlx-swift_Cmlx
+[210 / 641]
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/scaled_dot_product_attention.metal:4:
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/utils.h:9:
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:157:54: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex32_t) == 2 * sizeof(half));
+                                                     ^
+                                                     , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:158:55: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex64_t) == 2 * sizeof(float));
+                                                      ^
+                                                      , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:159:70: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex_t<bfloat16_t>) == 2 * sizeof(bfloat16_t));
+                                                                     ^
+                                                                     , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:299:78: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+    (complex_t<half>{1.0h, 2.0h} * complex_t<half>{3.0h, 4.0h}).real == -5.0h);
+                                                                             ^
+                                                                             , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/complex.h:303:35: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+        .real == bfloat16_t(-5.0f));
+                                  ^
+                                  , ""
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/scaled_dot_product_attention.metal:4:
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/utils.h:80:3: warning: inline variables are a C++17 extension [-Wc++17-extensions]
+  inline static constexpr constant complex_t<T> max = complex_t<T>(
+  ^
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/utils.h:83:3: warning: inline variables are a C++17 extension [-Wc++17-extensions]
+  inline static constexpr constant complex_t<T> min = complex_t<T>(
+  ^
+7 warnings generated.
+[212 / 654]
+[215 / 654] InternalCollectionsUtilities
+[217 / 654] RealModule
+[217 / 691] Crypto
+[220 / 715] ArgmaxCore
+[232 / 766] InternalCollectionsUtilities
+[242 / 766]
+[251 / 839]
+[255 / 839]
+[258 / 839]
+[261 / 839]
+[264 / 839]
+[270 / 839]
+[278 / 839]
+[282 / 839]
+[283 / 839]
+[287 / 839]
+[290 / 839]
+[293 / 839]
+[301 / 839]
+[305 / 839]
+[308 / 839]
+[310 / 839]
+[311 / 839]
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/steel/attn/kernels/steel_attention.metal:4:
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/steel/attn/kernels/../../../utils.h:9:
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/steel/attn/kernels/../../../complex.h:157:54: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex32_t) == 2 * sizeof(half));
+                                                     ^
+                                                     , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/steel/attn/kernels/../../../complex.h:158:55: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex64_t) == 2 * sizeof(float));
+                                                      ^
+                                                      , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/steel/attn/kernels/../../../complex.h:159:70: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+static_assert(sizeof(complex_t<bfloat16_t>) == 2 * sizeof(bfloat16_t));
+                                                                     ^
+                                                                     , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/steel/attn/kernels/../../../complex.h:299:78: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+    (complex_t<half>{1.0h, 2.0h} * complex_t<half>{3.0h, 4.0h}).real == -5.0h);
+                                                                             ^
+                                                                             , ""
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/steel/attn/kernels/../../../complex.h:303:35: warning: 'static_assert' with no message is a C++17 extension [-Wc++17-extensions]
+        .real == bfloat16_t(-5.0f));
+                                  ^
+                                  , ""
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/steel/attn/kernels/steel_attention.metal:4:
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/steel/attn/kernels/../../../utils.h:80:3: warning: inline variables are a C++17 extension [-Wc++17-extensions]
+  inline static constexpr constant complex_t<T> max = complex_t<T>(
+  ^
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/steel/attn/kernels/../../../utils.h:83:3: warning: inline variables are a C++17 extension [-Wc++17-extensions]
+  inline static constexpr constant complex_t<T> min = complex_t<T>(
+  ^
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/steel/attn/kernels/steel_attention.metal:6:
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/steel/attn/kernels/../../../steel/attn/kernels/steel_attention.h:3:
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/steel/attn/kernels/../../../steel/attn/attn.h:6:
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/steel/attn/kernels/../../../steel/attn/../../steel/attn/mma.h:11:
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/steel/attn/kernels/../../../steel/attn/../../steel/utils/integral_constant.h:105:6: warning: constexpr if is a C++17 extension [-Wc++17-extensions]
+  if constexpr (start < stop) {
+     ^
+In file included from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/steel/attn/kernels/steel_attention.metal:6:
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/steel/attn/kernels/../../../steel/attn/kernels/steel_attention.h:361:16: warning: constexpr if is a C++17 extension [-Wc++17-extensions]
+            if constexpr (is_bool) {
+               ^
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/steel/attn/kernels/../../../steel/attn/kernels/steel_attention.h:431:14: warning: constexpr if is a C++17 extension [-Wc++17-extensions]
+          if constexpr (BD >= 128) {
+             ^
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal/steel/attn/kernels/../../../steel/attn/kernels/steel_attention.h:441:14: warning: constexpr if is a C++17 extension [-Wc++17-extensions]
+          if constexpr (BD >= 128) {
+             ^
+11 warnings generated.
+[314 / 839]
+[319 / 839]
+[325 / 839]
+[330 / 839]
+[334 / 839]
+[339 / 839]
+[342 / 839]
+[345 / 839]
+[348 / 839]
+[350 / 839]
+[352 / 839]
+[353 / 839]
+[354 / 839]
+[357 / 839]
+[359 / 839]
+[363 / 839] Cmlx
+[367 / 839] Cmlx
+[371 / 839]
+[373 / 839] Crypto
+[376 / 839] EventSource
+[383 / 839]
+[383 / 839] Crypto
+[385 / 839] Crypto
+[387 / 839] Crypto
+[392 / 839]
+[398 / 839] Cmlx
+[402 / 839] Cmlx
+[407 / 839] Cmlx
+[410 / 839] Cmlx
+[413 / 839]
+[414 / 839]
+[415 / 839]
+[418 / 839]
+[422 / 839]
+[425 / 839]
+[427 / 839] Cmlx
+[430 / 839]
+[431 / 839] ArgmaxCore
+[433 / 839] ArgmaxCore
+[439 / 839]
+[441 / 839]
+[442 / 839]
+[444 / 839] Cmlx
+[447 / 839] Cmlx
+[451 / 839] Cmlx
+[451 / 839]
+[453 / 839] VoiceCore
+[455 / 839] Cmlx
+[459 / 839] Cmlx
+[460 / 839] VoiceCore
+[462 / 839] VoiceCore
+[468 / 839] Cmlx
+[470 / 839] Cmlx
+[473 / 839] Cmlx
+[474 / 839] Cmlx
+[475 / 839] Cmlx
+[476 / 839] Cmlx
+[477 / 839] Cmlx
+[478 / 839] Cmlx
+[479 / 839] Cmlx
+[480 / 839] Cmlx
+[481 / 839] Cmlx
+[482 / 839] Cmlx
+[484 / 839] Cmlx
+[485 / 839] Cmlx
+[486 / 839] Cmlx
+[487 / 839] Cmlx
+[489 / 839] Cmlx
+[490 / 839] Cmlx
+[491 / 839] Cmlx
+[493 / 839] Cmlx
+[494 / 839] Cmlx
+[496 / 839] Cmlx
+[497 / 839] Cmlx
+[498 / 839] Cmlx
+[499 / 839] Cmlx
+[502 / 839] Cmlx
+[503 / 839] Cmlx
+[504 / 839] Cmlx
+[506 / 839] Cmlx
+[507 / 839] Cmlx
+[510 / 839] Cmlx
+[512 / 839] Cmlx
+[513 / 839] Cmlx
+[515 / 839] Cmlx
+[516 / 839] Cmlx
+[521 / 839] Cmlx
+[529 / 839] Cmlx
+[530 / 839] Cmlx
+[531 / 839] Cmlx
+[533 / 839] Cmlx
+[535 / 839] Cmlx
+[536 / 839] Cmlx
+[537 / 839] Cmlx
+[538 / 839] Cmlx
+[539 / 839] Cmlx
+[540 / 839] Cmlx
+[541 / 839] Cmlx
+[542 / 839] Cmlx
+[545 / 839] Cmlx
+[548 / 839] Cmlx
+[549 / 839] Cmlx
+[553 / 839] Cmlx
+[554 / 839] Cmlx
+[555 / 839] Cmlx
+[556 / 839] Cmlx
+[557 / 839] Cmlx
+[558 / 839] Cmlx
+[559 / 839] Cmlx
+[561 / 839] Cmlx
+[563 / 839] Cmlx
+[565 / 839] Cmlx
+[566 / 839] Cmlx
+[568 / 839] Cmlx
+[569 / 839] Cmlx
+[571 / 839] Cmlx
+[572 / 839] Cmlx
+[573 / 839] Cmlx
+[574 / 839] Cmlx
+[575 / 839] Cmlx
+[576 / 839] Cmlx
+[577 / 839] Cmlx
+[581 / 839] Cmlx
+[584 / 839] Cmlx
+[585 / 839] Cmlx
+[586 / 839] Cmlx
+[588 / 839] yyjson
+[590 / 850]
+[595 / 850]
+[599 / 850] cLogSupport
+[603 / 850]
+[607 / 850] _NumericsShims
+[608 / 850] Cmlx
+[611 / 850] redpen-voice-test-product
+[616 / 850] VoiceCore
+[617 / 850] VoiceCore
+[618 / 850] VoiceCore
+[619 / 850] yyjson
+[630 / 850] RealModule
+[637 / 850] InternalCollectionsUtilities
+[641 / 850] RealModule
+[650 / 863] OrderedCollections
+[656 / 863]
+[666 / 863] EventSource
+[667 / 863] EventSource
+[669 / 863] EventSource-product
+[672 / 863] Crypto
+[674 / 863] Crypto
+[676 / 863] MachTaskSelfWrapper
+[680 / 863] HuggingFace
+[684 / 863] VoiceCore
+[686 / 863] ComplexModule
+[692 / 863] EventSource
+[693 / 863] WhisperKit
+[697 / 894]
+[700 / 894]
+[706 / 894]
+[710 / 894]
+[714 / 894]
+[715 / 900] ArgmaxCore
+[722 / 900] EventSource
+[724 / 900]
+[728 / 922]
+[729 / 927] HuggingFace
+[736 / 938] ComplexModule
+[741 / 938] yyjson
+[746 / 938]
+[749 / 966]
+[753 / 966]
+[757 / 966]
+[761 / 966] swift-crypto_Crypto
+[766 / 1001]
+[769 / 1001]
+[772 / 1001]
+[778 / 1001] OrderedCollections
+[792 / 1001]
+[794 / 1001] mlx-swift_Cmlx
+[797 / 1001] cLogSupport
+[802 / 1001] VoiceCore
+[808 / 1001] OrderedCollections-product
+[810 / 1001] OrderedCollections-product
+[813 / 1001] WhisperKit
+[815 / 1001] WhisperKit
+[818 / 1001] FluidAudio
+[819 / 1001] WhisperKit
+[833 / 1001] WhisperKit
+[834 / 1001] WhisperKit
+[836 / 1001] WhisperKit
+[837 / 1001] OrderedCollections
+[837 / 1001] WhisperKit
+[840 / 1001] OrderedCollections
+[841 / 1001] MachTaskSelfWrapper
+[843 / 1001] MachTaskSelfWrapper
+[845 / 1001] HuggingFace
+[846 / 1001] WhisperKit
+[849 / 1001] WhisperKit
+[852 / 1001] HuggingFace
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/redpen-voice-test/main.swift:2675:102: warning: 'init(contentsOf:)' was deprecated in macOS 15: Use `init(contentsOf:encoding:)` instead [#DeprecatedDeclaration]
+2673 |         let file = root.appendingPathComponent("transcript.md")
+2674 |         try MeetingFiles.save(Data("synthetic transcript".utf8), to: file)
+2675 |         check("private.firstWrite", (try? MeetingFiles.requireMode(0o600, at: file)) != nil && (try? String(contentsOf: file)) == "synthetic transcript")
+     |                                                                                                      `- warning: 'init(contentsOf:)' was deprecated in macOS 15: Use `init(contentsOf:encoding:)` instead [#DeprecatedDeclaration]
+2676 |         try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
+2677 |         check("private.detectMode", (try? MeetingFiles.requireMode(0o600, at: file)) == nil)
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/redpen-voice-test/main.swift:2679:100: warning: 'init(contentsOf:)' was deprecated in macOS 15: Use `init(contentsOf:encoding:)` instead [#DeprecatedDeclaration]
+2677 |         check("private.detectMode", (try? MeetingFiles.requireMode(0o600, at: file)) == nil)
+2678 |         try MeetingFiles.save(Data("replacement".utf8), to: file)
+2679 |         check("private.replaced", (try? MeetingFiles.requireMode(0o600, at: file)) != nil && (try? String(contentsOf: file)) == "replacement")
+     |                                                                                                    `- warning: 'init(contentsOf:)' was deprecated in macOS 15: Use `init(contentsOf:encoding:)` instead [#DeprecatedDeclaration]
+2680 |         let scratch = try MeetingFiles.scratch(in: root)
+2681 |         check("private.scratch", (try? MeetingFiles.requireMode(0o700, at: scratch)) != nil)
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/redpen-voice-test/main.swift:2684:114: warning: 'init(contentsOf:)' was deprecated in macOS 15: Use `init(contentsOf:encoding:)` instead [#DeprecatedDeclaration]
+2682 |         let link = root.appendingPathComponent("link.md")
+2683 |         try fm.createSymbolicLink(at: link, withDestinationURL: file)
+2684 |         check("private.symlinkRejected", (try? MeetingFiles.save(Data("unsafe".utf8), to: link)) == nil && (try? String(contentsOf: file)) == "replacement")
+     |                                                                                                                  `- warning: 'init(contentsOf:)' was deprecated in macOS 15: Use `init(contentsOf:encoding:)` instead [#DeprecatedDeclaration]
+2685 |         check("private.failedWrite", (try? MeetingFiles.save(Data("x".utf8), to: root.appendingPathComponent("missing/notes.md"))) == nil)
+2686 |     } catch { check("private.setup", false, String(describing: error)) }
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[854 / 1001] redpen-voice-test-product
+[855 / 1001] redpen-voice-test-product
+[858 / 1001] FluidAudio
+[858 / 1001] HuggingFace
+[860 / 1001] FluidAudio
+[860 / 1001] HuggingFace
+[863 / 1001] FluidAudio
+[868 / 1001] FluidAudio
+[870 / 1001] HuggingFace
+[871 / 1001] FluidAudio-product
+[872 / 1001] FluidAudio
+[874 / 1001] FluidAudio
+[875 / 1001] FastClusterWrapper
+[876 / 1001] FastClusterWrapper
+[877 / 1001] FastClusterWrapper
+[878 / 1001] ComplexModule
+[879 / 1001] ComplexModule
+[880 / 1001] ComplexModule
+[882 / 1001] ComplexModule
+[883 / 1001] ComplexModule
+[884 / 1001] ComplexModule
+[886 / 1001] ArgmaxCore
+[891 / 1003] ArgmaxCore
+[892 / 1005] swift-transformers_Hub
+[900 / 1005] Numerics-product
+[904 / 1005] EventSource
+[908 / 1016] swift-crypto_Crypto
+[911 / 1016] Jinja
+[914 / 1016] Jinja
+[920 / 1016] Jinja
+[922 / 1016] Jinja
+[923 / 1016] Jinja-product
+[924 / 1016] Jinja
+[927 / 1017] swift-crypto_Crypto
+[929 / 1017] ComplexModule
+[933 / 1032]
+[935 / 1032] Numerics
+[939 / 1032] Hub
+[941 / 1042]
+[947 / 1042] MLX
+[949 / 1042] MLX
+[951 / 1042] MLX
+[956 / 1042] MLX
+[960 / 1042] Jinja
+[969 / 1042] Tokenizers
+[970 / 1042] Tokenizers
+[972 / 1042] HuggingFace
+[974 / 1043]
+[976 / 1045] WhisperKit
+[977 / 1045] Hub
+[981 / 1056] Tokenizers
+[982 / 1067] MLXNN
+[985 / 1075]
+[989 / 1075] Tokenizers
+[996 / 1075] Tokenizers
+[998 / 1075]
+[1003 / 1075] MLXNN
+[1005 / 1075] MLXNN
+[1014 / 1075] VoiceCoreTests-product
+[1018 / 1075] VoiceCoreTests-product
+[1025 / 1075] Tokenizers
+[1030 / 1075] FluidAudio
+[1032 / 1076] MLX
+[1035 / 1076] Tokenizers
+[1035 / 1076] MLXOptimizers
+[1038 / 1079] VoiceCoreTests-product
+[1047 / 1080] VoiceCoreTests-product
+[1049 / 1080] MLXNN
+[1051 / 1080] MLXNN-product
+[1051 / 1080] MLXOptimizers
+[1053 / 1080] MLXLMCommon
+[1063 / 1091] MLXLMCommon
+[1064 / 1091] MLXLMCommon
+[1071 / 1092] MLXLMCommon
+[1071 / 1092] MLXLLM
+[1076 / 1103] MLXLLM
+[1077 / 1103] MLXLLM
+[1078 / 1103] MLXLLM
+[1079 / 1103] MLXLLM
+[1080 / 1103] MLXLLM
+[1082 / 1103] MLXLLM
+[1084 / 1103] MLXLLM
+[1091 / 1104] MLXLLM
+[1091 / 1104] MLXLMCommon
+[1093 / 1104] MLXLMCommon
+[1093 / 1104] RedpenVoice-product
+[1098 / 1138]
+[1101 / 1138]
+[1104 / 1138]
+[1108 / 1138]
+[1109 / 1138]
+[1111 / 1138]
+[1114 / 1138] MLXLLM
+[1115 / 1138] MLXLLM
+[1118 / 1138]
+[1128 / 1138] RedpenVoice-product
+[1129 / 1138] RedpenVoice-product
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/MeetingTest.swift:322:47: warning: will never be executed
+320 |         check("remove.refusesOutside", FileManager.default.fileExists(atPath: outside.path))
+321 |         try? FileManager.default.removeItem(at: outside)
+322 |         print("\(failed == 0 ? "all passed" : "\(failed) failed")")
+    |                         |                     `- warning: will never be executed
+    |                         `- note: condition always evaluates to true
+323 |         return failed == 0 ? 0 : 1
+324 |     }
+[1130 / 1138] RedpenVoice-product
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/FixWatch.swift:59:87: warning: main actor-isolated static property 'tallyURL' can not be referenced from a nonisolated context; this is an error in the Swift 6 language mode
+19 |     /// numbers only (risk.json), to see whether pointed-out words get fixed far more often than the rest.
+20 |     var marked: Set<String>?
+21 |     static let tallyURL = Config.dir.appendingPathComponent("risk.json")
+   |                `- note: static property declared here
+22 |
+23 |     /// Starts watching the focused box, which has just received `text`.
+   :
+57 |     /// Counts only: words pointed out and how many of them you fixed, the other words and how many of those.
+58 |     nonisolated static func tally(typed: String, marked: Set<String>, fixes: [Corrections.Fix]) {
+59 |         var t = (try? JSONDecoder().decode([String: Int].self, from: Data(contentsOf: tallyURL))) ?? [:]
+   |                                                                                       `- warning: main actor-isolated static property 'tallyURL' can not be referenced from a nonisolated context; this is an error in the Swift 6 language mode
+60 |         let words = typed.lowercased().split(separator: " ").map { String($0).trimmingCharacters(in: .punctuationCharacters) }
+61 |         let fixed = fixes.flatMap { $0.heard.lowercased().split(separator: " ").map(String.init) }
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/FixWatch.swift:67:68: warning: main actor-isolated static property 'tallyURL' can not be referenced from a nonisolated context; this is an error in the Swift 6 language mode
+19 |     /// numbers only (risk.json), to see whether pointed-out words get fixed far more often than the rest.
+20 |     var marked: Set<String>?
+21 |     static let tallyURL = Config.dir.appendingPathComponent("risk.json")
+   |                `- note: static property declared here
+22 |
+23 |     /// Starts watching the focused box, which has just received `text`.
+   :
+65 |         t["markedWords", default: 0] += m; t["markedFixed", default: 0] += mf
+66 |         t["otherWords", default: 0] += words.count - m; t["otherFixed", default: 0] += fixed.count - mf
+67 |         if let d = try? JSONEncoder().encode(t) { try? d.write(to: tallyURL, options: .atomic) }
+   |                                                                    `- warning: main actor-isolated static property 'tallyURL' can not be referenced from a nonisolated context; this is an error in the Swift 6 language mode
+68 |     }
+69 |
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/StatsWindow.swift:181:69: warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+179 |
+180 |     private func line(_ figure: String, _ label: String) -> some View {
+181 |         (Text(figure).foregroundStyle(Ink.text).fontWeight(.medium) + Text(" " + label).foregroundStyle(Ink.mid))
+    |                                                                     `- warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+182 |             .font(.system(size: 13)).monospacedDigit()
+183 |     }
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/Transcriber.swift:1372:21: warning: result of call to 'analyzeSequence(from:)' is unused [#NoUsage]
+1370 |         else { return "" }
+1371 |         let a = SpeechAnalyzer(modules: [m], options: options)
+1372 |         try await a.analyzeSequence(from: file)
+     |                     `- warning: result of call to 'analyzeSequence(from:)' is unused [#NoUsage]
+1373 |         try await a.finalizeAndFinishThroughEndOfInput()
+1374 |         try await collect.value
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[#NoUsage]: <https://docs.swift.org/compiler/documentation/diagnostics/no-usage>
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/SettingsWindow.swift:55:35: warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+ 53 |             do { try await RoomSpeakers.download(); ok = RoomSpeakers.modelsReady } catch { ok = false }
+ 54 |             Log.note("meeting: voice models \(ok ? "downloaded" : "download failed")")
+ 55 |             await MainActor.run { self?.roomDownload = ok ? nil : "failed" }
+    |                                   `- warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+ 56 |         }
+ 57 |     }
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/SettingsWindow.swift:71:35: warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+ 69 |         Task.detached { [weak self] in
+ 70 |             let ok = BetterSummary.ready(h)
+ 71 |             await MainActor.run { self?.summarySignedIn[h] = ok }
+    |                                   `- warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+ 72 |         }
+ 73 |     }
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/SettingsWindow.swift:375:13: warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+373 |     private var whisperLine: Text {
+374 |         Text("Based on the sentiment around gold, how should I trade gold futures in the session tomorrow?").foregroundStyle(Ink.text)
+375 |             + Text("  ✓ no mistakes").font(.system(size: 13)).foregroundStyle(Ink.ok)
+    |             `- warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+376 |     }
+377 |
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/SettingsWindow.swift:384:31: warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+382 |             + fix(" ‸gold") + Text(", how should I trade gold ").foregroundStyle(Ink.text)
+383 |             + Text("features").strikethrough(color: Ink.red).foregroundStyle(Ink.text)
+384 |             + fix(" futures") + Text(" in the session tomorrow?").foregroundStyle(Ink.text)
+    |                               `- warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+385 |     }
+386 |
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/SettingsWindow.swift:384:13: warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+382 |             + fix(" ‸gold") + Text(", how should I trade gold ").foregroundStyle(Ink.text)
+383 |             + Text("features").strikethrough(color: Ink.red).foregroundStyle(Ink.text)
+384 |             + fix(" futures") + Text(" in the session tomorrow?").foregroundStyle(Ink.text)
+    |             `- warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+385 |     }
+386 |
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/SettingsWindow.swift:383:13: warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+381 |         return Text("Based on the sentiment around").foregroundStyle(Ink.text)
+382 |             + fix(" ‸gold") + Text(", how should I trade gold ").foregroundStyle(Ink.text)
+383 |             + Text("features").strikethrough(color: Ink.red).foregroundStyle(Ink.text)
+    |             `- warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+384 |             + fix(" futures") + Text(" in the session tomorrow?").foregroundStyle(Ink.text)
+385 |     }
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/SettingsWindow.swift:382:31: warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+380 |         let fix = { (s: String) in Text(s).font(Ink.serif(15, italic: true)).foregroundStyle(Ink.red) }
+381 |         return Text("Based on the sentiment around").foregroundStyle(Ink.text)
+382 |             + fix(" ‸gold") + Text(", how should I trade gold ").foregroundStyle(Ink.text)
+    |                             `- warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+383 |             + Text("features").strikethrough(color: Ink.red).foregroundStyle(Ink.text)
+384 |             + fix(" futures") + Text(" in the session tomorrow?").foregroundStyle(Ink.text)
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/SettingsWindow.swift:382:13: warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+380 |         let fix = { (s: String) in Text(s).font(Ink.serif(15, italic: true)).foregroundStyle(Ink.red) }
+381 |         return Text("Based on the sentiment around").foregroundStyle(Ink.text)
+382 |             + fix(" ‸gold") + Text(", how should I trade gold ").foregroundStyle(Ink.text)
+    |             `- warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+383 |             + Text("features").strikethrough(color: Ink.red).foregroundStyle(Ink.text)
+384 |             + fix(" futures") + Text(" in the session tomorrow?").foregroundStyle(Ink.text)
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/main.swift:425:44: warning: reference to captured var 'obj' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+ 423 |                     try? f.write(from: b)
+ 424 |                 }
+ 425 |                 print("tap-test: process \(obj), peak \(peak.map { String(format: "%.3f", $0) } ?? "none"), \(String(format: "%.2f", Double(a.count) / 16000)) s kept")
+     |                                            `- warning: reference to captured var 'obj' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+ 426 |                 exit(0)
+ 427 |             }
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/main.swift:1821:13: warning: no 'async' operations occur within 'await' expression [#UnnecessaryEffectMarker]
+1819 |             try? await Task.sleep(for: .milliseconds(150))
+1820 |             guard let self, d.clickRecovery == revision, self.session === d.owner else { return }
+1821 |             await self.edits.enqueue {
+     |             `- warning: no 'async' operations occur within 'await' expression [#UnnecessaryEffectMarker]
+1822 |                 guard self.session === d.owner, d.clickRecovery == revision else { return }
+1823 |                 if self.mouseAge() < FinishInBox.mouseSettle { self.scheduleClickRecovery(d); return }
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/main.swift:2536:46: warning: 'weak' ownership of capture 'self' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+2533 |         let players = Media.playingApps()
+2534 |         guard !players.isEmpty else { releaseBrowserPause(play: true); Log.note("media: resumed"); return }
+2535 |         let listened: @Sendable (Float?) -> Void = { peak in
+     |                                                    |- note: 'self' implicitly strongly captured here
+     |                                                    `- note: add 'self' as a capture list item to silence
+2536 |             DispatchQueue.main.async { [weak self] in
+     |                                              |- warning: 'weak' ownership of capture 'self' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+     |                                              `- note: explicitly assign the capture list item to silence
+2537 |                 guard let self, self.mediaPause.owns(pauseToken) else { return }
+2538 |                 let playing = MediaGate.isPlaying(peak: peak)
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/main.swift:3192:27: warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+3190 |             let r = BetterSummary.write(file: file, helper: h, command: command)
+3191 |             await MainActor.run {
+3192 |                 guard let self else { return }
+     |                           `- warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+3193 |                 let text = r.ok ? "\(BetterSummary.cap(who))'s summary is on top of the notes" : r.message
+3194 |                 // Only over its own "Asking…": a newer meeting's offer or progress keeps the bar.
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/main.swift:3309:27: warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+3307 |             let r = BetterSummary.write(file: file, helper: "claude")
+3308 |             await MainActor.run {
+3309 |                 guard let self else { return }
+     |                           `- warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+3310 |                 self.hud.flash(r.ok ? "Notes written by Claude" : "Claude didn't write the notes. \(r.message)", ok: r.ok, for: 3.5)
+3311 |                 if r.ok { self.afterCall.reload() }
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/main.swift:3369:35: warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+3367 |             try? await Task.sleep(for: .seconds(1))
+3368 |             await Voiceprint.learn(from: audio) { [weak self] in self?.config.knowMyVoice == true && self?.config.roomVoices == true }
+3369 |             await MainActor.run { self?.learningVoice = false; self?.settings?.model.voiceLearned = Voiceprint.load()?.count ?? 0 }
+     |                                   `- warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+3370 |         }
+3371 |     }
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/main.swift:3369:64: warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+3367 |             try? await Task.sleep(for: .seconds(1))
+3368 |             await Voiceprint.learn(from: audio) { [weak self] in self?.config.knowMyVoice == true && self?.config.roomVoices == true }
+3369 |             await MainActor.run { self?.learningVoice = false; self?.settings?.model.voiceLearned = Voiceprint.load()?.count ?? 0 }
+     |                                                                `- warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+3370 |         }
+3371 |     }
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/WriterDownload.swift:172:64: warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+170 |         Task.detached { [weak self] in
+171 |             do {
+172 |                 try await f.run { n in Task { @MainActor in if self?.fetch === f { self?.done = n } } }
+    |                                                                `- warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+173 |                 try Data().write(to: f.folder.appendingPathComponent(LocalNotes.checkedMark))
+174 |                 Log.note("notes writer: downloaded and checked (\(w.id)) in \(Log.int(Date().timeIntervalSince(t0)))s")
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/WriterDownload.swift:172:84: warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+170 |         Task.detached { [weak self] in
+171 |             do {
+172 |                 try await f.run { n in Task { @MainActor in if self?.fetch === f { self?.done = n } } }
+    |                                                                                    `- warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+173 |                 try Data().write(to: f.folder.appendingPathComponent(LocalNotes.checkedMark))
+174 |                 Log.note("notes writer: downloaded and checked (\(w.id)) in \(Log.int(Date().timeIntervalSince(t0)))s")
+
+[#ImplicitStrongCapture]: <https://docs.swift.org/compiler/documentation/diagnostics/implicit-strong-capture>
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[#UnnecessaryEffectMarker]: <https://docs.swift.org/compiler/documentation/diagnostics/unnecessary-effect-marker>
+[1132 / 1138] RedpenVoice-product
+[1133 / 1138] RedpenVoice-product
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/redpen-voice-test/main.swift:2675:102: warning: 'init(contentsOf:)' was deprecated in macOS 15: Use `init(contentsOf:encoding:)` instead [#DeprecatedDeclaration]
+2673 |         let file = root.appendingPathComponent("transcript.md")
+2674 |         try MeetingFiles.save(Data("synthetic transcript".utf8), to: file)
+2675 |         check("private.firstWrite", (try? MeetingFiles.requireMode(0o600, at: file)) != nil && (try? String(contentsOf: file)) == "synthetic transcript")
+     |                                                                                                      `- warning: 'init(contentsOf:)' was deprecated in macOS 15: Use `init(contentsOf:encoding:)` instead [#DeprecatedDeclaration]
+2676 |         try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
+2677 |         check("private.detectMode", (try? MeetingFiles.requireMode(0o600, at: file)) == nil)
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/redpen-voice-test/main.swift:2679:100: warning: 'init(contentsOf:)' was deprecated in macOS 15: Use `init(contentsOf:encoding:)` instead [#DeprecatedDeclaration]
+2677 |         check("private.detectMode", (try? MeetingFiles.requireMode(0o600, at: file)) == nil)
+2678 |         try MeetingFiles.save(Data("replacement".utf8), to: file)
+2679 |         check("private.replaced", (try? MeetingFiles.requireMode(0o600, at: file)) != nil && (try? String(contentsOf: file)) == "replacement")
+     |                                                                                                    `- warning: 'init(contentsOf:)' was deprecated in macOS 15: Use `init(contentsOf:encoding:)` instead [#DeprecatedDeclaration]
+2680 |         let scratch = try MeetingFiles.scratch(in: root)
+2681 |         check("private.scratch", (try? MeetingFiles.requireMode(0o700, at: scratch)) != nil)
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/redpen-voice-test/main.swift:2684:114: warning: 'init(contentsOf:)' was deprecated in macOS 15: Use `init(contentsOf:encoding:)` instead [#DeprecatedDeclaration]
+2682 |         let link = root.appendingPathComponent("link.md")
+2683 |         try fm.createSymbolicLink(at: link, withDestinationURL: file)
+2684 |         check("private.symlinkRejected", (try? MeetingFiles.save(Data("unsafe".utf8), to: link)) == nil && (try? String(contentsOf: file)) == "replacement")
+     |                                                                                                                  `- warning: 'init(contentsOf:)' was deprecated in macOS 15: Use `init(contentsOf:encoding:)` instead [#DeprecatedDeclaration]
+2685 |         check("private.failedWrite", (try? MeetingFiles.save(Data("x".utf8), to: root.appendingPathComponent("missing/notes.md"))) == nil)
+2686 |     } catch { check("private.setup", false, String(describing: error)) }
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[1134 / 1138] redpen-voice-test-product
+[1136 / 1138] redpen-voice-test-product
+Build complete! (133.15 secs.)
+Test Suite 'All tests' started at 2026-11-12 01:20:27.040.
+Test Suite 'VoiceCoreTests.xctest' started at 2026-11-12 01:20:27.041.
+Test Suite 'MediaPauseTests' started at 2026-11-12 01:20:27.041.
+Test Case '-[VoiceCoreTests.MediaPauseTests testNewPressInvalidatesResumeListenWithoutLosingPause]' started.
+Test Case '-[VoiceCoreTests.MediaPauseTests testNewPressInvalidatesResumeListenWithoutLosingPause]' passed (0.001 seconds).
+Test Case '-[VoiceCoreTests.MediaPauseTests testNextPressDecidesFreshAfterRestart]' started.
+Test Case '-[VoiceCoreTests.MediaPauseTests testNextPressDecidesFreshAfterRestart]' passed (0.000 seconds).
+Test Case '-[VoiceCoreTests.MediaPauseTests testReleaseAndUnownedPlaybackCannotReclaimPause]' started.
+Test Case '-[VoiceCoreTests.MediaPauseTests testReleaseAndUnownedPlaybackCannotReclaimPause]' passed (0.000 seconds).
+Test Case '-[VoiceCoreTests.MediaPauseTests testRestartReleasesPauseAndBlocksEveryResumePath]' started.
+Test Case '-[VoiceCoreTests.MediaPauseTests testRestartReleasesPauseAndBlocksEveryResumePath]' passed (0.000 seconds).
+Test Case '-[VoiceCoreTests.MediaPauseTests testSilenceAndUnavailableListenKeepPause]' started.
+Test Case '-[VoiceCoreTests.MediaPauseTests testSilenceAndUnavailableListenKeepPause]' passed (0.000 seconds).
+Test Suite 'MediaPauseTests' passed at 2026-11-12 01:20:27.044.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.002 (0.003) seconds
+Test Suite 'VoiceCoreTests.xctest' passed at 2026-11-12 01:20:27.044.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.002 (0.003) seconds
+Test Suite 'All tests' passed at 2026-11-12 01:20:27.044.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.002 (0.004) seconds
+◇ Test run started.
+↳ Testing Library Version: 2403
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

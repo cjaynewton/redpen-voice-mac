@@ -169,6 +169,18 @@ wiring_checks += [
     ("paste notice dismisses on input and new recording", "dismissPasteNotice()" in begin and "dismissPasteNotice()" in block(app_source, "private func escapePressed(") and block(app_source, "private func installWatches()").count("dismissPasteNotice()") == 3),
     ("Fn companion never marks starting box edited", "DraftInput.isTalkKey(Int(e.keyCode)" in block(app_source, "private func installWatches()") and "code == 179" in block(hold_source, "private func key(")),
 ]
+watches = block(app_source, "private func installWatches()")
+wiring_checks += [
+    ("local window monitor records all mouse-down buttons", "OwnWindowClicks.shared.record(" in watches and ".otherMouseDown" in watches),
+    ("global click watcher filters own events before dismissal", watches.index("OwnWindowClicks.shared.recordExternal") < watches.rindex("self.dismissPasteNotice()")),
+    ("sync ending quiet check filters own clicks", "OwnWindowClicks.matches" in block(app_source, "nonisolated static func userQuietSince(")),
+    ("async ending quiet check filters own clicks", "ownLeftClickTimes: clicks.left" in block(app_source, "private static func userQuietSinceAsync(")),
+    ("in-flight completion exemption is only on insertion", "completingDraft: true" in block(app_source, "private func typeDraft(") and app_source.count("completingDraft: true") == 1),
+    ("posted prefix uses exact count", "text: padded, postedUTF16: typedCount" in insert_source),
+    ("hidden idle orders out", "panel.orderOut(nil)" in block(hud_source, "func rest()")),
+    ("stopped caption is empty", 'box.message = ""' in block(hud_source, "func stoppedTyping(")),
+    ("keep bar preference saved without replacing other config", "saved.keepBarOnScreen = on; saved.save()" in app_source),
+]
 for name, passed in wiring_checks:
     if not passed:
         raise AssertionError(name)
@@ -277,10 +289,13 @@ text_start = insert_source[insert_source.index("static func text("):]
 text_adapter = text_start[:text_start.index("async -> Bool {")] + block(text_start, "async -> Bool {")
 insert_stubs = r'''
 
-enum CGEventType { case keyDown, leftMouseDown, rightMouseDown }
+enum CGEventType: Hashable { case keyDown, leftMouseDown, rightMouseDown }
 enum CGEventSource {
     enum State { case hidSystemState }
-    static func secondsSinceLastEventType(_ state: State, eventType: CGEventType) -> Double { .infinity }
+    static var times: [CGEventType: Double] = [:]
+    static func secondsSinceLastEventType(_ state: State, eventType: CGEventType) -> Double {
+        times[eventType].map { ProcessInfo.processInfo.systemUptime - $0 } ?? .infinity
+    }
 }
 struct FakeFront { let processIdentifier = 1 }
 struct NSWorkspace {
@@ -290,6 +305,7 @@ struct NSWorkspace {
 struct EnterSendTap {
     static let shared = EnterSendTap()
     func held(at: Double, tolerance: Double) -> Bool { false }
+    func heldTimes(since: Double) -> [Double] { [] }
 }
 typealias AXUIElement = NSObject
 let kAXFocusedUIElementAttribute = "focus"
@@ -353,7 +369,7 @@ enum Insert {
     static var canConfirm = true
     static var onConfirm: (() -> Void)?
     static var lastEdit: (element: AXUIElement, before: String, range: NSRange, replacement: String)?
-    static func reset(_ value: String) { box = value; deleted = 0; typed = ""; attempts = 0; canConfirm = true; onConfirm = nil; onTypeChunk = nil; axAccepts = false; typedSome = false; typedCount = 0; dropTyping = false; partialTyping = false; pasteCalls = 0; cursorOverride = nil; cursorAccepts = true; cursorNoEffect = false; focusIsOriginal = true; onCursorSet = nil }
+    static func reset(_ value: String) { CGEventSource.times = [:]; box = value; deleted = 0; typed = ""; attempts = 0; canConfirm = true; onConfirm = nil; onTypeChunk = nil; axAccepts = false; typedSome = false; typedCount = 0; dropTyping = false; partialTyping = false; pasteCalls = 0; cursorOverride = nil; cursorAccepts = true; cursorNoEffect = false; focusIsOriginal = true; onCursorSet = nil }
     static func value(_ e: AXUIElement) -> String? { box }
     static func selectedRange(_ e: AXUIElement) -> NSRange? { cursorOverride ?? NSRange(location: box.utf16.count, length: 0) }
     static func focusedElement() -> (AXUIElement, Int)? { focusIsOriginal ? (element, 1) : nil }
@@ -1150,10 +1166,16 @@ with tempfile.TemporaryDirectory(prefix="first-words-", dir=ROOT / ".build") as 
     tests = tests.replace('        print("quick tap:', '        browserPauseChecks { name, ok, detail in check(name + detail, ok) }\n        print("quick tap:')
     finish_checks = (ROOT / "Sources/redpen-voice-test/FinishInBoxChecks.swift").read_text().replace("import VoiceCore", "")
     tests = tests.replace('        print("quick tap:', '        finishInBoxChecks(check)\n        print("quick tap:')
-    source.write_text(finish_checks + "\n" + pause_checks + "\n" + stubs.replace("__PRODUCTION_GATE__", gate) + session + "\n}\n" + recording + insert_stubs + replacement_adapter + "\n" + text_adapter + "\n" + finishing_adapter + "\n" + position_adapter + "\n" + takeback_adapter + "\n}\n" + tests)
+    bar_checks = (ROOT / "Sources/redpen-voice-test/BarClickChecks.swift").read_text().replace("import VoiceCore", "")
+    tests = tests.replace('        print("quick tap:', '        barClickChecks(check)\n        print("quick tap:')
+    click_adapter = (ROOT / "tools/bar-click-harness.swift").read_text().replace("__DRAFT_QUIET__", block(app_source, "private func draftQuiet("))
+    click_adapter = click_adapter.replace("__DRAFT_BLOCKED__", "@discardableResult " + block(app_source, "private func draftBlocked("))
+    tests = tests.replace('        print("quick tap:', '        await runBarClickAdapterChecks(check)\n        print("quick tap:')
+    click_continue = block(insert_source, "static func canCompleteDraftAfterClick(")
+    source.write_text(bar_checks + "\n" + finish_checks + "\n" + pause_checks + "\n" + stubs.replace("__PRODUCTION_GATE__", gate) + session + "\n}\n" + recording + insert_stubs + replacement_adapter + "\n" + text_adapter + "\n" + finishing_adapter + "\n" + position_adapter + "\n" + takeback_adapter + "\n" + click_continue + "\n}\n" + click_adapter + "\n" + tests)
     core = ROOT / "Sources/VoiceCore"
     files = [core / name for name in ["BrowserMedia.swift", "BrowserPauseOperation.swift", "BrowserResumeOperation.swift", "MediaPauseOwnership.swift", "MediaEcho.swift", "MediaAudio.swift", "MediaOpening.swift", "MediaGate.swift", "Chunker.swift",
-                                    "Silence.swift", "FocusGate.swift", "CheckedTail.swift", "BoxText.swift", "FinishInBox.swift", "TalkingWords.swift", "EnterSend.swift", "LongTalk.swift", "BoxMatch.swift", "DictationEnding.swift", "TalkKeyState.swift", "DictationDelivery.swift", "TalkTimingTrace.swift", "TalkCapture.swift", "StartTargetWait.swift", "FastFinish.swift", "EditWait.swift", "SerialEdits.swift", "EditBoundary.swift", "DraftSafety.swift", "DraftInput.swift", "Names.swift", "Fillers.swift"]]
+                                    "Silence.swift", "FocusGate.swift", "CheckedTail.swift", "BoxText.swift", "FinishInBox.swift", "TalkingWords.swift", "EnterSend.swift", "LongTalk.swift", "BoxMatch.swift", "DictationEnding.swift", "TalkKeyState.swift", "DictationDelivery.swift", "TalkTimingTrace.swift", "TalkCapture.swift", "StartTargetWait.swift", "FastFinish.swift", "EditWait.swift", "SerialEdits.swift", "EditBoundary.swift", "DraftSafety.swift", "OwnWindowClicks.swift", "DraftInput.swift", "Names.swift", "Fillers.swift"]]
     subprocess.run(["xcrun", "swiftc", "-O", "-parse-as-library", "-swift-version", "5", str(source),
                     *map(str, files), "-o", str(tmp / "check")], cwd=ROOT, check=True)
     subprocess.run([str(tmp / "check")], cwd=ROOT, check=True, env=os.environ)

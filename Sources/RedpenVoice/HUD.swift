@@ -15,6 +15,15 @@ final class HUD {
     var onPaste: () -> Void = {}
     var onNotes: () -> Void = {}
     var onSettings: () -> Void = {}
+    var onKeepBarOnScreen: (Bool) -> Void = { _ in }
+    var keepBarOnScreen = false {
+        didSet {
+            box.keepBarOnScreen = keepBarOnScreen
+            if oldValue != keepBarOnScreen && box.state == .resting { rest() }
+        }
+    }
+    /// Also tracked by offscreen checks, where ordering a real desktop window is deliberately disabled.
+    private var wantsVisible = false
     var onDismissPopup: () -> Bool = { false }
     var menuAvailability: () -> (finish: Bool, cancel: Bool, paste: Bool) = { (true, true, true) }
     var talkKey = "Fn" { didSet { box.talkKey = talkKey } }
@@ -122,7 +131,8 @@ final class HUD {
             if let m = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { [weak self] e in
                 var swallowed = false
                 MainActor.assumeIsolated {
-                    if e.window !== self?.panel { self?.outside(e) }
+                    // Mouse input delivered locally belongs to Voice, including its other windows and menus.
+                    if e.type == .keyDown, e.window !== self?.panel { self?.outside(e) }
                     else if e.type == .keyDown, e.keyCode == 53 { self?.dismissExtras(); swallowed = true }
                 }
                 return swallowed ? nil : e
@@ -138,13 +148,17 @@ final class HUD {
         }
     }
 
-    /// Resting is visible but is not a pending warning/question for the existing callers of isShowing.
+    /// Idle is hidden by default. The optional resting tab never counts as a pending warning/question.
     func rest() {
         hideAt?.cancel(); hideAt = nil; tick?.invalidate(); tick = nil
         listeningActive = false
         typingStopped = false; captionText = ""; wordAction = nil; waitAction = nil; dismissedQuestion = false
         box.message = ""; box.choices = []; box.menuOpen = false; box.success = false
-        transition(.resting)
+        if keepBarOnScreen { transition(.resting) }
+        else {
+            box.state = .resting; box.stateAge = 0
+            wantsVisible = false; panel.orderOut(nil)
+        }
     }
 
     func show(_ text: String, level: Bool, ok: Bool = false) {
@@ -164,7 +178,8 @@ final class HUD {
     func writing(_ note: String = "") {
         listeningActive = false
         wordAction = nil; waitAction = nil; dismissedQuestion = false; box.choices = []
-        hideAt?.cancel(); box.menuOpen = false; box.message = note; box.success = false
+        hideAt?.cancel(); box.menuOpen = false
+        box.message = note == TalkingWords.writingAfterStop ? "" : note; box.success = false
         transition(.writing)
     }
     func level(_ v: Float) { latest = v.isFinite ? min(1, max(0, CGFloat(v))) : 0 }
@@ -185,11 +200,11 @@ final class HUD {
     }
     func stoppedTyping(_ line: String) {
         if !typingStopped { listen() }
-        typingStopped = true; captionText = line
+        typingStopped = true; captionText = ""
         if let range = line.range(of: #"\b[0-9]+ words?\b"#, options: .regularExpression),
            let count = Int(line[range].split(separator: " ").first ?? "") { box.words = count }
         guard box.state == .listening else { return }
-        box.message = line; layout()
+        box.message = ""; layout()
     }
 
     /// Resume the existing listening bar without resetting its timer or drawing.
@@ -240,6 +255,9 @@ final class HUD {
         return popupClosed
     }
     private func outside(_ event: NSEvent) {
+        if event.type != .keyDown,
+           OwnWindowClicks.shared.contains(event.type == .leftMouseDown ? .left : event.type == .rightMouseDown ? .right : .other,
+                                           at: event.timestamp) { return }
         if let cg = event.cgEvent, VoiceEvents.isOwn(pid: cg.getIntegerValueField(.eventSourceUnixProcessID),
             userData: cg.getIntegerValueField(.eventSourceUserData)) { return }
         if event.type == .keyDown {
@@ -255,6 +273,10 @@ final class HUD {
             box.menuOpen.toggle(); layout(); return
         }
         if action == "dismiss" { dismissExtras(); return }
+        if action == "keepBar", listeningActive {
+            keepBarOnScreen.toggle(); onKeepBarOnScreen(keepBarOnScreen)
+            layout(); return
+        }
         box.menuOpen = false
         if action.hasPrefix("choice") {
             let callback = wordAction ?? waitAction
@@ -273,6 +295,7 @@ final class HUD {
     }
     private func transition(_ state: TalkingBar.State) {
         box.state = state; changed = Date(); box.stateAge = 0
+        wantsVisible = true
         box.style = style; box.reducedMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         layout(); if observesEvents { panel.orderFrontRegardless() }
         tick?.invalidate(); tick = nil
@@ -320,6 +343,7 @@ final class HUD {
         let screen = screens.first(where: { $0.frame.contains(anchor ?? panel.frame.origin) })
             ?? dictationScreen.flatMap { old in screens.first { $0 == old } } ?? screens.first
         let maxWidth = max(182, (screen?.visibleFrame.width ?? 800) - 16)
+        box.canKeepBar = listeningActive
         let size = box.desiredSize(maxWidth: maxWidth)
         let origin = anchor ?? screen.map { BarScreen.origin(visible: $0.visibleFrame, size: size, avoiding: startBox) } ?? .zero
         let fitted = TalkingBar.fitted(origin: origin, size: size, screens: screens.map(\.visibleFrame))
@@ -332,7 +356,7 @@ final class HUD {
     private func place() { layout() }
 
     /// Renders the real native view at 2x without capturing the user's desktop or starting capture services.
-    func snapshot(to url: URL) {
+    func snapshot(to url: URL, hidden: Bool = false) {
         box.displayIfNeeded()
         let size = box.bounds.size, scale: CGFloat = 2
         guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * scale),
@@ -341,10 +365,11 @@ final class HUD {
             let context = NSGraphicsContext(bitmapImageRep: bitmap) else { return }
         NSGraphicsContext.saveGraphicsState()
         let cg = context.cgContext
+        cg.clear(CGRect(x: 0, y: 0, width: size.width * scale, height: size.height * scale))
         cg.translateBy(x: 0, y: size.height * scale); cg.scaleBy(x: scale, y: -scale)
         NSGraphicsContext.current = NSGraphicsContext(cgContext: cg, flipped: true)
-        box.draw(box.bounds)
-        for view in box.subviews {
+        if !hidden { box.draw(box.bounds) }
+        for view in box.subviews where !hidden {
             NSGraphicsContext.saveGraphicsState()
             let transform = NSAffineTransform(); transform.translateX(by: view.frame.minX, yBy: view.frame.minY); transform.concat()
             view.draw(view.bounds); NSGraphicsContext.restoreGraphicsState()
@@ -394,6 +419,10 @@ final class HUD {
             let image = NSBitmapImageRep(data: (try? Data(contentsOf: path)) ?? Data())
             check(name + " PNG size", image?.pixelsWide == Int(size.width * 2) && image?.pixelsHigh == Int(size.height * 2))
             check(name + " controls fit", hud.box.subviews.allSatisfy { hud.box.bounds.contains($0.frame) })
+            if hud.box.menuOpen {
+                let separator = CGRect(x: 16, y: hud.box.menuSeparatorY, width: size.width - 32, height: 1)
+                check(name + " divider clears every menu row", hud.box.subviews.allSatisfy { !$0.frame.intersects(separator) })
+            }
             if let image {
                 let corner = image.colorAt(x: 0, y: image.pixelsHigh - 1)
                 check(name + " square opaque corners", (corner?.alphaComponent ?? 0) > 0.99)
@@ -416,6 +445,26 @@ final class HUD {
             }
             records.append(["file": path.lastPathComponent, "width": size.width, "height": size.height, "scale": 2])
         }
+        func captureHidden(_ name: String) {
+            hud.layout(animated: false)
+            let path = directory.appendingPathComponent(name + ".png")
+            hud.snapshot(to: path, hidden: !hud.wantsVisible)
+            let image = NSBitmapImageRep(data: (try? Data(contentsOf: path)) ?? Data())
+            check(name + " has no bar", !hud.wantsVisible && !hud.panel.isVisible && hud.tick == nil)
+            check(name + " transparent capture", image?.colorAt(x: 5, y: 5)?.alphaComponent == 0)
+            records.append(["file": path.lastPathComponent, "visible": hud.wantsVisible, "scale": 2])
+        }
+        hud.rest(); captureHidden("r3-default-idle-hidden")
+        check("idle option defaults off", !hud.keepBarOnScreen && Config().keepBarOnScreen != true)
+        var savedConfig = Config(); savedConfig.keepBarOnScreen = true
+        let savedData = try! JSONEncoder().encode(savedConfig)
+        let configCopy = try! JSONDecoder().decode(Config.self, from: savedData)
+        check("idle option survives config round trip", configCopy.keepBarOnScreen == true)
+        var legacy = try! JSONSerialization.jsonObject(with: savedData) as! [String: Any]
+        legacy.removeValue(forKey: "keepBarOnScreen")
+        let legacyCopy = try! JSONDecoder().decode(Config.self, from: JSONSerialization.data(withJSONObject: legacy))
+        check("old config defaults to hidden", legacyCopy.keepBarOnScreen == nil)
+        hud.keepBarOnScreen = true
         for style in ["pen", "bars", "tape", "dot", "classic"] {
             hud.style = style
             for state in [TalkingBar.State.resting, .listening, .writing, .needs, .done] {
@@ -434,8 +483,18 @@ final class HUD {
         check("rest menu rows", hud.box.subviews.compactMap { ($0 as? NSButton)?.title }.filter { !$0.isEmpty } == ["Dictate", "Paste last", "Meeting notes", "Settings"])
         hud.show("", level: true); hud.box.seconds = 22; hud.box.smooth = 0.82
         hud.perform("options"); capture("r3-menu-listening")
-        check("live menu 314x217", hud.panel.frame.size == CGSize(width: 314, height: 217))
-        check("live menu rows", hud.box.subviews.compactMap { ($0 as? NSButton)?.title }.filter { !$0.isEmpty } == ["Finish", "Cancel", "Paste last", "Meeting notes", "Settings"])
+        check("live menu 314x245", hud.panel.frame.size == CGSize(width: 314, height: 245))
+        check("live menu rows", hud.box.subviews.compactMap { ($0 as? NSButton)?.title }.filter { !$0.isEmpty } == ["Finish", "Cancel", "Keep bar on screen", "Paste last", "Meeting notes", "Settings"])
+        var keepChoices: [Bool] = []
+        hud.onKeepBarOnScreen = { keepChoices.append($0) }
+        (hud.box.subviews.first { ($0 as? NSButton)?.title == "Keep bar on screen" } as? NSButton)?.performClick(nil)
+        check("keep row turns off without stopping listening", !hud.keepBarOnScreen && hud.listeningActive && keepChoices == [false])
+        capture("r3-menu-listening-default-off")
+        hud.perform("keepBar")
+        check("keep row turns on", hud.keepBarOnScreen && keepChoices == [false, true])
+        hud.rest(); check("opt-in retains resting tab", hud.wantsVisible && hud.box.state == .resting)
+        hud.show("", level: true); hud.perform("options")
+        hud.perform("keepBar")
         var finished = 0, started = 0, pasted = 0, notes = 0, settings = 0, cancelled = 0
         hud.onFinish = { finished += 1 }; hud.onStart = { started += 1 }; hud.onPaste = { pasted += 1 }
         hud.onNotes = { notes += 1 }; hud.onSettings = { settings += 1 }; hud.onCancel = { cancelled += 1 }
@@ -458,11 +517,18 @@ final class HUD {
         check("real caption count retained", hud.box.words == 52 && hud.box.state == .writing)
         hud.hide(); check("writing completion becomes Done", hud.box.state == .done)
         RunLoop.main.run(until: Date().addingTimeInterval(0.8))
-        check("Done returns to rest after 750ms", hud.box.state == .resting)
+        check("Done hides after 750ms", hud.box.state == .resting && !hud.wantsVisible && !hud.panel.isVisible)
+        captureHidden("r3-done-hidden")
         hud.writing(); hud.hide(); hud.show("New progress", level: false)
         RunLoop.main.run(until: Date().addingTimeInterval(0.8))
         check("old completion cannot hide newer progress", hud.box.state == .message && hud.box.message == "New progress")
         hud.rest(); check("rest does not block suggestions", !hud.isShowing)
+        hud.flash("Saved", for: 0.01)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+        captureHidden("r3-flash-hidden")
+        hud.show("Press ⌃⌥V to paste your words", level: false)
+        check("paste notice stays until dismissed", hud.wantsVisible && hud.box.state == .message)
+        hud.dismissExtras(); captureHidden("r3-paste-dismissed-hidden")
         var answer: Bool?
         hud.ask("These words are waiting. Copy them or throw them away?", yes: "Copy", no: "Throw away") { answer = $0 }
         capture("r3-recovery-question")
@@ -484,9 +550,9 @@ final class HUD {
         check("raw caption counted before tail", hud.box.words == 11)
         let reason = "Typing stopped (you clicked). 52 words so far, all go in at the end."
         hud.stoppedTyping(reason); hud.caption("must not replace the reason"); capture("r3-stopped-typing")
-        check("typing-stop reason preserved", hud.box.message == reason && hud.isTypingStopped)
+        check("typing-stop has count but no sentence", hud.box.message.isEmpty && hud.box.words == 52 && hud.isTypingStopped && hud.box.detailHeight == 0)
         hud.writing("All your words go in now"); capture("r3-writing-note")
-        check("writing note kept", hud.box.message == "All your words go in now")
+        check("writing after stop has no sentence", hud.box.message.isEmpty && hud.box.words == 52)
         hud.show("No sound from Scarlett", level: false); hud.frozen = false; hud.frame(); hud.frozen = true
         check("no-sound flash stays a message", hud.box.state == .needs && !hud.listeningActive)
         hud.show("", level: true); hud.micName = "Scarlett"; hud.silentFor = 2
@@ -501,7 +567,7 @@ final class HUD {
         capture("r3-reduced-motion-writing")
         hud.box.freeze = true; hud.box.reducedMotion = false
         let beforeClick = started
-        hud.rest()
+        hud.keepBarOnScreen = true; hud.rest()
         let click = NSEvent.mouseEvent(with: .leftMouseDown, location: CGPoint(x: 16, y: 20), modifierFlags: [],
             timestamp: 1, windowNumber: hud.panel.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
         hud.box.mouseDown(with: click); hud.box.mouseUp(with: click)
@@ -522,8 +588,22 @@ final class HUD {
         hud.box.onDrag(CGPoint(x: restingOrigin.x + 35, y: restingOrigin.y + 25), true)
         check("drag closes menu", !hud.box.menuOpen)
         let saved = hud.panel.frame.origin
+        hud.keepBarOnScreen = false; hud.rest()
+        check("hiding preserves saved position", hud.anchor == saved && !hud.wantsVisible)
+        hud.show("", level: true)
+        check("hidden bar returns immediately listening at saved position", hud.wantsVisible && hud.box.state == .listening && hud.panel.frame.origin == saved)
         let reopened = HUD(defaults: defaults, observesEvents: false); reopened.frozen = true; reopened.rest()
+        check("new instance starts hidden", !reopened.wantsVisible && !reopened.panel.isVisible)
+        reopened.show("", level: true)
         check("position restored across instances", reopened.panel.frame.origin == saved)
+        // Exercise real orderOut with a review-only panel; no AppDelegate or capture services run.
+        reopened.panel.orderFrontRegardless()
+        check("test panel is ordered", reopened.panel.isVisible)
+        reopened.rest()
+        check("default idle actually orders panel out", !reopened.panel.isVisible)
+        reopened.keepBarOnScreen = true; reopened.writing(); reopened.hide()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+        check("opt-in Done returns to resting tab", reopened.wantsVisible && reopened.box.state == .resting)
         reopened.shutdown(); hud.shutdown(); defaults.removePersistentDomain(forName: suite)
         let result: [String: Any] = ["passed": passed, "failed": failed, "captures": records,
             "scope": "Native offscreen rendering and synthetic interactions. No recording, insertion, media or installation."]
@@ -535,7 +615,7 @@ final class HUD {
     }
 
     func shutdown() {
-        hideAt?.cancel(); tick?.invalidate(); tick = nil; panel.orderOut(nil)
+        hideAt?.cancel(); tick?.invalidate(); tick = nil; wantsVisible = false; panel.orderOut(nil)
         monitors.forEach(NSEvent.removeMonitor); monitors.removeAll()
         if let screenWatch { NotificationCenter.default.removeObserver(screenWatch) }; screenWatch = nil
     }

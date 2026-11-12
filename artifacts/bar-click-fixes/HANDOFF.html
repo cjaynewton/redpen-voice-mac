@@ -1,0 +1,264 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Voice bar clicks and idle visibility</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap">
+<style>
+:root{--bg:#FBF8F3;--ink:#1d1b18;--mid:#4a4640;--dim:#857f76;--rule:#e4ddd2;--red:#b3261e;--code:#f1ece4}
+@media (prefers-color-scheme: dark){:root{--bg:#161513;--ink:#FAFAFA;--mid:rgba(250,250,250,.78);--dim:rgba(250,250,250,.52);--rule:#2e2b27;--red:#ff6b5e;--code:#22201d}}
+*{box-sizing:border-box}
+html{font-size:106%}
+body{margin:0;background:var(--bg);color:var(--ink);font:400 1.125rem/1.6 "Newsreader",Georgia,serif;-webkit-font-smoothing:antialiased}
+main{max-width:46rem;margin:0 auto;padding:clamp(28px,6vw,72px) 16px 96px}
+.meta{font:500 .78rem/1.4 "Inter",system-ui,sans-serif;color:var(--dim);margin-bottom:2rem;word-break:break-all}
+h1,h2,h3,h4{font-weight:600;line-height:1.2;text-wrap:balance;margin:2.2em 0 .5em}
+h1{font-size:clamp(1.9rem,4.5vw,2.6rem);margin-top:0}
+h2{font-size:1.5rem}h3{font-size:1.2rem}
+p,li,blockquote{text-wrap:pretty}
+a{color:var(--red)}
+strong{font-weight:600}
+ul,ol{padding-left:1.3em}li{margin:.3em 0}
+blockquote{margin:1.2em 0;padding-left:1em;border-left:3px solid var(--red);color:var(--mid)}
+code{font:.85em/1.4 ui-monospace,Menlo,monospace;background:var(--code);padding:.1em .35em;border-radius:3px}
+pre{background:var(--code);padding:14px 16px;border-radius:3px;overflow-x:auto}pre code{background:none;padding:0}
+.table-wrap{overflow-x:auto;margin:1.4em 0}
+table{border-collapse:collapse;font:400 .92rem/1.45 "Inter",system-ui,sans-serif;min-width:100%}
+th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--rule);vertical-align:top}
+th{font-weight:600;color:var(--mid)}
+hr{border:0;height:1px;background:var(--rule);margin:2.5em 0}
+</style></head><body><main>
+<div class="meta">Built from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/artifacts/bar-click-fixes/HANDOFF.md · Nov 12 2026, 1:25 AM</div>
+<h1 id="voice-bar-clicks-and-idle-visibility">Voice bar clicks and idle
+visibility</h1>
+<p>Implementation for the Nov 12 brief and Cedric's fourth-fix addition.
+Build and test only.</p>
+<ul>
+<li>Branch <code>t3/bar-click-fixes</code>.</li>
+<li>Base <code>t3/combined-2026-11-12</code>,
+<code>8cd81f30786faeb4134b69a95d63fb678d6ec7cc</code>.</li>
+<li>Worktree
+<code>/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes</code>.</li>
+<li>Implementation commit is recorded in the final handoff message. No
+install, push, merge, tag or release. <code>build.sh</code> was never
+run. No <code>.local.env</code> copy was needed.</li>
+</ul>
+<h2 id="result">Result</h2>
+<ol type="1">
+<li>Every local mouse down in Voice, including its bar, native buttons
+and menus, records its uptime and button. Hardware samples ignore
+matching own-window downs within 50 ms. Real external clicks remain
+recorded even after a later own-window click becomes the newest HID
+event. The asynchronous guard gives the local monitor the same two 5 ms
+turns used for delayed input evidence. Real keys still stop typing.</li>
+<li>A real click can finish the draft already being posted only in the
+same unsent text box, with no user edit, selection or moved caret, and
+an exact read of the prefix posted so far. Otherwise posting stops.
+<code>Insert.typedCount</code> bounds the recoverable UTF-16 prefix.
+Reconciliation adopts only that literal prefix at its recorded position,
+with unchanged surrounding text and the existing element, window,
+conversation, cursor and send checks. Incomplete arrivals, extra spaces,
+edits and invalid UTF-16 boundaries are refused.</li>
+<li>Stopped or paused typing no longer shows a sentence above the bar.
+The listening timer and signal remain, and the word count is retained
+for Writing. The corresponding stopped-typing sentence during Writing is
+also suppressed. Clicks are recorded as clicked, rather than typed.
+Paste-last, no-sound, suggestion and recovery messages remain.</li>
+<li>Idle hides the panel by default. Done retains its existing 300 ms
+tick settle and 450 ms fade, then hides. Flash expiry and paste-notice
+dismissal use the same idle behavior. The listening menu adds
+<code>Keep bar on screen</code>, off by default and saved as optional
+<code>Config.keepBarOnScreen</code>. On restores the previous Resting
+tab. Drag position remains in <code>talkingBarPositionR3</code>, and the
+existing initial-show ordering path remains immediate.</li>
+</ol>
+<h2 id="changes-by-file">Changes by file</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>File</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/VoiceCore/OwnWindowClicks.swift">Sources/VoiceCore/OwnWindowClicks.swift</a></td>
+<td>Bounded, locked own-window timestamp ledger and button-aware 50 ms
+matching.</td>
+</tr>
+<tr>
+<td><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/VoiceCore/DraftSafety.swift">Sources/VoiceCore/DraftSafety.swift</a></td>
+<td>Own-click filtering, sticky external-click evidence and bounded
+listener reconciliation.</td>
+</tr>
+<tr>
+<td><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/VoiceCore/DictationEnding.swift">Sources/VoiceCore/DictationEnding.swift</a></td>
+<td>Explicit posted-prefix record and literal reconciliation for
+keyboard delivery. Existing AX-attempt reconciliation retained.</td>
+</tr>
+<tr>
+<td><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/Insert.swift">Sources/RedpenVoice/Insert.swift</a></td>
+<td>Exact prefix from posted UTF-16 count, continuation proof at the
+original caret, and filtered finishing guards.</td>
+</tr>
+<tr>
+<td><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/main.swift">Sources/RedpenVoice/main.swift</a></td>
+<td>Own/local and external click monitors, draft/ending guard wiring,
+click reason, and saved idle preference wiring.</td>
+</tr>
+<tr>
+<td><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/HUD.swift">Sources/RedpenVoice/HUD.swift</a></td>
+<td>Hidden idle default, optional Resting tab, caption suppression, menu
+toggle and expanded native capture/behavior checks.</td>
+</tr>
+<tr>
+<td><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/TalkingBarView.swift">Sources/RedpenVoice/TalkingBarView.swift</a></td>
+<td>Listening menu row, its space and separator placement.</td>
+</tr>
+<tr>
+<td><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/Config.swift">Sources/RedpenVoice/Config.swift</a></td>
+<td>Optional backward-compatible <code>keepBarOnScreen</code>,
+interpreted as false when absent.</td>
+</tr>
+<tr>
+<td><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/redpen-voice-test/BarClickChecks.swift">Sources/redpen-voice-test/BarClickChecks.swift</a></td>
+<td>34 pure checks for clicks, exact posted prefixes, the synthetic
+incident ending and sent-box protection.</td>
+</tr>
+<tr>
+<td><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/redpen-voice-test/main.swift">Sources/redpen-voice-test/main.swift</a></td>
+<td>Runs the new pure checks.</td>
+</tr>
+<tr>
+<td><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/tools/bar-click-harness.swift">tools/bar-click-harness.swift</a></td>
+<td>Synthetic editor/input fixtures for actual production draft guard
+and insertion adapters.</td>
+</tr>
+<tr>
+<td><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/tools/check-first-words.py">tools/check-first-words.py</a></td>
+<td>Extracts and executes the production guards with those fixtures;
+adds wiring checks and shared pure tests.</td>
+</tr>
+<tr>
+<td><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/NOTES.md">NOTES.md</a></td>
+<td>Appended implementation and verification facts in this worktree
+only.</td>
+</tr>
+<tr>
+<td><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/artifacts/bar-click-fixes">artifacts/bar-click-fixes/</a></td>
+<td>Logs, invariant comparison, native captures, verification JSON and
+this report.</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="verification">Verification</h2>
+<p>All commands use
+<code>DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer</code>.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>swift run -c release redpen-voice-test</code></td>
+<td>1,822 passed, 0 failed, up from 1,788.</td>
+</tr>
+<tr>
+<td>[python3
+tools/check-first-words.py](/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/python3
+tools/check-first-words.py)</td>
+<td>669 passed, up from 605. Includes 113 source contracts and 556
+synthetic runtime checks.</td>
+</tr>
+<tr>
+<td><code>swift test</code></td>
+<td>5 passed, 0 failed.</td>
+</tr>
+<tr>
+<td><code>swift build -c release --product RedpenVoice</code></td>
+<td>Passed on the final source.</td>
+</tr>
+<tr>
+<td>[python3
+tools/package-review-app.py](/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/python3
+tools/package-review-app.py)</td>
+<td>Passed, including strict deep signature verification of the local
+review bundle.</td>
+</tr>
+<tr>
+<td>Review app
+<code>--talking-bar-shots artifacts/bar-click-fixes/screenshots</code></td>
+<td>280 passed, 0 failed, up from 251. Saved 41 captures.</td>
+</tr>
+<tr>
+<td><code>git diff --check</code></td>
+<td>Passed.</td>
+</tr>
+</tbody>
+</table></div>
+<p>The integration checks execute production <code>draftQuiet</code>,
+<code>draftBlocked</code>, <code>Insert.text</code>, continuation proof,
+replacement and finishing insertion against inert input and editors.
+They cover delayed own-click classification, real clicks in the same
+box, moved caret/selection, focus loss, keys, sends, conversation
+changes, cancellation and a newer dictation. The 06:00:44 case uses
+invented words and proves that the exact posted prefix can be replaced
+by the full ending without touching the original heading. It is a
+synthetic replay, not a replay against live T3.</p>
+<p><code>FinishInBox.swift</code> is byte-identical to the base. The
+bodies of both app/core <code>wasSent</code>, core
+<code>looksSent</code> and <code>typesNow</code> are identical. See <a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/artifacts/bar-click-fixes/safeguards.txt">safeguards.txt</a>.</p>
+<p>The native capture entry point runs before AppDelegate construction,
+with a separate preferences suite and test log. It starts no microphone,
+ASR or media operations and posts no input. Most checks render
+offscreen. One brief nonactivating review-panel ordering check verifies
+that <code>rest()</code> actually orders a visible panel out. The review
+process shuts itself down. The installed app was not launched, quit or
+restarted.</p>
+<p>The four <code>*-hidden.png</code> files are transparent state
+renderings, backed by visibility checks. They are not desktop
+screenshots. Resting captures show the explicit opt-in setting. The
+menu, stopped-typing and hidden-state images were visually inspected;
+the added row's separator was corrected and now has a regression
+check.</p>
+<p>Saved log copies have trailing whitespace trimmed from compiler
+excerpts. Evidence is saved alongside this report in
+<code>core.log</code>, <code>integration.log</code>,
+<code>swift-test.log</code>, <code>build.log</code>,
+<code>package.log</code>, <code>native.log</code> and
+<code>screenshots/verification.json</code>.</p>
+<h2 id="open-risks-and-handoff">Open risks and handoff</h2>
+<ul>
+<li>Real T3/Chrome insertion, physical bar dragging, loaded-machine
+event timing and cross-display behavior remain untested. The exact-read
+safeguards intentionally keep the words for Paste last if the box cannot
+be proved.</li>
+<li>No speech-accuracy or end-to-end latency result is claimed. The
+change does not address the separate Chrome pause duration or add new
+bar sizing behavior.</li>
+<li>Existing Swift concurrency/deprecation warnings remain in unrelated
+code and test infrastructure. The release build and required tests
+pass.</li>
+<li>Owner review is pending. An install would require Cedric's separate
+authorization and the usual handshake. This report grants none.</li>
+</ul>
+<p>Nothing from this implementation is left running after checks finish.
+Saved in the isolated worktree. No action is needed from Cedric while
+the owner reviews it.</p>
+
+</main></body></html>

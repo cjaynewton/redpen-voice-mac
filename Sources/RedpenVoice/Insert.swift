@@ -82,7 +82,7 @@ enum Insert {
         // Even a cancelled/partial post keeps exactly its posted prefix for guarded discard recovery.
         if confirmed, typedSome, let oldValue, let oldRange {
             draftAttempt = (el, .init(before: oldValue, range: oldRange,
-                text: String(decoding: padded.utf16.prefix(typedCount), as: UTF16.self)))
+                text: padded, postedUTF16: typedCount))
         }
         endPosting()
         if confirmed, let expected {
@@ -101,6 +101,21 @@ enum Insert {
             Log.note("insert: typing not seen in the box after a second")
         }
         return ok
+    }
+
+    /// A real click may finish the current chunk stream only at its proven insertion point.
+    /// A same-box click that moves the caret or selects the user's words must stop instead.
+    @MainActor static func canCompleteDraftAfterClick(in element: AXUIElement) -> Bool {
+        guard let attempt = draftAttempt, CFEqual(attempt.element, element),
+              let actual = value(element), let cursor = selectedRange(element) else { return false }
+        let draft = attempt.draft
+        let posted = typedSome ? DictationEnding.LateDraft(before: draft.before, range: draft.range,
+            text: draft.text, postedUTF16: typedCount).text : draft.text
+        guard !posted.isEmpty, draft.range.length == 0, draft.range.location >= 0,
+              draft.range.location <= draft.before.utf16.count,
+              cursor == NSRange(location: draft.range.location + posted.utf16.count, length: 0) else { return false }
+        let expected = (draft.before as NSString).replacingCharacters(in: draft.range, with: posted)
+        return FinishInBox.exact(expected, actual)
     }
 
     /// Read the complete expected value in the original focused box. Whitespace normalization is harmless;
@@ -193,15 +208,36 @@ enum Insert {
                 && pasteContext(element) == context
         }
         func quiet() -> Bool {
-            let elapsed = ProcessInfo.processInfo.systemUptime - began
+            let now = ProcessInfo.processInfo.systemUptime
+            let elapsed = now - began
+            let clicks = OwnWindowClicks.shared.snapshot()
+            if clicks.userClickAt.map({ $0 >= began }) == true { return false }
             return [CGEventType.keyDown, .leftMouseDown, .rightMouseDown].allSatisfy {
                 let ago = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: $0)
                 if $0 == .keyDown, EnterSendTap.shared.held(at: ProcessInfo.processInfo.systemUptime - ago,
                                                           tolerance: DraftSafety.talkKeyTolerance) { return true }
-                return ago >= elapsed
+                if ago >= elapsed { return true }
+                return $0 != .keyDown && OwnWindowClicks.matches(now - ago,
+                    times: $0 == .leftMouseDown ? clicks.left : clicks.right)
             }
         }
-        let ok = await text(words, joining: joining, confirmed: true, while: { sameTarget() && quiet() })
+        func quietAfterListener() async -> Bool {
+            let sample = await DraftSafety.resolveHardwareAsync(since: began) {
+                let now = ProcessInfo.processInfo.systemUptime
+                let clicks = OwnWindowClicks.shared.snapshot()
+                return .init(now: now,
+                    keyDownAgo: CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .keyDown),
+                    leftClickAgo: CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .leftMouseDown),
+                    rightClickAgo: CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .rightMouseDown),
+                    talkKeyDownTimes: EnterSendTap.shared.heldTimes(since: began), typingKeyDownAt: nil,
+                    ownLeftClickTimes: clicks.left, ownRightClickTimes: clicks.right, userClickAt: clicks.userClickAt)
+            }
+            return sample.failure(since: began) == nil
+        }
+        let ok = await text(words, joining: joining, confirmed: true, while: {
+            let quiet = await quietAfterListener()
+            return sameTarget() && quiet
+        })
         if ok { return true }
         let first = value(element)
         guard !observedInsertion, sameTarget(), quiet(), FinishInBox.mayPaste(before: before, first: first, settled: first,
@@ -222,7 +258,7 @@ enum Insert {
     private static var observedInsertion = false
     /// The exact edit just sent by Voice, for the starting box's expected text. Not arbitrary text read afterward.
     private(set) static var lastEdit: (element: AXUIElement, before: String, range: NSRange, replacement: String)?
-    /// Full attempted draft, even when it arrives after confirmation timed out. Never a confirmed edit record.
+    /// Attempted AX draft or exact posted-key prefix. Never a confirmed edit record.
     private(set) static var draftAttempt: (element: AXUIElement, draft: DictationEnding.LateDraft)?
 
     /// The box's text changed within a second of typing.

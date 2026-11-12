@@ -128,6 +128,8 @@ struct Config: Codable {
     var showLevel = true
     /// The level bar's look: "pen", "bars", "tape", "dot" or "classic". Missing in older config files, so optional.
     var levelStyle: String?
+    /// Keep the resting talking bar visible between dictations. Off in older files and new installs.
+    var keepBarOnScreen: Bool?
     /// "light", "dark", or nil to match the Mac. Applies to every Redpen Voice window and the menu bar panel.
     var appearance: String?
     var levelLook: String { showLevel ? (levelStyle ?? "pen") : "off" }

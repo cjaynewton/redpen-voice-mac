@@ -1,0 +1,238 @@
+Building for production...
+[Computing dependencies]
+[Using on-disk description]
+[1 / 87]
+[23 / 109]
+[37 / 107] InternalCollectionsUtilities
+[39 / 108] EventSource
+[41 / 109] ArgmaxCore
+[46 / 112] VoiceCore
+[46 / 112] RealModule
+[53 / 116] ComplexModule
+[53 / 116] Crypto
+[55 / 112] ComplexModule
+[63 / 117] OrderedCollections
+[71 / 122] MLX
+[75 / 125]
+[76 / 125] OrderedCollections
+[79 / 127] Jinja
+[81 / 128] yyjson
+[82 / 128] yyjson
+[82 / 128] ArgmaxCore
+[85 / 130] WhisperKit
+[87 / 131] MLX
+[90 / 133] MLXNN
+[92 / 134] HuggingFace
+[94 / 130] Jinja
+[97 / 132] Hub
+[99 / 134]
+[100 / 134] MLXNN
+[103 / 136] MLXOptimizers
+[105 / 137] MLXOptimizers
+[108 / 139] MLXLMCommon
+[110 / 140] VoiceCore
+[111 / 139] WhisperKit
+[113 / 135] Hub
+[116 / 137] Tokenizers
+[118 / 138] Tokenizers
+[120 / 134] MLXLMCommon
+[123 / 136] MLXLLM
+[125 / 137] MLXLLM
+[127 / 133] FluidAudio
+[132 / 135] RedpenVoice-product
+[134 / 138]
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/main.swift:425:44: warning: reference to captured var 'obj' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+ 423 |                     try? f.write(from: b)
+ 424 |                 }
+ 425 |                 print("tap-test: process \(obj), peak \(peak.map { String(format: "%.3f", $0) } ?? "none"), \(String(format: "%.2f", Double(a.count) / 16000)) s kept")
+     |                                            `- warning: reference to captured var 'obj' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+ 426 |                 exit(0)
+ 427 |             }
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/main.swift:1821:13: warning: no 'async' operations occur within 'await' expression [#UnnecessaryEffectMarker]
+1819 |             try? await Task.sleep(for: .milliseconds(150))
+1820 |             guard let self, d.clickRecovery == revision, self.session === d.owner else { return }
+1821 |             await self.edits.enqueue {
+     |             `- warning: no 'async' operations occur within 'await' expression [#UnnecessaryEffectMarker]
+1822 |                 guard self.session === d.owner, d.clickRecovery == revision else { return }
+1823 |                 if self.mouseAge() < FinishInBox.mouseSettle { self.scheduleClickRecovery(d); return }
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/main.swift:2536:46: warning: 'weak' ownership of capture 'self' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+2533 |         let players = Media.playingApps()
+2534 |         guard !players.isEmpty else { releaseBrowserPause(play: true); Log.note("media: resumed"); return }
+2535 |         let listened: @Sendable (Float?) -> Void = { peak in
+     |                                                    |- note: 'self' implicitly strongly captured here
+     |                                                    `- note: add 'self' as a capture list item to silence
+2536 |             DispatchQueue.main.async { [weak self] in
+     |                                              |- warning: 'weak' ownership of capture 'self' differs from implicitly-captured strong reference in outer scope [#ImplicitStrongCapture]
+     |                                              `- note: explicitly assign the capture list item to silence
+2537 |                 guard let self, self.mediaPause.owns(pauseToken) else { return }
+2538 |                 let playing = MediaGate.isPlaying(peak: peak)
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/main.swift:3192:27: warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+3190 |             let r = BetterSummary.write(file: file, helper: h, command: command)
+3191 |             await MainActor.run {
+3192 |                 guard let self else { return }
+     |                           `- warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+3193 |                 let text = r.ok ? "\(BetterSummary.cap(who))'s summary is on top of the notes" : r.message
+3194 |                 // Only over its own "Asking…": a newer meeting's offer or progress keeps the bar.
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/main.swift:3309:27: warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+3307 |             let r = BetterSummary.write(file: file, helper: "claude")
+3308 |             await MainActor.run {
+3309 |                 guard let self else { return }
+     |                           `- warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+3310 |                 self.hud.flash(r.ok ? "Notes written by Claude" : "Claude didn't write the notes. \(r.message)", ok: r.ok, for: 3.5)
+3311 |                 if r.ok { self.afterCall.reload() }
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/main.swift:3369:35: warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+3367 |             try? await Task.sleep(for: .seconds(1))
+3368 |             await Voiceprint.learn(from: audio) { [weak self] in self?.config.knowMyVoice == true && self?.config.roomVoices == true }
+3369 |             await MainActor.run { self?.learningVoice = false; self?.settings?.model.voiceLearned = Voiceprint.load()?.count ?? 0 }
+     |                                   `- warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+3370 |         }
+3371 |     }
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/main.swift:3369:64: warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+3367 |             try? await Task.sleep(for: .seconds(1))
+3368 |             await Voiceprint.learn(from: audio) { [weak self] in self?.config.knowMyVoice == true && self?.config.roomVoices == true }
+3369 |             await MainActor.run { self?.learningVoice = false; self?.settings?.model.voiceLearned = Voiceprint.load()?.count ?? 0 }
+     |                                                                `- warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+3370 |         }
+3371 |     }
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/FixWatch.swift:59:87: warning: main actor-isolated static property 'tallyURL' can not be referenced from a nonisolated context; this is an error in the Swift 6 language mode
+19 |     /// numbers only (risk.json), to see whether pointed-out words get fixed far more often than the rest.
+20 |     var marked: Set<String>?
+21 |     static let tallyURL = Config.dir.appendingPathComponent("risk.json")
+   |                `- note: static property declared here
+22 |
+23 |     /// Starts watching the focused box, which has just received `text`.
+   :
+57 |     /// Counts only: words pointed out and how many of them you fixed, the other words and how many of those.
+58 |     nonisolated static func tally(typed: String, marked: Set<String>, fixes: [Corrections.Fix]) {
+59 |         var t = (try? JSONDecoder().decode([String: Int].self, from: Data(contentsOf: tallyURL))) ?? [:]
+   |                                                                                       `- warning: main actor-isolated static property 'tallyURL' can not be referenced from a nonisolated context; this is an error in the Swift 6 language mode
+60 |         let words = typed.lowercased().split(separator: " ").map { String($0).trimmingCharacters(in: .punctuationCharacters) }
+61 |         let fixed = fixes.flatMap { $0.heard.lowercased().split(separator: " ").map(String.init) }
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/FixWatch.swift:67:68: warning: main actor-isolated static property 'tallyURL' can not be referenced from a nonisolated context; this is an error in the Swift 6 language mode
+19 |     /// numbers only (risk.json), to see whether pointed-out words get fixed far more often than the rest.
+20 |     var marked: Set<String>?
+21 |     static let tallyURL = Config.dir.appendingPathComponent("risk.json")
+   |                `- note: static property declared here
+22 |
+23 |     /// Starts watching the focused box, which has just received `text`.
+   :
+65 |         t["markedWords", default: 0] += m; t["markedFixed", default: 0] += mf
+66 |         t["otherWords", default: 0] += words.count - m; t["otherFixed", default: 0] += fixed.count - mf
+67 |         if let d = try? JSONEncoder().encode(t) { try? d.write(to: tallyURL, options: .atomic) }
+   |                                                                    `- warning: main actor-isolated static property 'tallyURL' can not be referenced from a nonisolated context; this is an error in the Swift 6 language mode
+68 |     }
+69 |
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/SettingsWindow.swift:55:35: warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+ 53 |             do { try await RoomSpeakers.download(); ok = RoomSpeakers.modelsReady } catch { ok = false }
+ 54 |             Log.note("meeting: voice models \(ok ? "downloaded" : "download failed")")
+ 55 |             await MainActor.run { self?.roomDownload = ok ? nil : "failed" }
+    |                                   `- warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+ 56 |         }
+ 57 |     }
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/SettingsWindow.swift:71:35: warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+ 69 |         Task.detached { [weak self] in
+ 70 |             let ok = BetterSummary.ready(h)
+ 71 |             await MainActor.run { self?.summarySignedIn[h] = ok }
+    |                                   `- warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+ 72 |         }
+ 73 |     }
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/SettingsWindow.swift:375:13: warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+373 |     private var whisperLine: Text {
+374 |         Text("Based on the sentiment around gold, how should I trade gold futures in the session tomorrow?").foregroundStyle(Ink.text)
+375 |             + Text("  ✓ no mistakes").font(.system(size: 13)).foregroundStyle(Ink.ok)
+    |             `- warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+376 |     }
+377 |
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/SettingsWindow.swift:384:31: warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+382 |             + fix(" ‸gold") + Text(", how should I trade gold ").foregroundStyle(Ink.text)
+383 |             + Text("features").strikethrough(color: Ink.red).foregroundStyle(Ink.text)
+384 |             + fix(" futures") + Text(" in the session tomorrow?").foregroundStyle(Ink.text)
+    |                               `- warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+385 |     }
+386 |
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/SettingsWindow.swift:384:13: warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+382 |             + fix(" ‸gold") + Text(", how should I trade gold ").foregroundStyle(Ink.text)
+383 |             + Text("features").strikethrough(color: Ink.red).foregroundStyle(Ink.text)
+384 |             + fix(" futures") + Text(" in the session tomorrow?").foregroundStyle(Ink.text)
+    |             `- warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+385 |     }
+386 |
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/SettingsWindow.swift:383:13: warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+381 |         return Text("Based on the sentiment around").foregroundStyle(Ink.text)
+382 |             + fix(" ‸gold") + Text(", how should I trade gold ").foregroundStyle(Ink.text)
+383 |             + Text("features").strikethrough(color: Ink.red).foregroundStyle(Ink.text)
+    |             `- warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+384 |             + fix(" futures") + Text(" in the session tomorrow?").foregroundStyle(Ink.text)
+385 |     }
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/SettingsWindow.swift:382:31: warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+380 |         let fix = { (s: String) in Text(s).font(Ink.serif(15, italic: true)).foregroundStyle(Ink.red) }
+381 |         return Text("Based on the sentiment around").foregroundStyle(Ink.text)
+382 |             + fix(" ‸gold") + Text(", how should I trade gold ").foregroundStyle(Ink.text)
+    |                             `- warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+383 |             + Text("features").strikethrough(color: Ink.red).foregroundStyle(Ink.text)
+384 |             + fix(" futures") + Text(" in the session tomorrow?").foregroundStyle(Ink.text)
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/SettingsWindow.swift:382:13: warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+380 |         let fix = { (s: String) in Text(s).font(Ink.serif(15, italic: true)).foregroundStyle(Ink.red) }
+381 |         return Text("Based on the sentiment around").foregroundStyle(Ink.text)
+382 |             + fix(" ‸gold") + Text(", how should I trade gold ").foregroundStyle(Ink.text)
+    |             `- warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+383 |             + Text("features").strikethrough(color: Ink.red).foregroundStyle(Ink.text)
+384 |             + fix(" futures") + Text(" in the session tomorrow?").foregroundStyle(Ink.text)
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/StatsWindow.swift:181:69: warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+179 |
+180 |     private func line(_ figure: String, _ label: String) -> some View {
+181 |         (Text(figure).foregroundStyle(Ink.text).fontWeight(.medium) + Text(" " + label).foregroundStyle(Ink.mid))
+    |                                                                     `- warning: '+' was deprecated in macOS 26.0: Use string interpolation on `Text` instead: `Text("Hello \(name)")` [#DeprecatedDeclaration]
+182 |             .font(.system(size: 13)).monospacedDigit()
+183 |     }
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/Transcriber.swift:1372:21: warning: result of call to 'analyzeSequence(from:)' is unused [#NoUsage]
+1370 |         else { return "" }
+1371 |         let a = SpeechAnalyzer(modules: [m], options: options)
+1372 |         try await a.analyzeSequence(from: file)
+     |                     `- warning: result of call to 'analyzeSequence(from:)' is unused [#NoUsage]
+1373 |         try await a.finalizeAndFinishThroughEndOfInput()
+1374 |         try await collect.value
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/WriterDownload.swift:172:64: warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+170 |         Task.detached { [weak self] in
+171 |             do {
+172 |                 try await f.run { n in Task { @MainActor in if self?.fetch === f { self?.done = n } } }
+    |                                                                `- warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+173 |                 try Data().write(to: f.folder.appendingPathComponent(LocalNotes.checkedMark))
+174 |                 Log.note("notes writer: downloaded and checked (\(w.id)) in \(Log.int(Date().timeIntervalSince(t0)))s")
+
+/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/bar-click-fixes/Sources/RedpenVoice/WriterDownload.swift:172:84: warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+170 |         Task.detached { [weak self] in
+171 |             do {
+172 |                 try await f.run { n in Task { @MainActor in if self?.fetch === f { self?.done = n } } }
+    |                                                                                    `- warning: reference to captured var 'self' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
+173 |                 try Data().write(to: f.folder.appendingPathComponent(LocalNotes.checkedMark))
+174 |                 Log.note("notes writer: downloaded and checked (\(w.id)) in \(Log.int(Date().timeIntervalSince(t0)))s")
+
+[#DeprecatedDeclaration]: <https://docs.swift.org/compiler/documentation/diagnostics/deprecated-declaration>
+[#ImplicitStrongCapture]: <https://docs.swift.org/compiler/documentation/diagnostics/implicit-strong-capture>
+[#NoUsage]: <https://docs.swift.org/compiler/documentation/diagnostics/no-usage>
+[#SendableClosureCaptures]: <https://docs.swift.org/compiler/documentation/diagnostics/sendable-closure-captures>
+[#UnnecessaryEffectMarker]: <https://docs.swift.org/compiler/documentation/diagnostics/unnecessary-effect-marker>
+[135 / 138] RedpenVoice-product
+[137 / 138] RedpenVoice-product
+[138 / 138] RedpenVoice-product
+Build complete! (137.36 secs.)
