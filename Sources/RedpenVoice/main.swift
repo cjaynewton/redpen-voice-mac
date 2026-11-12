@@ -653,7 +653,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         keys.onPendingTap = { [weak self] until in
             self?.deliveries.deferTap(until: Date().addingTimeInterval(max(0, until - ProcessInfo.processInfo.systemUptime)))
         }
-        keys.onEscape = { [weak self] at, repeated in self?.escapePressed(at: at, repeated: repeated) ?? false }
+        keys.onEscape = { [weak self] at, repeated in
+            guard let self else { return false }
+            if self.hud.dismissExtras() { self.escapePresses = EscapeTwice(); return true }
+            return self.escapePressed(at: at, repeated: repeated)
+        }
         keys.heldByEnter = { [enterTap] at in enterTap.held(at: at) }
         enterTap.setTalkKeys(keys.keys.map(\.code))
         keys.start()
@@ -2657,6 +2661,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setUpPanel() {
+        hud.onStart = { [weak self] in self?.keys.startFromBar() }
+        hud.onFinish = { [weak self] in self?.keys.stopFromEnter(); self?.end() }
+        hud.onCancel = { [weak self] in self?.discard() }
+        hud.onPaste = { [weak self] in self?.pasteLastNow() }
+        hud.onNotes = { [weak self] in self?.openMeetingNotes() }
+        hud.onSettings = { [weak self] in self?.openSettings() }
+        hud.onDismissPopup = { [weak self] in
+            guard let self, self.panel.isShown else { return false }
+            self.panel.close(); return true
+        }
+        hud.menuAvailability = { [weak self] in
+            guard let self else { return (false, false, false) }
+            let recording = self.session != nil || self.pendingStart != nil
+            return (recording, recording, self.history.lastSpoken() != nil || self.lastSaid != nil)
+        }
+        hud.talkKey = talkKeyName
+        hud.style = config.levelLook == "off" ? "pen" : config.levelLook
+        hud.rest()
         Ink.registerFonts()
         panel.behavior = .transient
         panel.animates = false
@@ -3426,6 +3448,14 @@ if let i = CommandLine.arguments.firstIndex(of: "--words-landed") {
 // Watchdog mode: a small copy that reopens the app if it crashes. Runs before any window or menu exists.
 if let i = CommandLine.arguments.firstIndex(of: "--watchdog"), i + 1 < CommandLine.arguments.count, let pid = pid_t(CommandLine.arguments[i + 1]) {
     Watchdog.run(parent: pid)
+}
+
+if let i = CommandLine.arguments.firstIndex(of: "--talking-bar-shots"), i + 1 < CommandLine.arguments.count {
+    MainActor.assumeIsolated {
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.accessory)
+        exit(HUD.captureStates(to: URL(fileURLWithPath: CommandLine.arguments[i + 1])))
+    }
 }
 
 MainActor.assumeIsolated {

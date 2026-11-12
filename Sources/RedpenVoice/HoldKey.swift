@@ -46,6 +46,15 @@ final class HoldKey {
     private var inputSequence = 0
     private let draftInputMonitor = DraftInputMonitor()
     func trackDraft(since: Double) -> DraftInput { draftInputMonitor.track(since: since) }
+    /// Mouse entry for the talking bar, sharing the existing start/confirm/finish callbacks.
+    func startFromBar() {
+        guard canBegin(), state.startFromControl(at: ProcessInfo.processInfo.systemUptime) else { return }
+        pendingWork?.cancel(); holdWork?.cancel()
+        gestureID = StartTrace.nextGesture(); captureID = gestureID
+        guard onDown() else { discard(); return }
+        onConfirm(); onHandsFree(); updateReleaseTimer()
+    }
+
     /// Escape threw the dictation away.
     func discard() {
         pendingWork?.cancel(); holdWork?.cancel()
