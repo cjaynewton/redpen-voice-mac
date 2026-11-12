@@ -51,85 +51,94 @@ enum Media {
     /// How a pause was made, so the video comes back the same way: the key again, or the same Chrome tabs.
     enum Paused { case key, chrome(token: String, tabs: [Int]) }
 
-    /// Pauses what is playing. Sound from Chrome is paused in its tabs (the tab showing in each window first, then
-    /// every tab), so the key can't land on a paused tab and start it. Anything else, or Chrome saying no, gets the
-    /// key as before. Chrome taking too long presses nothing, since some of its tabs may already be paused.
-    /// `stillPaused` is asked once Chrome answers: a pause let go of meanwhile (a quit) presses nothing, puts back
-    /// what Chrome paused, and hands back nil.
-    /// `chromeOnly` is the pause asked for when the quick listen heard silence: Chrome is asked whether a video is
-    /// playing out loud and pauses only that. Nothing found, or Chrome unable to say, presses nothing and hands back
-    /// nil, since the key on a quiet Mac would start music or a paused video.
+    /// Chrome is always paused by a page script, never by a media key. The sound-confirmed non-Chrome
+    /// path retains its existing media-key behavior. A quiet check never presses a key.
     @discardableResult
     static func pause(_ players: [Player], chromeOnly: Bool = false, owner: Int,
                       stillPaused: @escaping () -> Bool, needsPause: @escaping () -> Bool,
                       done: @escaping (Paused?, BrowserMedia.Outcome?) -> Void) -> BrowserPauseOperation? {
         guard stillPaused(), needsPause() else { return nil }
-        // Keep the existing non-timeout, loud-Chrome fallback. Recovery never enters this branch again.
-        guard players.contains(where: { BrowserMedia.isChrome(path: path($0.pid)) }), Date() >= keyUntil else {
+        // A key is permitted only for sound-confirmed players outside Chrome.
+        guard players.contains(where: { BrowserMedia.isChrome(path: path($0.pid)) }) else {
             if chromeOnly { done(nil, nil); return nil }
             pressPlayPause(); done(.key, nil); return nil
         }
         return pauseBrowser(owner: owner, stillPaused: stillPaused, needsPause: needsPause,
-                            chromeOnly: chromeOnly, done: done)
+                            done: done)
     }
 
     /// A takeover starts a fresh pass after the gesture is confirmed. Include every known candidate, not just
     /// confirmed pauses, and adopt still-paused elements before sealing their old owners.
-    static func pauseBrowser(owner: Int, candidates: [Int] = [], inheritedTokens: [String] = [],
+    static func pauseBrowser(owner: Int, requestedAt: TimeInterval? = nil, candidates: [Int] = [], inheritedTokens: [String] = [],
                              inheritedTabs: Set<Int> = [], stillPaused: @escaping () -> Bool,
-                             needsPause: @escaping () -> Bool, chromeOnly: Bool = true,
+                             needsPause: @escaping () -> Bool,
                              done: @escaping (Paused?, BrowserMedia.Outcome?) -> Void) -> BrowserPauseOperation {
         let token = BrowserMedia.token()
-        let entered = ProcessInfo.processInfo.systemUptime
-        let epochEnd = Date().addingTimeInterval(BrowserPauseOperation.totalBudget).timeIntervalSince1970 * 1000
-        let operation = BrowserPauseOperation(token: token, owner: owner, preferredTab: recentTab, candidates: candidates, inheritedTokens: inheritedTokens, inheritedTabs: inheritedTabs, now: { ProcessInfo.processInfo.systemUptime }) { action, limit, reply in
+        let permit = FileManager.default.temporaryDirectory.appendingPathComponent("redpen-pause-permit-" + token)
+        let permitCreated = FileManager.default.createFile(atPath: permit.path, contents: Data("1".utf8), attributes: [.posixPermissions: 0o600])
+        let entered = requestedAt ?? ProcessInfo.processInfo.systemUptime
+        let epochStart = Date().timeIntervalSince1970 * 1000
+        let leftAtStart = max(0, BrowserPauseOperation.totalBudget - (ProcessInfo.processInfo.systemUptime - entered))
+        let epochEnd = epochStart + leftAtStart * 1000
+        let operation = BrowserPauseOperation(token: token, owner: owner, preferredTab: recentTab, candidates: candidates, inheritedTokens: inheritedTokens, inheritedTabs: inheritedTabs, entered: entered, now: { ProcessInfo.processInfo.systemUptime }) { action, limit, reply in
             chrome.async {
                 // Queue time is inside the transaction budget. Recheck on the owning queue immediately before launch.
                 let allowed = DispatchQueue.main.sync { stillPaused() && needsPause() }
-                guard allowed else { DispatchQueue.main.async { reply(.empty) }; return }
+                guard allowed, permitCreated, FileManager.default.fileExists(atPath: permit.path) else { DispatchQueue.main.async { reply(.empty) }; return }
                 let args: [String]
+                let journal: URL?
+                let script: String
                 switch action {
-                case .windows: args = ["windows"]
-                case .front(let id): args = ["front", String(id)]
-                case .tabs(let id): args = ["tabs", String(id)]
-                case .probe(let id): args = ["page", String(id), BrowserMedia.probeScript(token: token, document: BrowserMedia.token(), expires: epochEnd, inheriting: inheritedTokens)]
-                case .pause(let id, let document, _):
-                    args = ["page", String(id), BrowserMedia.pauseScript(token: token, document: document, expires: epochEnd, inheriting: inheritedTokens)]
+                case .discover(let excluded):
+                    let file = FileManager.default.temporaryDirectory.appendingPathComponent("redpen-pause-" + token)
+                    guard FileManager.default.createFile(atPath: file.path, contents: Data(), attributes: [.posixPermissions: 0o600]) else {
+                        DispatchQueue.main.async { reply(.failed) }; return
+                    }
+                    journal = file; script = BrowserMedia.discoveryRunner
+                    args = [BrowserMedia.directPauseScript(token: token, document: BrowserMedia.token(), expires: epochEnd,
+                                                          started: epochStart, inheriting: inheritedTokens), file.path, permit.path, "0"] + excluded.map(String.init)
+                case .pause(let id, let document, let retry):
+                    journal = nil; script = BrowserMedia.actionRunner
+                    let js = retry ? BrowserMedia.pauseScript(token: token, document: document, expires: epochEnd, inheriting: inheritedTokens)
+                        : BrowserMedia.directPauseScript(token: token, document: document, expires: epochEnd, started: epochStart, inheriting: inheritedTokens)
+                    args = ["page", String(id), js]
                 }
+                defer { if let journal { try? FileManager.default.removeItem(at: journal) } }
                 let remaining = BrowserPauseOperation.totalBudget - (ProcessInfo.processInfo.systemUptime - entered)
                 guard remaining > 0 else { DispatchQueue.main.async { reply(.timeout) }; return }
                 Log.note("media browser: token=\(token) phase=\(action.phase) process_start elapsed_ms=\(Log.ms(BrowserPauseOperation.totalBudget - remaining))")
-                let r = runAction(args, limit: min(limit, remaining))
-                DispatchQueue.main.async { reply(actionReply(action, r)) }
+                let r = runAction(args, limit: min(limit, remaining), script: script)
+                let touched = journal.flatMap { try? String(contentsOf: $0, encoding: .utf8) }?.split(separator: "\n").compactMap { Int($0) } ?? []
+                let result = actionReply(action, r, touched: touched)
+                DispatchQueue.main.async { reply(result) }
             }
         }
+        operation.onStop = { try? FileManager.default.removeItem(at: permit) }
         operation.onProgress = { phase, tab, elapsed, count in
             Log.note("media browser: token=\(token) phase=\(phase) tab=\(tab.map(String.init) ?? "0") count=\(count) elapsed_ms=\(Log.ms(elapsed))")
         }
         operation.onSlow = { Log.note("media browser: token=\(token) slow=1 elapsed_ms=4000") }
         operation.onFinish = { [weak operation] in
+            try? FileManager.default.removeItem(at: permit)
             guard let operation else { return }
             let result = operation.outcome
             if let tab = operation.counts.keys.sorted().first { recentTab = tab }
             Log.note("media browser: token=\(token) finished state=\(operation.state) count=\(operation.counts.values.reduce(0, +)) elapsed_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime - operation.entered))")
             guard stillPaused(), needsPause() else { done(nil, result); return }
-            if result == .scriptsOff || result == .notAllowed { keyUntil = Date().addingTimeInterval(600) }
             switch result {
             case .handled, .failed("slow"):
                 // Every dispatched candidate is reconciled, including any unacknowledged first pause.
                 done(.chrome(token: token, tabs: operation.reconciliationTabs), result)
             default:
-                if !operation.recovery && BrowserMedia.keyAfterQuietCheck(result, chromeOnly: chromeOnly) {
-                    pressPlayPause(); done(.key, result)
-                } else { done(nil, result) }
+                done(nil, result)
             }
         }
         Log.note("media browser: token=\(token) queue_enter elapsed_ms=0")
         DispatchQueue.main.async { operation.start() }
-        DispatchQueue.main.asyncAfter(deadline: .now() + BrowserPauseOperation.slowAfter) { [weak operation] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, BrowserPauseOperation.slowAfter - (ProcessInfo.processInfo.systemUptime - entered))) { [weak operation] in
             guard let operation, !operation.finished else { return }; operation.tick()
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + BrowserPauseOperation.totalBudget) { [weak operation] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + leftAtStart) { [weak operation] in
             guard let operation, !operation.finished else { return }; operation.tick()
         }
         return operation
@@ -137,23 +146,36 @@ enum Media {
 
     struct ActionOutput { let status: Int32; let output: String; let error: String; let timedOut: Bool }
     /// The runner returns only IDs, a generated identity or a count. Errors are classified, never logged verbatim.
-    private static func runAction(_ args: [String], limit: Double) -> ActionOutput {
+    private static func runAction(_ args: [String], limit: Double, script: String = BrowserMedia.actionRunner) -> ActionOutput {
         let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        p.arguments = ["-e", BrowserMedia.actionRunner] + args
+        p.arguments = ["-e", script] + args
         let out = Pipe(), err = Pipe(); p.standardOutput = out; p.standardError = err
         let finished = DispatchSemaphore(value: 0)
         p.terminationHandler = { _ in finished.signal() }
         do { try p.run() } catch { return ActionOutput(status: 1, output: "", error: "", timedOut: false) }
         if finished.wait(timeout: .now() + limit) == .timedOut {
             p.terminate()
-            // Do not wait on an unresponsive interpreter or treat termination as AppleEvent cancellation.
+            // Reap only the interpreter, never wait for Chrome. A journalled AppleEvent may still arrive.
+            if finished.wait(timeout: .now() + 0.05) == .timedOut {
+                kill(p.processIdentifier, SIGKILL)
+                _ = finished.wait(timeout: .now() + 0.05)
+            }
             return ActionOutput(status: 1, output: "", error: "", timedOut: true)
         }
         return ActionOutput(status: p.terminationStatus,
                             output: String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "",
                             error: String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "", timedOut: false)
     }
-    static func actionReply(_ action: BrowserPauseOperation.Action, _ r: ActionOutput) -> BrowserPauseOperation.Reply {
+    static func actionReply(_ action: BrowserPauseOperation.Action, _ r: ActionOutput, touched: [Int] = []) -> BrowserPauseOperation.Reply {
+        if case .discover = action {
+            let output = r.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            let bits = output.split(separator: ":")
+            let tab = bits.count == 2 ? Int(bits[0]) : nil
+            let count = bits.count == 2 ? Int(bits[1]) ?? 0 : 0
+            return .discovered(tab: tab, count: count, touched: touched,
+                slow: r.timedOut || r.status != 0 || output == "slow",
+                refused: output == "refused" || r.error.contains("-1743"))
+        }
         if r.timedOut || r.error.contains("-1712") { return .timeout }
         if r.status != 0 {
             if r.error.contains("-1743") || r.error.lowercased().contains("not authorized") { return .notAllowed }
@@ -162,8 +184,7 @@ enum Media {
         }
         let output = r.output.trimmingCharacters(in: .whitespacesAndNewlines)
         switch action {
-        case .windows, .front, .tabs: return .ids(output.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) })
-        case .probe: return output.isEmpty ? .empty : .candidate(BrowserMedia.cleanIdentity(output))
+        case .discover: return .empty
         case .pause:
             guard let count = Int(output) else { return .empty }
             return count < 0 ? .navigated : .paused(count)
@@ -184,13 +205,14 @@ enum Media {
         guard !token.isEmpty, !tabs.isEmpty else {
             done(.init(requested: [], resumed: [], cleared: [], cancelled: false)); return nil
         }
-        let js = BrowserMedia.resumeScript(token: token, play: play, inheriting: inheriting)
+        let js = BrowserMedia.resumeScript(token: token, play: play, inheriting: inheriting, sealUnseen: true)
         if wait {
             // Quit seals in the page instead of joining a worker waiting on the main queue. The pause operation
             // is stopped first by the caller. Its already-delivered pause sees the seal in either execution order.
             let end = ProcessInfo.processInfo.systemUptime + BrowserResumeOperation.totalBudget
             var resumed: Set<Int> = [], cleared: Set<Int> = []
-            for tab in Set(tabs).sorted() {
+            var seen: Set<Int> = []
+            for tab in tabs where seen.insert(tab).inserted {
                 let left = end - ProcessInfo.processInfo.systemUptime
                 guard allowed(), left > 0 else { break }
                 let output = runAction(["page", String(tab), js], limit: min(left, BrowserPauseOperation.actionBudget))
@@ -222,9 +244,8 @@ enum Media {
         return operation
     }
 
-    /// Until when to skip asking Chrome, after it said no: ten minutes, so turning the switch on is picked up soon.
+    /// The last confirmed tab is tried in one call before discovery.
     nonisolated(unsafe) private static var recentTab: Int?
-    nonisolated(unsafe) private static var keyUntil = Date.distantPast
 
     /// One Chrome run at a time, off the main thread: Chrome can take a moment to answer.
     private static let chrome = DispatchQueue(label: "redpen.media.chrome", qos: .userInitiated)

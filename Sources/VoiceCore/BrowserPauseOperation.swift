@@ -8,17 +8,13 @@ public final class BrowserPauseOperation {
     public static let actionBudget: TimeInterval = 1.2
     public enum State: Equatable { case pending, confirmed, uncertain, cancelled, transferred }
     public enum Action: Equatable {
-        case windows
-        case front(Int)
-        case tabs(Int)
-        case probe(Int)
         case pause(Int, document: String, retry: Bool)
+        case discover(excluding: [Int])
     }
     public enum Reply: Equatable {
-        case ids([Int])
-        case candidate(String)
-        case paused(Int)
+        case ids([Int]), candidate(String), paused(Int)
         case empty, navigated, timeout, refused, notAllowed, failed
+        case discovered(tab: Int?, count: Int, touched: [Int], slow: Bool, refused: Bool)
     }
     public let token: String
     public let entered: TimeInterval
@@ -35,30 +31,35 @@ public final class BrowserPauseOperation {
     public private(set) var uncertain = false
     public private(set) var recovery = false
     public private(set) var refusal: Reply?
+    public var onStop: (() -> Void)?
     public var onFinish: (() -> Void)?
     public var onSettled: (() -> Void)?
     public var onSlow: (() -> Void)?
     public var onProgress: ((String, Int?, TimeInterval, Int) -> Void)?
     private let now: () -> TimeInterval
     private let perform: (Action, TimeInterval, @escaping (Reply) -> Void) -> Void
-    private var queue: [Action] = [.windows]
+    private var queue: [Action] = []
     private var stopped = false
-    private var visitedTabs: Set<Int> = []
-    private var discoveryRetries: Set<String> = []
-    private var needsTakeoverDiscovery: Bool
+    private let needsTakeoverDiscovery: Bool
 
     public init(token: String, owner: Int, preferredTab: Int? = nil, candidates: [Int] = [],
-                inheritedTokens: [String] = [], inheritedTabs: Set<Int> = [], now: @escaping () -> TimeInterval,
+                inheritedTokens: [String] = [], inheritedTabs: Set<Int> = [], entered: TimeInterval? = nil, now: @escaping () -> TimeInterval,
                 perform: @escaping (Action, TimeInterval, @escaping (Reply) -> Void) -> Void) {
         self.token = token; self.owner = owner; self.now = now; self.perform = perform
         self.inheritedTokens = inheritedTokens; self.inheritedTabs = inheritedTabs
         needsTakeoverDiscovery = !inheritedTokens.isEmpty
         self.candidates = Set(candidates)
-        entered = now()
-        queue.insert(contentsOf: candidates.map(Action.probe), at: 0)
-        if let preferredTab { queue.insert(.probe(preferredTab), at: 0) }
+        self.entered = entered ?? now()
+        var known = candidates
+        if let preferredTab { known.insert(preferredTab, at: 0) }
+        var seen: Set<Int> = []
+        queue = known.filter { seen.insert($0).inserted }.map { .pause($0, document: BrowserMedia.token(), retry: false) }
+        queue.append(.discover(excluding: []))
     }
-    public var reconciliationTabs: [Int] { touched.union(inheritedTabs).sorted() }
+    public var reconciliationTabs: [Int] {
+        // A batch may visit many empty tabs. Reconcile confirmed pauses before spending time on uncertain ones.
+        counts.keys.sorted() + touched.union(inheritedTabs).subtracting(counts.keys).sorted()
+    }
     public var reconciliationTokens: [String] { inheritedTokens + [token] }
     public var remaining: TimeInterval { max(0, Self.totalBudget - (now() - entered)) }
     public var canDispatch: Bool { !stopped && !finished && remaining > 0 }
@@ -67,17 +68,17 @@ public final class BrowserPauseOperation {
         if !slow && now() - entered >= Self.slowAfter {
             slow = true; recovery = true; onSlow?()
         }
-        if remaining == 0 { uncertain = true; stopped = true; queue.removeAll(); settleIfIdle() }
+        if remaining == 0 { uncertain = true; stopped = true; onStop?(); queue.removeAll(); settleIfIdle() }
     }
     /// Stop sends no further pauses. An already-sent action still has to report so its token can be reconciled.
     public func stop(cancelled: Bool = false) {
-        stopped = true; queue.removeAll()
+        stopped = true; onStop?(); queue.removeAll()
         state = cancelled ? .cancelled : (counts.isEmpty ? .uncertain : .confirmed)
         settleIfIdle()
     }
     /// Retain all discovered candidates for the new owner's fresh, confirmed pause pass.
     public func transfer(to owner: Int) {
-        self.owner = owner; stopped = true; queue.removeAll(); state = .transferred
+        self.owner = owner; stopped = true; onStop?(); queue.removeAll(); state = .transferred
         settleIfIdle()
     }
     public var outcome: BrowserMedia.Outcome {
@@ -91,52 +92,40 @@ public final class BrowserPauseOperation {
     private func advance() {
         tick()
         guard canDispatch, inFlight == nil, !queue.isEmpty else { settleIfIdle(); return }
-        let action = queue.removeFirst()
-        if case .probe(let id) = action, !visitedTabs.insert(id).inserted { advance(); return }
-        if case .pause(let id, _, _) = action { touched.insert(id) }
+        var action = queue.removeFirst()
+        if case .discover = action { action = .discover(excluding: touched.sorted()) }
+        if case .pause(let id, _, _) = action { touched.insert(id); candidates.insert(id) }
         inFlight = action
         let tab: Int?
-        switch action { case .probe(let id), .pause(let id, _, _): tab = id; default: tab = nil }
+        switch action { case .pause(let id, _, _): tab = id; default: tab = nil }
         onProgress?("\(action.phase)-dispatch", tab, now() - entered, 0)
-        perform(action, min(Self.actionBudget, remaining)) { [self] reply in receive(reply, for: action) }
+        let limit: TimeInterval
+        if case .discover = action { limit = remaining } else { limit = min(Self.actionBudget, remaining) }
+        perform(action, limit) { [self] reply in receive(reply, for: action) }
     }
     private func receive(_ reply: Reply, for action: Action) {
         guard inFlight == action else { return }
         tick()
         inFlight = nil
         let tab: Int?
-        switch action { case .probe(let id), .pause(let id, _, _): tab = id; default: tab = nil }
+        switch action { case .pause(let id, _, _): tab = id; default: tab = nil }
         onProgress?("\(action.phase)-result-\(reply.code)", tab, now() - entered, reply.count)
         // Even a cancelled or transferred request can have paused. Keep its partial evidence for reconciliation.
         if case .pause(let id, _, _) = action, case .paused(let count) = reply, count > 0 { counts[id] = count }
+        if case .discovered(let tab, let count, let tried, let slow, let refused) = reply {
+            touched.formUnion(tried); candidates.formUnion(tried)
+            if let tab, count > 0 { counts[tab] = count; touched.insert(tab); candidates.insert(tab) }
+            if slow { uncertain = true; recovery = true }
+            if refused { refusal = .refused }
+        }
         if reply == .timeout { uncertain = true; recovery = true }
         if reply == .refused || reply == .notAllowed || reply == .failed { refusal = reply }
         guard canDispatch else { settleIfIdle(); return }
-        switch (action, reply) {
-        case (.windows, .ids(let ids)):
-            needsTakeoverDiscovery = false
-            queue = ids.map(Action.front) + ids.map(Action.tabs)
-        case (.front, .ids(let ids)), (.tabs, .ids(let ids)):
-            candidates.formUnion(ids)
-            queue.insert(contentsOf: ids.map(Action.probe), at: 0)
-        case (.probe(let id), .candidate(let document)):
-            queue.insert(.pause(id, document: document, retry: false), at: 0)
-        case (.pause(let id, let document, false), .timeout):
+        if case .pause(let id, let document, false) = action, reply == .timeout {
             queue.insert(.pause(id, document: document, retry: true), at: 0)
-        case (.windows, .timeout), (.front, .timeout), (.tabs, .timeout):
-            let key = String(describing: action)
-            if discoveryRetries.insert(key).inserted { queue.append(action) }
-        default: break
         }
-        // Keep the current group's remaining candidates, as before. Publish each success through progress now;
-        // later timeouts cannot erase it. Once a group succeeds, do not discover unrelated background groups.
-        if !counts.isEmpty { queue.removeAll { action in
-            switch action {
-            case .windows: return !needsTakeoverDiscovery
-            case .tabs: return true
-            default: return false
-            }
-        } }
+        // A normal pass stops at the first success. A takeover must also reclaim all known old marks.
+        if !counts.isEmpty && !needsTakeoverDiscovery { queue.removeAll() }
         if reply == .notAllowed { queue.removeAll() }
         advance()
     }
@@ -153,13 +142,13 @@ public final class BrowserPauseOperation {
 
 extension BrowserPauseOperation.Reply {
     public var count: Int {
-        switch self { case .ids(let ids): return ids.count; case .paused(let count): return count; default: return 0 }
+        switch self { case .ids(let ids): return ids.count; case .paused(let count): return count; case .discovered(_, let count, _, _, _): return count; default: return 0 }
     }
     /// Only fixed labels and numbers may reach progress logs.
     public var code: Int {
         switch self {
         case .ids: return 0; case .candidate: return 1; case .paused: return 2; case .empty: return 3
-        case .navigated: return 4; case .timeout: return 5; case .refused: return 6; case .notAllowed: return 7; case .failed: return 8
+        case .navigated: return 4; case .timeout: return 5; case .refused: return 6; case .notAllowed: return 7; case .failed: return 8; case .discovered: return 9
         }
     }
 }
@@ -167,8 +156,8 @@ extension BrowserPauseOperation.Reply {
 extension BrowserPauseOperation.Action {
     public var phase: String {
         switch self {
-        case .windows: return "discovery-windows"; case .front: return "discovery-front"; case .tabs: return "discovery-tabs"
-        case .probe: return "candidate"; case .pause(_, _, let retry): return retry ? "retry" : "pause"
+        case .discover: return "discovery-pause"
+        case .pause(_, _, let retry): return retry ? "retry" : "pause"
         }
     }
 }

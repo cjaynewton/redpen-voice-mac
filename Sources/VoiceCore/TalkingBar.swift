@@ -4,7 +4,8 @@ import Foundation
 public enum TalkingBar {
     public enum State: String, CaseIterable { case resting, listening, writing, needs, done, message }
 
-    public static func size(_ state: State, style: String, menu: Bool = false) -> CGSize {
+    public static func size(_ state: State, style: String, menu: Bool = false, small: Bool = false) -> CGSize {
+        if small && !menu && state != .message { return CGSize(width: 157, height: 26) }
         let dot = style == "dot"
         let width: CGFloat
         switch state {

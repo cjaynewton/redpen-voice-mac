@@ -32,6 +32,10 @@ final class TalkingBarView: NSView {
 
     var state = TalkingBar.State.resting
     var style = "pen"
+    var small = false
+    var smallNeedsMessage = false
+    var compact: Bool { small && !menuOpen && state != .message }
+    var shownMessage: String { compact && !(state == .needs && smallNeedsMessage) ? "" : message }
     var menuOpen = false
     var message = ""
     var success = false
@@ -56,32 +60,33 @@ final class TalkingBarView: NSView {
     private var dragStart: CGPoint?
     private var dragOrigin = CGPoint.zero
     private var moved = false
+    private var gripPressed = false
     private var hoverGrip = false
     override var isFlipped: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override var acceptsFirstResponder: Bool { true }
-    var railHeight: CGFloat { state == .resting || state == .done ? 40 : 52 }
+    var railHeight: CGFloat { compact ? 26 : state == .resting || state == .done ? 40 : 52 }
     var menuHeight: CGFloat { menuOpen ? (state == .resting ? 137 : 165) + (canKeepBar ? 28 : 0) : 0 }
     var menuSeparatorY: CGFloat { (state == .resting ? 40 : 68) + (canKeepBar ? 28 : 0) }
     var needsOverflow: Bool {
-        state == .needs && (message as NSString).size(withAttributes: [.font: Self.font(15)]).width > bounds.width - (style == "dot" ? 146 : 168)
+        (compact || state == .needs) && (shownMessage as NSString).size(withAttributes: [.font: Self.font(15)]).width > bounds.width - (style == "dot" ? 146 : 168)
     }
     var detailHeight: CGFloat {
-        guard !message.isEmpty, state != .needs || needsOverflow else { return choices.isEmpty ? 0 : 40 }
+        guard !shownMessage.isEmpty, compact || state != .needs || needsOverflow else { return choices.isEmpty ? 0 : 40 }
         let width = max(80, bounds.width - 32)
-        let rect = (message as NSString).boundingRect(with: NSSize(width: width, height: 2000),
+        let rect = (shownMessage as NSString).boundingRect(with: NSSize(width: width, height: 2000),
             options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: Self.font(15)])
         return ceil(rect.height) + 20 + (choices.isEmpty ? 0 : 36)
     }
     func desiredSize(maxWidth: CGFloat) -> CGSize {
-        var size = TalkingBar.size(state, style: style, menu: menuOpen)
+        var size = TalkingBar.size(state, style: style, menu: menuOpen, small: small)
         if menuOpen && canKeepBar { size.height += 28 }
-        if !message.isEmpty && state != .needs {
-            let measured = (message as NSString).size(withAttributes: [.font: Self.font(15)]).width + 32
+        if !shownMessage.isEmpty && state != .needs {
+            let measured = (shownMessage as NSString).size(withAttributes: [.font: Self.font(15)]).width + 32
             size.width = max(size.width, min(maxWidth, min(600, measured)))
         }
-        if state == .needs {
-            size.width = max(size.width, min(600, (style == "dot" ? 146 : 168) + (message as NSString).size(withAttributes: [.font: Self.font(15)]).width))
+        if state == .needs && !compact {
+            size.width = max(size.width, min(600, (style == "dot" ? 146 : 168) + (shownMessage as NSString).size(withAttributes: [.font: Self.font(15)]).width))
         }
         size.width = min(maxWidth, size.width)
         // Measure wrapping at the target width, before the window animates.
@@ -104,7 +109,7 @@ final class TalkingBarView: NSView {
             addSubview(b); buttons.append(b)
         }
         let railY = bounds.height - railHeight
-        if state != .done {
+        if state != .done && !compact {
             button("", "", menuOpen ? "down" : "up", "options",
                    CGRect(x: bounds.width - 40, y: railY + (railHeight - 32) / 2, width: 32, height: 32))
             buttons.last?.selected = menuOpen
@@ -163,18 +168,28 @@ final class TalkingBarView: NSView {
     }
     override func mouseExited(with event: NSEvent) { hoverGrip = false; needsDisplay = true }
     override func mouseDown(with event: NSEvent) {
-        dragStart = NSEvent.mouseLocation; dragOrigin = window?.frame.origin ?? .zero; moved = false
+        beginPointer(at: NSEvent.mouseLocation, local: convert(event.locationInWindow, from: nil))
+    }
+    // Native events and passive checks use the same click/drag classifier.
+    func beginPointer(at point: CGPoint, local: CGPoint) {
+        dragStart = point; dragOrigin = window?.frame.origin ?? .zero; moved = false
+        gripPressed = CGRect(x: 8, y: bounds.height - railHeight, width: 24, height: railHeight).contains(local)
     }
     override func mouseDragged(with event: NSEvent) {
+        movePointer(to: NSEvent.mouseLocation)
+    }
+    func movePointer(to now: CGPoint) {
         guard let start = dragStart else { return }
-        let now = NSEvent.mouseLocation, dx = now.x - start.x, dy = now.y - start.y
+        let dx = now.x - start.x, dy = now.y - start.y
         if abs(dx) + abs(dy) > 3 { moved = true }
         if moved { NSCursor.closedHand.set(); onDrag(CGPoint(x: dragOrigin.x + dx, y: dragOrigin.y + dy), false) }
     }
-    override func mouseUp(with event: NSEvent) {
+    override func mouseUp(with event: NSEvent) { endPointer() }
+    func endPointer() {
         guard dragStart != nil else { return }
         dragStart = nil
         if moved { onDrag(window?.frame.origin ?? dragOrigin, true) }
+        else if gripPressed { onAction("size") }
         else if state == .resting { onAction("start") }
         NSCursor.openHand.set()
     }
@@ -198,11 +213,24 @@ final class TalkingBarView: NSView {
         for row in 0..<3 { for col in 0..<2 {
             CGRect(x: 13 + CGFloat(col) * 6.7, y: center - 8.5 + CGFloat(row) * 6.8, width: 3.3, height: 3.4).fill()
         } }
-        if !message.isEmpty && (state != .needs || needsOverflow) {
+        if !shownMessage.isEmpty && (compact || state != .needs || needsOverflow) {
             let paragraph = NSMutableParagraphStyle(); paragraph.lineBreakMode = .byWordWrapping
-            (message as NSString).draw(in: CGRect(x: 16, y: menuHeight + 9, width: bounds.width - 32,
+            (shownMessage as NSString).draw(in: CGRect(x: 16, y: menuHeight + 9, width: bounds.width - 32,
                 height: max(20, detailHeight - (choices.isEmpty ? 16 : 52))),
                 withAttributes: [.font: Self.font(15), .foregroundColor: Self.body, .paragraphStyle: paragraph])
+        }
+        if compact {
+            let x: CGFloat = state == .needs ? 60 : 40
+            if state == .needs {
+                Self.drawIcon("mic-off", in: CGRect(x: 36, y: center - 8, width: 16, height: 16), color: Self.text)
+            }
+            // Scale the original drawing, preserving every line style within the shorter rail.
+            NSGraphicsContext.saveGraphicsState()
+            let transform = NSAffineTransform(); transform.translateX(by: 0, yBy: center)
+            transform.scaleX(by: 1, yBy: style == "dot" && state != .writing ? 1 : 0.5); transform.translateX(by: 0, yBy: -center); transform.concat()
+            drawSignal(CGRect(x: x, y: center - 20, width: bounds.width - x - 12, height: 40))
+            NSGraphicsContext.restoreGraphicsState()
+            return
         }
         if state == .done {
             let age = freeze || reducedMotion ? 0.3 : stateAge

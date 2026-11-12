@@ -1158,13 +1158,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Media actions need a confirmed physical hold or hands-free latch, regardless of slow setup callbacks.
-    private func whenMediaConfirmed(session s: Transcriber.Session, press token: Int, played: SoundTap.Recording,
+    private func whenMediaConfirmed(session s: Transcriber.Session, press token: Int, played: SoundTap.Recording, waitForTarget: Bool = true,
                                     action: @escaping () -> Void) {
         guard session === s, press == token else { played.stop(); s.mediaSettled(); return }
-        if keys.mediaAllowed, pendingStart == nil { action(); return }
+        if keys.mediaAllowed, !waitForTarget || pendingStart == nil { action(); return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self, weak s] in
             guard let self, let s else { played.stop(); return }
-            self.whenMediaConfirmed(session: s, press: token, played: played, action: action)
+            self.whenMediaConfirmed(session: s, press: token, played: played, waitForTarget: waitForTarget, action: action)
         }
     }
 
@@ -1174,15 +1174,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Re-pause any tab already resumed and adopt the others under a fresh token. Confirmation still
             // gates every action. A quick tap keeps the old hold for ordinary cleanup and starts no pause.
             let unused = SoundTap.Recording(continuous: true)
-            whenMediaConfirmed(session: s, press: thisPress, played: unused) { [weak self, s] in
+            whenMediaConfirmed(session: s, press: thisPress, played: unused, waitForTarget: false) { [weak self, s] in
                 unused.stop()
                 guard let self, self.session === s else { return }
+                // A batch can learn additional touched tabs after the next press. Collect that terminal
+                // journal before handing off so every old mark is adopted, including timed-out attempts.
+                if let previous = self.browserPause, !previous.finished {
+                    previous.onSettled = { [weak self, weak previous, weak s] in
+                        guard let self, let previous, let s, self.session === s, self.press == thisPress else { return }
+                        self.browserTakeover = (Set(takeover.candidates).union(previous.candidates).sorted(),
+                            takeover.tabs.union(previous.reconciliationTabs), takeover.tokens)
+                        self.startMedia(players, session: s, pending: pending, capture: capture, press: thisPress)
+                    }
+                    return
+                }
                 self.browserTakeover = nil
                 self.pausedMedia = true
                 self.mediaPauseMonitor.stop()
                 let owner = self.mediaPause.generation
                 self.browserInheritedTokens = takeover.tokens
-                self.browserPause = Media.pauseBrowser(owner: owner, candidates: takeover.candidates,
+                self.browserPause = Media.pauseBrowser(owner: owner, requestedAt: capture.beganUptime, candidates: takeover.candidates,
                     inheritedTokens: takeover.tokens, inheritedTabs: takeover.tabs,
                     stillPaused: { [weak self] in self?.mediaPause.owns(owner) == true },
                     needsPause: { [weak self, weak s] in self?.session === s && s != nil }) { [weak self, weak s] how, outcome in
@@ -1199,6 +1210,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if pausedMedia {
             Log.note("media: still paused from the last press")
         } else if config.pauseMedia {
+            if players.contains(where: Media.isChrome) || (players.isEmpty && !NSRunningApplication.runningApplications(withBundleIdentifier: BrowserMedia.chromeBundleID).isEmpty) {
+                startChromeMedia(players, session: s, pending: pending, capture: capture, press: thisPress)
+                return
+            }
+
             if players.isEmpty { Log.note("media: no app playing") }
             else {
                 // Capture the app reference early; only a confirmed hold or hands-free latch can pause it.
@@ -1295,6 +1311,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         if players.isEmpty || !config.pauseMedia || pausedMedia { s.mediaSettled() }
+    }
+
+    /// Chrome and the short reference listen begin independently. The physical gesture still gates the
+    /// pause, but neither the sound result nor the Accessibility target can hold up the browser request.
+    private func startChromeMedia(_ players: [Media.Player], session s: Transcriber.Session, pending: PendingMedia,
+                                  capture: PendingStart, press thisPress: Int) {
+        let played = SoundTap.Recording(continuous: true)
+        capture.mediaRecording = played
+        var heard = false, peak: Float?, answered = false
+        var answer: Media.Paused?, outcome: BrowserMedia.Outcome?
+        var pauseToken: Int?
+        var settled = false
+        let settle: () -> Void = { [weak self, weak s] in
+            guard heard, answered, !settled else { return }
+            settled = true
+            guard let self, let s, let pauseToken, self.mediaPause.owns(pauseToken), self.session === s else {
+                played.stop(); s?.mediaSettled(); return
+            }
+            self.chromeAnswer(outcome)
+            guard let how = answer else {
+                played.stop()
+                if MediaGate.isPlaying(peak: peak) { s.mediaUnchecked(reason: "chromePauseFailed") }
+                else { self.pausedMedia = false }
+                s.mediaSettled(); return
+            }
+            self.pausedHow = how
+            let watch = self.mediaPauseMonitor.start(players)
+            played.waitForQuiet { quietAt in
+                DispatchQueue.main.async {
+                    guard self.mediaPause.owns(pauseToken), self.session === s else { s.mediaSettled(); return }
+                    self.mediaPauseMonitor.didSettle(watch)
+                    // Target discovery may still be buffering the mic. Its sample clock is not established
+                    // until activation, so keep the original opening instead of guessing an echo offset.
+                    guard capture.activated else {
+                        s.mediaUnchecked(reason: "pauseBeforeCaptureActivation"); s.mediaSettled(); return
+                    }
+                    let audio = played.mono16k()
+                    let canTakeOff = ["whisper", "parakeet"].contains(self.config.engine)
+                    if canTakeOff, !played.truncated, played.peak > 0, audio.count > 1600 {
+                        s.mediaEcho(audio, through: s.sampleAt(quietAt.addingTimeInterval(0.15)), unreferencedPrefix: pending.preRoll)
+                    } else { s.mediaUnchecked(reason: canTakeOff ? "unusableVideoReference" : "engineKeepsOpeningAudio") }
+                    s.mediaSettled()
+                }
+            }
+        }
+        SoundTap.loudness(of: players.map(\.object), for: 0.25, record: played) { value in
+            DispatchQueue.main.async {
+                peak = value; heard = true
+                StartTrace.note(.mediaEnd, gesture: capture.id, value: MediaGate.isPlaying(peak: value) ? 1 : 0)
+                settle()
+            }
+        }
+        whenMediaConfirmed(session: s, press: thisPress, played: played, waitForTarget: false) { [weak self, weak s] in
+            guard let self, let s, self.session === s, self.press == thisPress else { played.stop(); return }
+            self.pausedMedia = true
+            let owner = self.mediaPause.generation; pauseToken = owner
+            self.mediaPauseMonitor.stop(); self.browserInheritedTokens = []
+            self.pausedHow = .chrome(token: "", tabs: [])
+            Log.note("media browser: press_dispatch elapsed_ms=\(Log.ms(Date().timeIntervalSince(capture.began)))")
+            self.browserPause = Media.pauseBrowser(owner: owner, requestedAt: capture.beganUptime,
+                stillPaused: { [weak self] in self?.mediaPause.owns(owner) == true },
+                needsPause: { [weak self, weak s] in self?.session === s && s != nil }) { how, result in
+                guard self.mediaPause.owns(owner), self.session === s else { played.stop(); s.mediaSettled(); return }
+                StartTrace.note(.chromeAnswer, gesture: capture.id, value: how == nil ? 0 : 1)
+                Log.note("media browser: press_answer elapsed_ms=\(Log.ms(Date().timeIntervalSince(capture.began)))")
+                answer = how; outcome = result; answered = true; settle()
+            }
+            if let operation = self.browserPause { self.pausedHow = .chrome(token: operation.token, tabs: []) }
+        }
     }
 
     private func failStart(_ message: String) {
@@ -2909,6 +2994,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var saved = Config.load(); saved.keepBarOnScreen = on; saved.save()
             self.config.keepBarOnScreen = on; self.syncSettings()
         }
+        hud.onSmallTalkingBar = { [weak self] small in
+            guard let self else { return }
+            var saved = Config.load(); saved.smallTalkingBar = small; saved.save()
+            self.config.smallTalkingBar = small
+        }
+        hud.smallTalkingBar = config.smallTalkingBar ?? false
         hud.keepBarOnScreen = config.keepBarOnScreen ?? false
         hud.talkKey = talkKeyName
         hud.style = config.levelLook == "off" ? "pen" : config.levelLook
@@ -3643,6 +3734,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func syncSettings() {
         let saved = Config.load()
         settings?.model.config = saved
+        hud.smallTalkingBar = saved.smallTalkingBar ?? false
         hud.keepBarOnScreen = saved.keepBarOnScreen ?? false
     }
 
