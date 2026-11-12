@@ -48,7 +48,7 @@ wiring_checks = [
     ("bar on first accepted down before recorder attach", begin.index('hud.show("", level: true)') < begin.index("recorder.begin(")),
     ("capture attaches before yielding setup", begin.index("recorder.begin(") < begin.index("DispatchQueue.main.async { [weak self] in self?.prepareStart")),
     ("no target/media discovery or delayed HUD on start path", all(term not in begin for term in ["Insert.focus", "boxPrint", "playingApps()", "SoundTap.loudness", "asyncAfter", "loadNames", "engine.session("])),
-    ("HUD orders on initial show", "panel.orderFrontRegardless()" in block(hud_source, "func show(")),
+    ("HUD orders on initial show", "panel.orderFrontRegardless()" in block(hud_source, "func show(") or ("transition(" in block(hud_source, "func show(") and "panel.orderFrontRegardless()" in block(hud_source, "private func transition("))),
     ("capture promotion needs confirmation and bounded target result", "capture.confirmed, capture.targetDone" in block(app_source, "private func activateIfReady(")),
     ("media action is gated by gesture not timer alone", "keys.mediaAllowed, pendingStart == nil" in confirmed and "whenMediaConfirmed(" in media),
     ("no blanket opening zeroing in app media path", "silence(upTo:" not in media),

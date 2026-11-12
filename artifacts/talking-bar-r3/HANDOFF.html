@@ -1,0 +1,295 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Talking bar round 3 implementation</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap">
+<style>
+:root{--bg:#FBF8F3;--ink:#1d1b18;--mid:#4a4640;--dim:#857f76;--rule:#e4ddd2;--red:#b3261e;--code:#f1ece4}
+@media (prefers-color-scheme: dark){:root{--bg:#161513;--ink:#FAFAFA;--mid:rgba(250,250,250,.78);--dim:rgba(250,250,250,.52);--rule:#2e2b27;--red:#ff6b5e;--code:#22201d}}
+*{box-sizing:border-box}
+html{font-size:106%}
+body{margin:0;background:var(--bg);color:var(--ink);font:400 1.125rem/1.6 "Newsreader",Georgia,serif;-webkit-font-smoothing:antialiased}
+main{max-width:46rem;margin:0 auto;padding:clamp(28px,6vw,72px) 16px 96px}
+.meta{font:500 .78rem/1.4 "Inter",system-ui,sans-serif;color:var(--dim);margin-bottom:2rem;word-break:break-all}
+h1,h2,h3,h4{font-weight:600;line-height:1.2;text-wrap:balance;margin:2.2em 0 .5em}
+h1{font-size:clamp(1.9rem,4.5vw,2.6rem);margin-top:0}
+h2{font-size:1.5rem}h3{font-size:1.2rem}
+p,li,blockquote{text-wrap:pretty}
+a{color:var(--red)}
+strong{font-weight:600}
+ul,ol{padding-left:1.3em}li{margin:.3em 0}
+blockquote{margin:1.2em 0;padding-left:1em;border-left:3px solid var(--red);color:var(--mid)}
+code{font:.85em/1.4 ui-monospace,Menlo,monospace;background:var(--code);padding:.1em .35em;border-radius:3px}
+pre{background:var(--code);padding:14px 16px;border-radius:3px;overflow-x:auto}pre code{background:none;padding:0}
+.table-wrap{overflow-x:auto;margin:1.4em 0}
+table{border-collapse:collapse;font:400 .92rem/1.45 "Inter",system-ui,sans-serif;min-width:100%}
+th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--rule);vertical-align:top}
+th{font-weight:600;color:var(--mid)}
+hr{border:0;height:1px;background:var(--rule);margin:2.5em 0}
+</style></head><body><main>
+<div class="meta">Built from /Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/HANDOFF.md · Nov 12 2026, 12:36 AM</div>
+<h1 id="talking-bar-round-3-implementation">Talking bar round 3
+implementation</h1>
+<p>Built and tested only. Ready for lead review, not approved for
+installation or release.</p>
+<p>Branch <code>t3/talking-bar-r3</code> in the Swift repository. Base
+<code>54e308862e7201dcf6966a349dbe8f90701d5352</code>
+(<code>resume-fix</code>, the installed build). Worktree is
+<code>/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3</code>.</p>
+<p>Implemented by Codex, GPT-6 Astra at high effort. No delegated work
+or web research was used. The approved HTML, RESULT-r3.md, LOOK.md,
+supplied R3 shots and existing source were the references.</p>
+<h2 id="what-changed">What changed</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>File</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Sources/RedpenVoice/HUD.swift</td>
+<td>One native nonactivating panel for Resting, Listening, Writing,
+Needs you, Done, messages and an upward-growing menu. Preserves flash
+text, captions, progress, stopped-typing reasons, word suggestions and
+Copy/Throw away callbacks. Adds saved drag position, display-removal
+recovery, dismissal, reduced motion and isolated captures.</td>
+</tr>
+<tr>
+<td>Sources/RedpenVoice/TalkingBarView.swift</td>
+<td>Native drawing and buttons, the six-square grip, square corners,
+Instrument Sans, Raised #25272B, brighter #EF5045 only in the signal,
+all five styles, neutral microphone/tick and menu.</td>
+</tr>
+<tr>
+<td>Sources/VoiceCore/TalkingBar.swift</td>
+<td>State dimensions and whole-window clamping to one surviving display,
+including negative coordinates and gaps between displays.</td>
+</tr>
+<tr>
+<td>Sources/RedpenVoice/HoldKey.swift</td>
+<td>Nine-line UI entry point that calls the existing start, confirm and
+hands-free callbacks. Does not post any key.</td>
+</tr>
+<tr>
+<td>Sources/VoiceCore/TalkKeyState.swift</td>
+<td>Nine-line mouse-start entry to the existing confirmed hands-free
+state. The configured talk key can finish it. Existing key transitions
+are unchanged.</td>
+</tr>
+<tr>
+<td>Sources/RedpenVoice/main.swift</td>
+<td>Callback wiring at setup, Esc dismissal before the existing
+Esc-twice route, and the isolated capture command before AppDelegate
+construction. No ending-code edits.</td>
+</tr>
+<tr>
+<td>Sources/redpen-voice-test/main.swift</td>
+<td>29 focused checks of display geometry and the mouse-start/key-finish
+state path.</td>
+</tr>
+<tr>
+<td>Resources/Fonts/InstrumentSans-*.ttf</td>
+<td>Approved regular and medium font files copied from the iPhone
+source, with its OFL and provenance. No system font installation.</td>
+</tr>
+<tr>
+<td>tools/package-review-app.py</td>
+<td>Packages and ad hoc signs a separate local review app from release
+products. Does not build, install or start it.</td>
+</tr>
+<tr>
+<td>NOTES.md</td>
+<td>Append-only implementation and verification record.</td>
+</tr>
+</tbody>
+</table></div>
+<p>MenuPanel.swift did not need a visual rewrite. The talking bar has
+its own menu in the same panel. Its callback wiring also dismisses the
+existing menu-bar popover. Insert.swift, capture/recognition, typing and
+media implementations are unchanged.</p>
+<h2 id="verification">Verification</h2>
+<ul>
+<li>Original baseline on the supplied base, Xcode toolchain.
+<strong>1,688 passed, 0 failed</strong>.</li>
+<li>Final <code>swift run -c release redpen-voice-test</code>.
+<strong>1,717 passed, 0 failed</strong>.</li>
+<li>Final native HUD harness. <strong>251 passed, 0 failed</strong>. It
+renders the actual native view and checks sizes, opaque square corners,
+encoded surface colour, red confined to the signal, native button
+dispatch, first-click acceptance, no focus taking, dismissal, message
+preservation, count handling, silence recovery, Done timing, stale
+completion cancellation, long-name wrapping and position persistence
+across HUD instances.</li>
+<li><code>swift build -c release --product RedpenVoice</code> succeeded
+with
+<code>DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer</code>.</li>
+<li><code>codesign --verify --deep --strict 'build/Redpen Voice Review.app'</code>
+succeeded.</li>
+<li><code>git diff --check</code> passed. The build has existing
+warnings outside the changed HUD/control files. No new warnings were
+reported in those files.</li>
+<li><strong>36 native PNG captures</strong>, all at 2x. A separate
+comparison image places cropped approved shots beside the native
+versions. The comparison enlarges the 1x reference crops, so those look
+softer.</li>
+</ul>
+<p>The harness runs before AppDelegate exists. It uses an isolated
+temporary preferences suite and no input monitors. No microphone, ASR,
+real typing, media operation, update check or installed-app launch was
+exercised. It never posts the synthetic test events.</p>
+<h2 id="match-and-deliberate-limits">Match and deliberate limits</h2>
+<ul>
+<li>Canonical closed sizes match the spec. Resting 182x40, Listening
+314x52, Writing 282x52, Needs you 328x52, Done 78x40. Dot uses 142, 174
+and 306 widths. Menu sizes are 236x177 at rest and 314x217 while
+listening.</li>
+<li>The surface stays #25272B. The red is #EF5045, the brighter round-2
+value chosen in D-1566, overriding LOOK.md's darker #C42B23. No red
+identity dot or nib was added. The optional dot line style remains
+available.</li>
+<li>Existing captions and warnings can add a wrapped area above the
+rail. This is intentional preservation of existing messages, which the
+compact mockup does not contain. Very long microphone names use that
+same area, rather than colliding with the arrow or leaving the
+screen.</li>
+<li>The unsupported <code>⌥M</code> hint is omitted from Meeting notes.
+The button opens the existing notes action. No new system-wide shortcut
+was introduced by this visual change.</li>
+<li>Finish and Cancel are disabled when no capture is active, including
+Writing. The existing ending implementation does not offer cancellation
+at that point. This avoids a menu action that claims to cancel a
+committed ending.</li>
+<li>AppKit supplies the window shadow. The cropped offscreen PNGs do not
+include the compositor's external shadow. They are native view renders,
+not screenshots of the installed app over a real chat window.</li>
+<li>Live waveforms follow microphone levels and history. Their exact
+sample shape differs from the HTML's invented audio. Writing uses the
+specified settling pen path and real counts already supplied through HUD
+captions; it does not invent a rising counter.</li>
+</ul>
+<h2 id="open-risks-for-review">Open risks for review</h2>
+<p>No live dictation or insertion acceptance is claimed. Test
+click-start, Fn stop, menu Finish, Esc, media resumption and target
+focus during the separately authorized integration trial. Display
+removal is covered by synthetic three-display geometry, not an actual
+cable disconnect. Motion and shadows should also be inspected in the
+running app. The renderer implements 280ms shape changes, 260ms content
+settling after 60ms, the 850ms pen draw, breathing silence and the
+300ms/450ms Done sequence, with reduced motion support.</p>
+<p>The parallel box fix must integrate the three small main.swift hunks.
+Its ending code was not edited here. The new mouse control entry should
+be included in the lead's integration review because it exposes an
+existing hands-free path through a new control.</p>
+<h2 id="reproduce-without-installing">Reproduce without installing</h2>
+<p>From this worktree:</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="bu">export</span> <span class="va">DEVELOPER_DIR</span><span class="op">=</span>/Applications/Xcode.app/Contents/Developer</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="ex">swift</span> run <span class="at">-c</span> release redpen-voice-test</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="ex">swift</span> build <span class="at">-c</span> release <span class="at">--product</span> RedpenVoice</span></code></pre></div>
+<p>The saved local review app is
+<code>/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/build/Redpen Voice Review.app</code>.
+Its bundle identity is
+<code>io.github.redpen-voice.talking-bar-review</code>, ad hoc signed,
+with automatic update checks disabled. The packaging script expects its
+output not to exist. <code>build.sh</code> was not run and
+<code>.local.env</code> was not needed.</p>
+<p>Run only its isolated capture mode for this verification:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="st">&#39;build/Redpen Voice Review.app/Contents/MacOS/RedpenVoice&#39;</span> <span class="at">--talking-bar-shots</span> artifacts/talking-bar-r3</span></code></pre></div>
+<h2 id="evidence-and-screenshots">Evidence and screenshots</h2>
+<ul>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/comparison.png">Before
+and after comparison</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/verification.json">Native
+verification and capture dimensions</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/core-tests.log">Core
+test log</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/native-tests.log">Native
+test log</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/build.log">Build
+log</a></li>
+</ul>
+<p>Every native screenshot path follows. These are local files, not
+published previews.</p>
+<ul>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-pen-resting.png">r3-pen-resting.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-pen-listening.png">r3-pen-listening.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-pen-writing.png">r3-pen-writing.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-pen-needs.png">r3-pen-needs.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-pen-done.png">r3-pen-done.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-bars-resting.png">r3-bars-resting.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-bars-listening.png">r3-bars-listening.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-bars-writing.png">r3-bars-writing.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-bars-needs.png">r3-bars-needs.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-bars-done.png">r3-bars-done.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-tape-resting.png">r3-tape-resting.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-tape-listening.png">r3-tape-listening.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-tape-writing.png">r3-tape-writing.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-tape-needs.png">r3-tape-needs.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-tape-done.png">r3-tape-done.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-dot-resting.png">r3-dot-resting.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-dot-listening.png">r3-dot-listening.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-dot-writing.png">r3-dot-writing.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-dot-needs.png">r3-dot-needs.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-dot-done.png">r3-dot-done.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-classic-resting.png">r3-classic-resting.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-classic-listening.png">r3-classic-listening.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-classic-writing.png">r3-classic-writing.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-classic-needs.png">r3-classic-needs.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-classic-done.png">r3-classic-done.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-menu-resting.png">r3-menu-resting.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-menu-listening.png">r3-menu-listening.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-recovery-question.png">r3-recovery-question.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-word-suggestion.png">r3-word-suggestion.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-warning.png">r3-warning.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-progress.png">r3-progress.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-caption.png">r3-caption.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-stopped-typing.png">r3-stopped-typing.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-writing-note.png">r3-writing-note.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-long-mic-name.png">r3-long-mic-name.png</a></li>
+<li><a
+href="/Users/cnatkinson/Developer/Redpen-Suite/Voice/code/.claude/worktrees/talking-bar-r3/artifacts/talking-bar-r3/r3-reduced-motion-writing.png">r3-reduced-motion-writing.png</a></li>
+</ul>
+<p>Saved in this worktree. No service or review app is left running. No
+install, merge, push, tag or release was performed. Lead review is the
+next step; Cedric has no action for this implementation handoff.</p>
+
+</main></body></html>

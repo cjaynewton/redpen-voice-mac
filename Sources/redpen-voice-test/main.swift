@@ -3291,6 +3291,54 @@ do {
 }
 
 finishInBoxChecks { name, ok in check(name, ok) }
+// R3 talking bar: detached/stacked displays, shape changes, and the mouse entry to the existing talk gesture.
+do {
+    let main = CGRect(x: 0, y: 0, width: 1440, height: 900)
+    let left = CGRect(x: -1920, y: 100, width: 1920, height: 1080)
+    let upper = CGRect(x: 300, y: 1080, width: 1680, height: 1050)
+    let size = CGSize(width: 314, height: 217)
+    let origin = CGPoint(x: -1300, y: 300)
+    check("talkingBar.leftDisplay", TalkingBar.fitted(origin: origin, size: size, screens: [main, left, upper]).origin == origin)
+    let detached = TalkingBar.fitted(origin: origin, size: size, screens: [main, upper])
+    check("talkingBar.removedDisplay", main.contains(detached))
+    let gap = TalkingBar.fitted(origin: CGPoint(x: 100, y: 950), size: size, screens: [main, upper])
+    check("talkingBar.gapIsNotAScreen", main.contains(gap) || upper.contains(gap))
+    let tooWide = TalkingBar.fitted(origin: .zero, size: CGSize(width: 4000, height: 4000), screens: [main])
+    check("talkingBar.oversizeFits", main.contains(tooWide) && tooWide.width == 1424 && tooWide.height == 884)
+    let corrupt = TalkingBar.fitted(origin: CGPoint(x: CGFloat.nan, y: CGFloat.infinity), size: size, screens: [main])
+    check("talkingBar.corruptPosition", main.contains(corrupt))
+    for point in [CGPoint(x: -9999, y: -9999), CGPoint(x: 9999, y: 9999), CGPoint(x: 1400, y: 850), CGPoint(x: 5, y: 5)] {
+        let result = TalkingBar.fitted(origin: point, size: size, screens: [main])
+        check("talkingBar.edge.\(point)", main.insetBy(dx: 8, dy: 8).contains(result))
+    }
+    let anchor = CGPoint(x: 400, y: 200)
+    let closed = TalkingBar.fitted(origin: anchor, size: TalkingBar.size(.listening, style: "pen"), screens: [main])
+    let open = TalkingBar.fitted(origin: anchor, size: TalkingBar.size(.listening, style: "pen", menu: true), screens: [main])
+    check("talkingBar.growsUpward", closed.minY == open.minY && open.height == 217)
+    check("talkingBar.restMenu", TalkingBar.size(.resting, style: "pen", menu: true) == CGSize(width: 236, height: 177))
+    check("talkingBar.writingAllStyles", ["pen", "bars", "tape", "dot", "classic"].allSatisfy { TalkingBar.size(.writing, style: $0) == CGSize(width: 282, height: 52) })
+    check("talkingBar.dotFootprints", TalkingBar.size(.resting, style: "dot").width == 142 && TalkingBar.size(.listening, style: "dot").width == 174 && TalkingBar.size(.needs, style: "dot").width == 306)
+    check("talkingBar.noScreens", TalkingBar.fitted(origin: anchor, size: size, screens: []).origin == anchor)
+    var gesture = TalkKeyState()
+    check("talkingBar.mouseBegins", gesture.startFromControl(at: 10))
+    check("talkingBar.mouseConfirmed", gesture.active && gesture.handsFree && gesture.confirmed && !gesture.held)
+    check("talkingBar.mouseMediaConfirmation", gesture.canPauseMedia(at: 10))
+    check("talkingBar.mouseTypingContinues", gesture.otherKey(at: 10.1) == nil && gesture.handsFree)
+    check("talkingBar.mouseNoDuplicate", !gesture.startFromControl(at: 10.2))
+    check("talkingBar.fnFinishesMouse", gesture.event(key: 63, down: true, at: 11) == .end)
+    check("talkingBar.fnReleaseSwallowed", gesture.event(key: 63, down: false, at: 11.1) == nil)
+    check("talkingBar.stopGuard", !gesture.startFromControl(at: 11.2))
+    check("talkingBar.restartAfterGuard", gesture.startFromControl(at: 12))
+    gesture.discard(at: 13)
+    check("talkingBar.cancelClearsMouse", !gesture.active && !gesture.handsFree && !gesture.confirmed)
+    check("talkingBar.cancelAllowsNext", gesture.event(key: 61, down: true, at: 14) == .begin)
+    check("talkingBar.mouseCannotTakeHeldKey", !gesture.startFromControl(at: 14.1))
+    _ = gesture.event(key: 61, down: false, at: 14.15)
+    check("talkingBar.mouseCannotTakePendingTap", !gesture.startFromControl(at: 14.2))
+    var single = TalkKeyState(); single.doubleTap = false
+    check("talkingBar.mouseWorksWithoutDoubleTap", single.startFromControl(at: 10))
+    check("talkingBar.eitherConfiguredKeyStops", single.event(key: 61, down: true, at: 11) == .end)
+}
 
 print("\(pass) passed, \(fail) failed")
 exit(fail == 0 ? 0 : 1)

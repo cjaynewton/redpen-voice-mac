@@ -91,6 +91,15 @@ public struct TalkKeyState {
         return .end
     }
 
+    /// The talking bar's Dictate button enters the same confirmed hands-free state as a double tap.
+    /// No hardware event is posted and the next configured talk key still finishes the recording.
+    public mutating func startFromControl(at now: Double) -> Bool {
+        guard !active, !held, !handsFree, lastTap == nil, now >= guardedUntil else { return false }
+        owner = nil; active = true; handsFree = true; confirmed = true
+        secondTap = false; swallowed = false
+        return true
+    }
+
     /// Timers cannot turn an already-released tap into a hold. The event-time release still classifies it.
     public mutating func confirmHold(hardwareDown: Bool, at now: Double) -> Action? {
         guard held, active, !confirmed, hardwareDown, now - pressedAt >= Self.tapLength else { return nil }

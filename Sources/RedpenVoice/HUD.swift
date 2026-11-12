@@ -3,43 +3,43 @@ import ApplicationServices
 import VoiceCore
 import QuartzCore
 
-/// A small dark bar near the bottom of the screen while you talk, in the style picked in Settings. Messages use the
-/// same bar: a flat grey line beside the words when something went wrong, a green tick when something worked. Never takes focus, so the cursor stays where the words will land.
+/// One nonactivating piece for recording, writing, messages and the user's options.
 @MainActor
 final class HUD {
-    /// "pen" (a red line that moves with your voice), "bars" (bars from the middle), "tape" (your voice scrolling
-    /// left), "dot" (a breathing dot) or "classic" (the first bar: a red dot and twelve white bars).
-    var style = "pen"
-    /// Named when the mic gives nothing for a moment, so a silent interface is caught while you talk.
+    var style = "pen" { didSet { box.style = style; if panel.isVisible { layout() } } }
     var micName = ""
-    private let panel: NSPanel
-    private let box = NSView()
-    private let label = NSTextField(labelWithString: "")
-    private let timer = NSTextField(labelWithString: "0:00")
-    private let meter = Level(frame: .zero)
-    private let dot = NSView(frame: NSRect(x: 14, y: 17, width: 10, height: 10))
-    private let doneMark = NSTextField(labelWithString: "✓")
-    private var ok = false
+    var traceID = 0
+    var onStart: () -> Void = {}
+    var onFinish: () -> Void = {}
+    var onCancel: () -> Void = {}
+    var onPaste: () -> Void = {}
+    var onNotes: () -> Void = {}
+    var onSettings: () -> Void = {}
+    var onDismissPopup: () -> Bool = { false }
+    var menuAvailability: () -> (finish: Bool, cancel: Bool, paste: Bool) = { (true, true, true) }
+    var talkKey = "Fn" { didSet { box.talkKey = talkKey } }
+    private let panel: TalkingBarPanel
+    private let box = TalkingBarView(frame: .zero)
     private var hideAt: DispatchWorkItem?
     private var tick: Timer?
-    private var started = Date()
-    /// The newest words written while you talk, shown beside the line.
+    private var started = Date(), changed = Date(), lastTick = Date()
     private var captionText = ""
     private var typingStopped = false
-    /// The bar is saying that typing into the box stopped (D-972).
     var isTypingStopped: Bool { typingStopped }
-    /// Captured on key-down. Layout, captions, writing and completion messages keep this screen.
     private var dictationScreen: NSScreen?
-    /// The text box you started in, in AppKit coordinates, so the bar never sits on top of it (D-972).
     private var startBox: CGRect?
-    private let addWord = NSButton(title: "Add", target: nil, action: nil)
-    private let notNow = NSButton(title: "Not now", target: nil, action: nil)
     private var wordAction: ((Bool) -> Void)?
-    /// Words waiting for a click (D-987): the bar asks, with Copy and Throw away, for as long as they wait.
-    private let copyWords = NSButton(title: "Copy", target: nil, action: nil)
-    private let throwAway = NSButton(title: "Throw away", target: nil, action: nil)
     private var waitAction: ((Bool) -> Void)?
-    var traceID = 0
+    private var dismissedQuestion = false
+    private var latest: CGFloat = 0, silentFor = 0.0
+    private var listeningActive = false
+    private var monitors: [Any] = []
+    private var screenWatch: NSObjectProtocol?
+    private var anchor: CGPoint?
+    private let defaults: UserDefaults
+    private let observesEvents: Bool
+    private var frozen = false
+    private static let positionKey = "talkingBarPositionR3"
 
     /// Key-down must not wait for Accessibility. Refine this pointer choice when the bounded snapshot returns.
     func flushInitialDisplay() {
@@ -93,118 +93,103 @@ final class HUD {
         if let choice { Log.note("bar: on screen \(choice.index + 1) (\(choice.reason))") }
     }
 
-    init() {
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 240, height: 44), styleMask: [.borderless, .nonactivatingPanel],
-                        backing: .buffered, defer: true)
-        panel.level = .statusBar
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = true
-        panel.ignoresMouseEvents = true
+    init(defaults: UserDefaults = .standard, observesEvents: Bool = true) {
+        self.defaults = defaults; self.observesEvents = observesEvents
+        panel = TalkingBarPanel(contentRect: NSRect(x: 0, y: 0, width: 182, height: 40),
+                                styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        TalkingBarView.registerFonts()
+        panel.level = .statusBar; panel.isOpaque = false; panel.backgroundColor = .clear
+        panel.hasShadow = true; panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        box.frame = panel.contentView!.bounds
-        box.wantsLayer = true
-        box.autoresizingMask = [.width, .height]
-        dot.wantsLayer = true
-        dot.layer?.backgroundColor = NSColor(red: 0.89, green: 0.16, blue: 0.16, alpha: 1).cgColor
-        dot.layer?.cornerRadius = 5
-        panel.contentView?.addSubview(box)
-        label.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        label.textColor = .white
-        timer.font = NSFont.monospacedDigitSystemFont(ofSize: 12.5, weight: .medium)
-        timer.textColor = NSColor(srgbRed: 0.71, green: 0.69, blue: 0.66, alpha: 1)
-        doneMark.font = NSFont.systemFont(ofSize: 14, weight: .semibold)
-        doneMark.textColor = NSColor(srgbRed: 0.3, green: 0.77, blue: 0.43, alpha: 1)
-        for v in [dot, label, timer, meter, doneMark] as [NSView] { box.addSubview(v) }
-        for button in [addWord, notNow, copyWords, throwAway] {
-            button.font = label.font
-            button.contentTintColor = .white
-            button.isBordered = false
-            button.wantsLayer = true
-            button.layer?.backgroundColor = NSColor(white: 1, alpha: 0.14).cgColor
-            button.layer?.borderColor = NSColor(white: 1, alpha: 0.35).cgColor
-            button.layer?.borderWidth = 1
-            button.layer?.cornerRadius = 3
-            button.target = self
-            button.isHidden = true
-            box.addSubview(button)
+        box.frame = panel.contentView!.bounds; box.autoresizingMask = [.width, .height]
+        panel.contentView = box
+        if let saved = defaults.array(forKey: Self.positionKey) as? [Double], saved.count == 2,
+           saved.allSatisfy({ $0.isFinite }) { anchor = CGPoint(x: saved[0], y: saved[1]) }
+        box.onAction = { [weak self] in self?.perform($0) }
+        box.onDrag = { [weak self] point, ended in
+            guard let self else { return }
+            self.box.menuOpen = false
+            self.anchor = point
+            self.layout(animated: false)
+            self.anchor = self.panel.frame.origin
+            if ended { self.persistPosition() }
         }
-        addWord.action = #selector(acceptWord)
-        notNow.action = #selector(dismissWord)
-        copyWords.action = #selector(copyWaiting)
-        throwAway.action = #selector(throwAwayWaiting)
+        if observesEvents {
+            let mask: NSEvent.EventTypeMask = [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]
+            if let m = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: { [weak self] e in
+                MainActor.assumeIsolated { self?.outside(e) }
+            }) { monitors.append(m) }
+            if let m = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { [weak self] e in
+                var swallowed = false
+                MainActor.assumeIsolated {
+                    if e.window !== self?.panel { self?.outside(e) }
+                    else if e.type == .keyDown, e.keyCode == 53 { self?.dismissExtras(); swallowed = true }
+                }
+                return swallowed ? nil : e
+            }) { monitors.append(m) }
+            screenWatch = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
+                object: nil, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        self.layout(animated: false)
+                        self.anchor = self.panel.frame.origin; self.persistPosition()
+                    }
+                }
+        }
     }
 
-    /// Bars only while talking; words only when something needs saying.
+    /// Resting is visible but is not a pending warning/question for the existing callers of isShowing.
+    func rest() {
+        hideAt?.cancel(); hideAt = nil; tick?.invalidate(); tick = nil
+        listeningActive = false
+        typingStopped = false; captionText = ""; wordAction = nil; waitAction = nil; dismissedQuestion = false
+        box.message = ""; box.choices = []; box.menuOpen = false; box.success = false
+        transition(.resting)
+    }
+
     func show(_ text: String, level: Bool, ok: Bool = false) {
-        StartTrace.note(.barRequested, gesture: traceID)
-        typingStopped = false
-        clearSuggestion()
-        hideAt?.cancel()
-        self.ok = ok
-        meter.flat = !level
-        if !level { meter.reset(style: "pen"); meter.flat = true }
-        label.stringValue = text
-        label.isHidden = text.isEmpty
-        if level { started = Date(); meter.reset(style: style); meter.writing = false; captionText = "" }
-        layout(text: text, level: level)
-        place()
-        panel.orderFrontRegardless()
-        StartTrace.note(.barOrdered, gesture: traceID, value: panel.isVisible ? 1 : 0)
-        tick?.invalidate(); tick = nil
-        if level { startTicking() }
+        if observesEvents { StartTrace.note(.barRequested, gesture: traceID) }
+        hideAt?.cancel(); hideAt = nil
+        typingStopped = false; wordAction = nil; waitAction = nil; dismissedQuestion = false
+        box.choices = []; box.menuOpen = false; box.success = ok; box.message = text
+        listeningActive = level
+        if level {
+            started = Date(); captionText = text; box.words = 0; box.seconds = 0
+            latest = 0; box.smooth = 0; silentFor = 0; box.history = .init(repeating: 0, count: 90)
+        }
+        transition(level ? .listening : text.hasPrefix("No sound from ") ? .needs : ok ? .done : .message)
+        if observesEvents { StartTrace.note(.barOrdered, gesture: traceID, value: panel.isVisible ? 1 : 0) }
     }
 
-    /// After the key comes up: the bar stays, quietly moving, until the words land or a message replaces it. `note`
-    /// shows beside "Writing": your newest words when they were on the bar, or that all of them go in now when typing
-    /// had stopped. Since D-972 it shows after a stop too; it used to leave the stop message standing still.
     func writing(_ note: String = "") {
-        guard style != "classic", panel.isVisible else { hide(); return }
-        meter.flat = false
-        meter.writing = true
-        meter.silent = false
-        label.stringValue = note
-        label.isHidden = note.isEmpty
-        timer.stringValue = "Writing"
-        layout(text: note, level: true)
-        place()
-        if tick == nil { startTicking() }
+        listeningActive = false
+        wordAction = nil; waitAction = nil; dismissedQuestion = false; box.choices = []
+        hideAt?.cancel(); box.menuOpen = false; box.message = note; box.success = false
+        transition(.writing)
     }
+    func level(_ v: Float) { latest = v.isFinite ? min(1, max(0, CGFloat(v))) : 0 }
 
-    func level(_ v: Float) { meter.push(v) }
-
-    /// Shows the end of what has been written so far while you are still talking: the newest words that fit.
     func caption(_ text: String) {
         guard !typingStopped else { return }
         captionText = TalkingWords.tail(text)
-        guard panel.isVisible, !meter.writing, !meter.silent else { return }
-        label.stringValue = captionText
-        label.isHidden = captionText.isEmpty
-        layout(text: captionText, level: true)
-        place()
+        // Existing count messages carry their actual count; raw captions are counted before their tail is cut.
+        if let range = text.range(of: #"\b[0-9]+ words?\b"#, options: .regularExpression),
+           let count = Int(text[range].split(separator: " ").first ?? "") { box.words = count }
+        else if !text.hasPrefix("Hands-free") { box.words = TalkingWords.words(text) }
+        guard box.state == .listening else { return }
+        box.message = captionText; layout()
     }
-
-    /// Captions normally update an existing bar. Words on the bar (D-972) also bring back a hidden one.
     func listeningCaption(_ text: String) {
         guard !typingStopped else { return }
-        listen()
-        caption(text)
+        listen(); caption(text)
     }
-
-    /// Typing into the box stopped while you still talk (D-972). The bar keeps listening, the line moving and the
-    /// time running, and says why, the words so far and that they all go in at the end. It was a flat, fixed message
-    /// that looked stuck for as long as you kept talking (12 of 37 draft dictations of 20 s or more, then 1 to 73 s
-    /// more talking, Oct 29 to 31 log).
-    /// Called again, only the line changes; captions can't replace it, so nothing looks like typing in the box.
     func stoppedTyping(_ line: String) {
         if !typingStopped { listen() }
-        typingStopped = true
-        captionText = line
-        guard panel.isVisible, !meter.writing, !meter.silent else { return }
-        label.stringValue = line
-        label.isHidden = false
-        layout(text: line, level: true)
-        place()
+        typingStopped = true; captionText = line
+        if let range = line.range(of: #"\b[0-9]+ words?\b"#, options: .regularExpression),
+           let count = Int(line[range].split(separator: " ").first ?? "") { box.words = count }
+        guard box.state == .listening else { return }
+        box.message = line; layout()
     }
 
     /// Resume the existing listening bar without resetting its timer or drawing.
@@ -212,245 +197,352 @@ final class HUD {
         typingStopped = false
         listeningCaption(line)
     }
-
-    /// The listening bar, as it is when already showing (its time keeps running), or brought back over a hidden bar,
-    /// a message or an older dictation's Writing.
     private func listen() {
-        guard !panel.isVisible || meter.flat || meter.writing || tick == nil else { return }
-        show("", level: true)
-    }
-
-    /// Saves the bar as it looks now, at 2x, for checking its shape without a screen recording (--hud-snapshot).
-    func snapshot(to url: URL) {
-        guard let layer = box.layer else { return }
-        let size = box.bounds.size, scale: CGFloat = 2
-        guard let ctx = CGContext(data: nil, width: Int(size.width * scale), height: Int(size.height * scale), bitsPerComponent: 8,
-                                  bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-        else { return }
-        ctx.scaleBy(x: scale, y: scale)
-        layer.render(in: ctx)
-        if let img = ctx.makeImage() { try? NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:])?.write(to: url) }
+        if box.state != .listening && box.state != .needs { show("", level: true) }
     }
 
     func flash(_ text: String, ok: Bool = false, for seconds: Double = 1.2) {
         show(text, level: false, ok: ok)
-        let w = DispatchWorkItem { [weak self] in self?.panel.orderOut(nil) }
-        hideAt = w
-        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: w)
+        schedule(after: seconds) { $0.rest() }
     }
-
-    func hide() { typingStopped = false; hideAt?.cancel(); tick?.invalidate(); tick = nil; clearSuggestion(); panel.orderOut(nil) }
-
-    /// Never replaces a warning or the listening/writing bar, and never makes the target app lose focus.
+    /// Existing successful writing completions call hide(). Keep the tick in the same piece, then return to rest.
+    func hide() {
+        if box.state == .writing {
+            box.message = ""; box.choices = []; box.menuOpen = false
+            transition(.done); schedule(after: 0.75) { $0.rest() }
+        } else { rest() }
+    }
     @discardableResult
     func suggest(_ word: String, action: @escaping (Bool) -> Void) -> Bool {
-        guard !panel.isVisible else { return false }
+        guard box.state == .resting, !box.menuOpen else { return false }
         show("Keep hearing “\(word)”. Add it to your words?", level: false)
-        wordAction = action
-        showButtons([addWord, notNow])
-        let work = DispatchWorkItem { [weak self] in self?.hide() }
-        hideAt = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 12, execute: work)
+        wordAction = action; box.choices = ["Add", "Not now"]; layout()
+        schedule(after: 12) { $0.rest() }
         return true
     }
-
-    func hideSuggestion() { if wordAction != nil { hide() } }
-
-    /// Words waiting for a click (D-987): the question and two buttons, `yes` (true) and `no` (false), with no time
-    /// limit; it goes when the words go in, a button is pressed or something else takes the bar. It replaces whatever
-    /// the bar shows. The panel never activates Voice, so pressing a button leaves the app you are in focused.
+    func hideSuggestion() { if wordAction != nil { rest() } }
     func ask(_ text: String, yes: String, no: String, action: @escaping (Bool) -> Void) {
-        show(text, level: false)
-        copyWords.title = yes; throwAway.title = no
-        waitAction = action
-        showButtons([copyWords, throwAway])
+        show(text, level: false); waitAction = action; box.choices = [yes, no]; layout()
     }
+    func stopAsking() { if waitAction != nil || dismissedQuestion { rest() } }
+    var isShowing: Bool { dismissedQuestion || (panel.isVisible && box.state != .resting) }
 
-    /// The words stopped waiting: the question goes, any other message stays.
-    func stopAsking() { if waitAction != nil { hide() } }
-
-    var isShowing: Bool { panel.isVisible }
-
-    /// Buttons after the message, in a bar that takes clicks but never focus.
-    private func showButtons(_ buttons: [NSButton]) {
-        meter.isHidden = true
-        label.frame.origin.x = 16
-        var x = label.frame.maxX + 14
-        for button in buttons {
-            button.sizeToFit()
-            button.frame = NSRect(x: x, y: 7, width: button.frame.width + 18, height: 26)
-            button.isHidden = false
-            x = button.frame.maxX + 8
+    /// Dismissal never answers a recovery question, cancels recording, or consumes another app's typing.
+    @discardableResult
+    func dismissExtras() -> Bool {
+        let popupClosed = onDismissPopup()
+        if box.menuOpen { box.menuOpen = false; layout(); return true }
+        if box.state == .message || (box.state == .needs && !listeningActive) {
+            let waiting = waitAction != nil
+            rest(); dismissedQuestion = waiting
+            return true
         }
-        panel.setContentSize(NSSize(width: x + 8, height: 40))
-        panel.ignoresMouseEvents = false
-        place()
+        return popupClosed
     }
-
-    private func clearSuggestion() {
-        wordAction = nil; waitAction = nil
-        for button in [addWord, notNow, copyWords, throwAway] { button.isHidden = true }
-        panel.ignoresMouseEvents = true
+    private func outside(_ event: NSEvent) {
+        if let cg = event.cgEvent, VoiceEvents.isOwn(pid: cg.getIntegerValueField(.eventSourceUnixProcessID),
+            userData: cg.getIntegerValueField(.eventSourceUserData)) { return }
+        if event.type == .keyDown {
+            // Escape has a dedicated route through HoldKey so closing options cannot count toward Esc twice.
+            if event.keyCode == 53 { return }
+            dismissExtras()
+        } else if !panel.frame.contains(NSEvent.mouseLocation) { dismissExtras() }
     }
-
-    @objc private func acceptWord() { let action = wordAction; hide(); action?(true) }
-    @objc private func dismissWord() { let action = wordAction; hide(); action?(false) }
-    @objc private func copyWaiting() { let action = waitAction; hide(); action?(true) }
-    @objc private func throwAwayWaiting() { let action = waitAction; hide(); action?(false) }
-
-    private func startTicking() {
-        let t = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.frame() } }
-        RunLoop.main.add(t, forMode: .common)
-        tick = t
+    private func perform(_ action: String) {
+        if action == "options" {
+            let available = menuAvailability()
+            box.canFinish = available.finish; box.canCancel = available.cancel; box.canPaste = available.paste
+            box.menuOpen.toggle(); layout(); return
+        }
+        if action == "dismiss" { dismissExtras(); return }
+        box.menuOpen = false
+        if action.hasPrefix("choice") {
+            let callback = wordAction ?? waitAction
+            rest(); callback?(action == "choice0"); return
+        }
+        layout()
+        switch action {
+        case "start": onStart()
+        case "finish": if box.canFinish { onFinish() }
+        case "cancel": if box.canCancel { onCancel() }
+        case "paste": if box.canPaste { onPaste() }
+        case "notes": onNotes()
+        case "settings": onSettings()
+        default: break
+        }
     }
-
+    private func transition(_ state: TalkingBar.State) {
+        box.state = state; changed = Date(); box.stateAge = 0
+        box.style = style; box.reducedMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        layout(); if observesEvents { panel.orderFrontRegardless() }
+        tick?.invalidate(); tick = nil
+        if state != .message && (state != .resting || !box.reducedMotion) {
+            lastTick = Date()
+            let t = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.frame() }
+            }
+            RunLoop.main.add(t, forMode: .common); tick = t
+        }
+    }
     private func frame() {
-        meter.step()
-        guard !meter.writing else { return }
-        let secs = Int(Date().timeIntervalSince(started))
-        timer.stringValue = "\(secs / 60):\(String(format: "%02d", secs % 60))"
-        // A second and a half of nothing on the mic: say which mic, while there is still time to fix it.
-        let silent = meter.silentFor > 1.5 && !micName.isEmpty
-        if silent != meter.silent {
-            meter.silent = silent
-            label.stringValue = silent ? "No sound from \(micName)" : captionText
-            label.isHidden = label.stringValue.isEmpty
-            layout(text: label.stringValue, level: true)
-            place()
-        }
-    }
-
-    private func layout(text: String, level: Bool) {
-        let classic = style == "classic" && level
-        box.layer?.backgroundColor = (classic ? NSColor(white: 0.07, alpha: 0.96) : NSColor(srgbRed: 0.08, green: 0.08, blue: 0.075, alpha: 0.97)).cgColor
-        box.layer?.borderColor = NSColor(white: 1, alpha: classic ? 0.35 : 0).cgColor
-        box.layer?.borderWidth = classic ? 1 : 0
-        dot.isHidden = !(level && (style == "classic" || style == "tape"))
-        doneMark.isHidden = level || !ok
-        // A message: a tick for done, otherwise the pen line lying flat.
-        meter.isHidden = level ? false : ok
-        timer.isHidden = !(level && ["pen", "tape", "dot"].contains(style))
-        let msgWidth: CGFloat = text.isEmpty ? 0 : ceil(label.attributedStringValue.size().width) + 4
-        let height: CGFloat = classic ? 44 : 40
-        var x: CGFloat = 16
-        if !level {
-            if ok { doneMark.sizeToFit(); doneMark.frame.origin = NSPoint(x: x, y: (height - doneMark.frame.height) / 2); x = doneMark.frame.maxX + 8 }
-            else { meter.frame = NSRect(x: x, y: (height - 26) / 2, width: 110, height: 26); x = meter.frame.maxX + 12 }
-        } else {
-            if style == "tape" { dot.frame = NSRect(x: 14, y: (height - 8) / 2, width: 8, height: 8); dot.layer?.cornerRadius = 4; x = 30 }
-            else if style == "classic" { dot.frame = NSRect(x: 14, y: 17, width: 10, height: 10); dot.layer?.cornerRadius = 5; x = text.isEmpty ? 34 : 106 }
-            let meterWidth: CGFloat = ["pen": 150, "bars": 120, "tape": 170, "dot": 26, "classic": 116][style] ?? 150
-            meter.frame = NSRect(x: x, y: (height - 26) / 2, width: meterWidth, height: 26)
-            x = meter.frame.maxX + 10
-        }
-        if !timer.isHidden { timer.frame = NSRect(x: x, y: (height - 16) / 2, width: 52, height: 16); timer.sizeToFit(); x = timer.frame.maxX + 12 }
-        if !text.isEmpty {
-            label.frame = NSRect(x: x, y: (height - 18) / 2, width: msgWidth, height: 18)
-            x += msgWidth
-        }
-        var width = x + (classic ? 14 : 16)
-        // A longer line (D-972: words on the bar, a stop that says why) widens it rather than running off the end.
-        if classic { width = text.isEmpty ? 160 : max(240, width) }
-        panel.setContentSize(NSSize(width: width, height: height))
-        // Square-ish corners in every style and state, never a pill (D-813).
-        box.layer?.cornerRadius = 3
-    }
-
-    // Above where chat apps put their typing box, at the same offset on the screen captured on key-down, and off the
-    // box you started in when it is there (D-972).
-    private func place() {
-        let mouse = NSEvent.mouseLocation
-        if let s = dictationScreen ?? NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) }) ?? NSScreen.main {
-            panel.setFrameOrigin(BarScreen.origin(visible: s.visibleFrame, size: panel.frame.size, avoiding: startBox))
-        }
-    }
-
-    /// The moving part of the bar. Levels arrive from the mic; `step` runs thirty times a second for motion.
-    final class Level: NSView {
-        var style = "pen"
-        var writing = false
-        var silent = false
-        /// Lying flat and grey: the bar is showing a message, not listening.
-        var flat = false
-        private(set) var silentFor: Double = 0
-        private var history = [Float](repeating: 0, count: 90)
-        private var latest: Float = 0
-        private var smooth: CGFloat = 0
-        private var t: Double = 0
-        private let red = NSColor(srgbRed: 1, green: 0.353, blue: 0.29, alpha: 1)
-        private let white = NSColor(srgbRed: 0.953, green: 0.945, blue: 0.925, alpha: 0.92)
-        private let faint = NSColor(srgbRed: 0.953, green: 0.945, blue: 0.925, alpha: 0.28)
-
-        func reset(style: String) { self.style = style; history = .init(repeating: 0, count: 90); latest = 0; smooth = 0; t = 0; silentFor = 0; silent = false }
-        func push(_ v: Float) { latest = v }
-
-        func step() {
-            t += 1.0 / 30
-            let v = writing ? 0 : latest
-            smooth += (CGFloat(v) - smooth) * 0.35
-            history.removeFirst(); history.append(Float(smooth))
-            silentFor = v < 0.02 ? silentFor + 1.0 / 30 : 0
-            needsDisplay = true
-        }
-
-        override func draw(_ r: NSRect) {
-            let W = bounds.width, H = bounds.height, m = H / 2
-            if flat {
-                let p = NSBezierPath(); p.lineWidth = 2; p.lineCapStyle = .round
-                NSColor(srgbRed: 0.42, green: 0.41, blue: 0.38, alpha: 1).setStroke()
-                p.move(to: NSPoint(x: 2, y: m)); p.line(to: NSPoint(x: W - 2, y: m)); p.stroke()
-                return
-            }
-            switch style {
-            case "pen":
-                let p = NSBezierPath(); p.lineWidth = 2; p.lineCapStyle = .round; p.lineJoinStyle = .round
-                if writing {
-                    faint.setStroke(); p.move(to: NSPoint(x: 2, y: m)); p.line(to: NSPoint(x: W - 2, y: m)); p.stroke()
-                    let x0 = 2 + CGFloat((t * 1.4).truncatingRemainder(dividingBy: 1)) * (W - 30)
-                    let d = NSBezierPath(); d.lineWidth = 2; d.lineCapStyle = .round
-                    red.setStroke(); d.move(to: NSPoint(x: x0, y: m)); d.line(to: NSPoint(x: x0 + 26, y: m)); d.stroke()
-                    return
-                }
-                (silent ? faint : red).setStroke()
-                for i in stride(from: 0, through: Int(W), by: 2) {
-                    let x = CGFloat(i)
-                    let a = smooth * (m - 3) * (0.55 + 0.45 * sin(x * 0.09 + t * 3)) * sin(.pi * x / W)
-                    let pt = NSPoint(x: x, y: m + sin(x * 0.23 - t * 14) * a)
-                    i == 0 ? p.move(to: pt) : p.line(to: pt)
-                }
-                p.stroke()
-            case "bars":
-                let n = 15, bw: CGFloat = 4, gap = (W - CGFloat(n) * bw) / CGFloat(n - 1)
-                (silent ? faint : white).setFill()
-                for i in 0..<n {
-                    let back = abs(i - 7) * 2
-                    let k = CGFloat(history[history.count - 1 - back])
-                    let h = writing ? 3 + 3 * max(0, sin(t * 8 - Double(i) * 0.6))
-                                    : max(3, k * (H - 4) * (1 - CGFloat(abs(i - 7)) / 10))
-                    NSBezierPath(roundedRect: NSRect(x: CGFloat(i) * (bw + gap), y: m - h / 2, width: bw, height: h), xRadius: 2, yRadius: 2).fill()
-                }
-            case "tape":
-                let stepW: CGFloat = 2
-                let shown = history.suffix(Int(W / stepW))
-                (silent ? faint : white).setFill()
-                for (i, k) in shown.enumerated() {
-                    let h = writing ? 2 : max(1.5, CGFloat(k) * (H - 4))
-                    NSRect(x: W - CGFloat(shown.count - i) * stepW, y: m - h / 2, width: 1.5, height: h).fill()
-                }
-                if writing { red.setFill(); NSRect(x: CGFloat((t * 1.2).truncatingRemainder(dividingBy: 1)) * W, y: m - 1, width: 18, height: 2).fill() }
-            case "dot":
-                let rad = writing ? 5 + 2 * CGFloat(sin(t * 6)) : silent ? 4 : 5 + smooth * 7
-                (silent ? NSColor(srgbRed: 0.53, green: 0.51, blue: 0.48, alpha: 1) : red.withAlphaComponent(writing ? 0.7 : 1)).setFill()
-                NSBezierPath(ovalIn: NSRect(x: m - rad, y: m - rad, width: rad * 2, height: rad * 2)).fill()
-            default:
-                // The first bar: twelve white bars, newest on the right.
-                NSColor.white.withAlphaComponent(0.9).setFill()
-                let w: CGFloat = 6, gap: CGFloat = 4.5
-                for (i, k) in history.suffix(12).enumerated() {
-                    let h = max(3, CGFloat(k) * H * 0.85)
-                    NSBezierPath(roundedRect: NSRect(x: CGFloat(i) * (w + gap), y: (H - h) / 2, width: w, height: h), xRadius: 1, yRadius: 1).fill()
-                }
+        guard !frozen else { return }
+        let now = Date(), delta = min(0.2, now.timeIntervalSince(lastTick)); lastTick = now
+        box.stateAge = now.timeIntervalSince(changed); box.phase += delta
+        box.reducedMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        box.smooth += (latest - box.smooth) * 0.35
+        box.history.removeFirst(); box.history.append(box.smooth)
+        if listeningActive && (box.state == .listening || box.state == .needs) {
+            box.seconds = max(0, Int(now.timeIntervalSince(started)))
+            silentFor = latest < 0.02 ? silentFor + delta : 0
+            let silent = silentFor > 1.5 && !micName.isEmpty
+            if silent && box.state == .listening {
+                changed = now; box.stateAge = 0
+                box.state = .needs; box.message = "No sound from \(micName)"; layout()
+            } else if !silent && box.state == .needs && !box.success {
+                changed = now; box.stateAge = 0
+                box.state = .listening; box.message = captionText; layout()
             }
         }
+        box.needsDisplay = true
+        if box.state == .resting && box.stateAge >= 0.32 { tick?.invalidate(); tick = nil }
     }
+    private func schedule(after seconds: Double, action: @escaping (HUD) -> Void) {
+        hideAt?.cancel()
+        let work = DispatchWorkItem { [weak self] in if let self { action(self) } }
+        hideAt = work; DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
+    }
+    private func persistPosition() {
+        guard let anchor else { return }
+        defaults.set([Double(anchor.x), Double(anchor.y)], forKey: Self.positionKey)
+    }
+    private func layout(animated: Bool = true) {
+        let screens = NSScreen.screens
+        let screen = screens.first(where: { $0.frame.contains(anchor ?? panel.frame.origin) })
+            ?? dictationScreen.flatMap { old in screens.first { $0 == old } } ?? screens.first
+        let maxWidth = max(182, (screen?.visibleFrame.width ?? 800) - 16)
+        let size = box.desiredSize(maxWidth: maxWidth)
+        let origin = anchor ?? screen.map { BarScreen.origin(visible: $0.visibleFrame, size: size, avoiding: startBox) } ?? .zero
+        let fitted = TalkingBar.fitted(origin: origin, size: size, screens: screens.map(\.visibleFrame))
+        if anchor == nil { anchor = fitted.origin }
+        let animate = animated && panel.isVisible && !box.reducedMotion && !frozen
+        panel.setFrame(fitted, display: true, animate: animate)
+        box.rebuildControls()
+        panel.invalidateShadow()
+    }
+    private func place() { layout() }
+
+    /// Renders the real native view at 2x without capturing the user's desktop or starting capture services.
+    func snapshot(to url: URL) {
+        box.displayIfNeeded()
+        let size = box.bounds.size, scale: CGFloat = 2
+        guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * scale),
+            pixelsHigh: Int(size.height * scale), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+            let context = NSGraphicsContext(bitmapImageRep: bitmap) else { return }
+        NSGraphicsContext.saveGraphicsState()
+        let cg = context.cgContext
+        cg.translateBy(x: 0, y: size.height * scale); cg.scaleBy(x: scale, y: -scale)
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: cg, flipped: true)
+        box.draw(box.bounds)
+        for view in box.subviews {
+            NSGraphicsContext.saveGraphicsState()
+            let transform = NSAffineTransform(); transform.translateX(by: view.frame.minX, yBy: view.frame.minY); transform.concat()
+            view.draw(view.bounds); NSGraphicsContext.restoreGraphicsState()
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        try? bitmap.representation(using: .png, properties: [:])?.write(to: url)
+    }
+
+    /// Isolated native checks and all approved states. No AppDelegate, microphone, typing or installed preferences.
+    static func captureStates(to directory: URL) -> Int32 {
+        do { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true) }
+        catch { print("Could not create screenshot directory: \(error)"); return 1 }
+        let suite = "RedpenVoice.TalkingBarTests." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        let hud = HUD(defaults: defaults, observesEvents: false)
+        hud.frozen = true; hud.box.freeze = true
+        var passed = 0, failed = 0
+        func check(_ name: String, _ condition: Bool) {
+            if condition { passed += 1 } else { failed += 1; print("FAIL \(name)") }
+        }
+        check("Instrument Sans bundled", NSFont(name: "InstrumentSans-Regular", size: 17) != nil)
+        check("Medium font bundled", NSFont(name: "InstrumentSans-Medium", size: 17) != nil)
+        check("bar accepts first click without focus", hud.box.acceptsFirstMouse(for: nil))
+        check("bar cannot take text focus", !hud.panel.canBecomeKey && !hud.panel.canBecomeMain)
+        hud.onDismissPopup = { true }
+        check("Esc on an external popup is handled", hud.dismissExtras())
+        hud.onDismissPopup = { false }
+        let control = HoldKey()
+        var callbacks: [String] = []
+        control.canBegin = { true }; control.onDown = { callbacks.append("start"); return true }
+        control.onConfirm = { callbacks.append("confirm") }; control.onHandsFree = { callbacks.append("handsFree") }
+        control.startFromBar(); control.startFromBar()
+        check("mouse entry shares callbacks exactly once", callbacks == ["start", "confirm", "handsFree"] && control.handsFree)
+        control.stopFromEnter(); check("Finish clears mouse hands-free", !control.handsFree)
+        let rejected = HoldKey(); rejected.onDown = { false }
+        rejected.onConfirm = { callbacks.append("unexpected confirm") }
+        rejected.startFromBar()
+        check("failed start cannot stay latched", !rejected.handsFree && callbacks.count == 3)
+        let blocked = HoldKey(); blocked.canBegin = { false }; blocked.onDown = { callbacks.append("unexpected start"); return true }
+        blocked.startFromBar(); check("busy app cannot start from rail", !blocked.handsFree && callbacks.count == 3)
+        var records: [[String: Any]] = []
+        func capture(_ name: String) {
+            hud.layout(animated: false)
+            let path = directory.appendingPathComponent(name + ".png")
+            hud.snapshot(to: path)
+            let size = hud.panel.frame.size
+            let image = NSBitmapImageRep(data: (try? Data(contentsOf: path)) ?? Data())
+            check(name + " PNG size", image?.pixelsWide == Int(size.width * 2) && image?.pixelsHigh == Int(size.height * 2))
+            check(name + " controls fit", hud.box.subviews.allSatisfy { hud.box.bounds.contains($0.frame) })
+            if let image {
+                let corner = image.colorAt(x: 0, y: image.pixelsHigh - 1)
+                check(name + " square opaque corners", (corner?.alphaComponent ?? 0) > 0.99)
+                // Compare encoded PNG component values. Converting colorAt's calibrated wrapper again
+                // applies a second transfer curve even though this bitmap is already tagged sRGB.
+                let surface = image.colorAt(x: 1, y: 4)
+                check(name + " lighter grey surface", abs((surface?.redComponent ?? 0) - 37.0 / 255) < 0.01
+                    && abs((surface?.greenComponent ?? 0) - 39.0 / 255) < 0.01
+                    && abs((surface?.blueComponent ?? 0) - 43.0 / 255) < 0.01)
+                var outsideRed = false
+                let railTop = image.pixelsHigh - Int(hud.box.railHeight * 2)
+                for y in stride(from: 0, to: image.pixelsHigh, by: 2) {
+                    for x in stride(from: 0, to: image.pixelsWide, by: 2) where x < 80 || x >= image.pixelsWide - 100 || y < railTop {
+                        if let color = image.colorAt(x: x, y: y),
+                           color.redComponent > 0.5, color.redComponent > color.greenComponent * 1.5,
+                           color.redComponent > color.blueComponent * 1.5 { outsideRed = true }
+                    }
+                }
+                check(name + " red only in signal area", !outsideRed)
+            }
+            records.append(["file": path.lastPathComponent, "width": size.width, "height": size.height, "scale": 2])
+        }
+        for style in ["pen", "bars", "tape", "dot", "classic"] {
+            hud.style = style
+            for state in [TalkingBar.State.resting, .listening, .writing, .needs, .done] {
+                hud.rest()
+                hud.box.state = state; hud.box.stateAge = 0.3; hud.box.phase = 1.7
+                hud.box.seconds = 22; hud.box.words = 52; hud.box.smooth = 0.82
+                hud.box.history = (0..<90).map { 0.55 + 0.4 * sin(Double($0) * 0.7) }
+                if state == .needs { hud.box.message = "No sound from Scarlett" }
+                capture("r3-\(style)-\(state.rawValue)")
+                let expected = TalkingBar.size(state, style: style)
+                check("\(style) \(state.rawValue) approved dimensions", hud.panel.frame.size == expected)
+            }
+        }
+        hud.style = "pen"; hud.rest(); hud.perform("options"); capture("r3-menu-resting")
+        check("rest menu 236x177", hud.panel.frame.size == CGSize(width: 236, height: 177))
+        check("rest menu rows", hud.box.subviews.compactMap { ($0 as? NSButton)?.title }.filter { !$0.isEmpty } == ["Dictate", "Paste last", "Meeting notes", "Settings"])
+        hud.show("", level: true); hud.box.seconds = 22; hud.box.smooth = 0.82
+        hud.perform("options"); capture("r3-menu-listening")
+        check("live menu 314x217", hud.panel.frame.size == CGSize(width: 314, height: 217))
+        check("live menu rows", hud.box.subviews.compactMap { ($0 as? NSButton)?.title }.filter { !$0.isEmpty } == ["Finish", "Cancel", "Paste last", "Meeting notes", "Settings"])
+        var finished = 0, started = 0, pasted = 0, notes = 0, settings = 0, cancelled = 0
+        hud.onFinish = { finished += 1 }; hud.onStart = { started += 1 }; hud.onPaste = { pasted += 1 }
+        hud.onNotes = { notes += 1 }; hud.onSettings = { settings += 1 }; hud.onCancel = { cancelled += 1 }
+        (hud.box.subviews.first { ($0 as? NSButton)?.title == "Finish" } as? NSButton)?.performClick(nil)
+        check("native Finish callback once", finished == 1 && !hud.box.menuOpen)
+        hud.rest(); hud.perform("options")
+        (hud.box.subviews.first { ($0 as? NSButton)?.title == "Dictate" } as? NSButton)?.performClick(nil)
+        check("native Dictate callback once", started == 1 && !hud.box.menuOpen)
+        for action in ["paste", "notes", "settings", "cancel"] { hud.perform(action) }
+        check("existing action callbacks", pasted == 1 && notes == 1 && settings == 1 && cancelled == 1)
+        hud.show("", level: true); hud.perform("options"); hud.dismissExtras()
+        check("Esc closes menu without cancelling", !hud.box.menuOpen && hud.box.state == .listening && cancelled == 1)
+        let cgEvent = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)!
+        cgEvent.setIntegerValueField(.eventSourceUnixProcessID, value: 0)
+        cgEvent.setIntegerValueField(.eventSourceUserData, value: 0)
+        let event = NSEvent(cgEvent: cgEvent)!
+        hud.perform("options"); hud.outside(event)
+        check("typing closes menu", !hud.box.menuOpen && hud.box.state == .listening)
+        hud.caption("52 words"); hud.writing()
+        check("real caption count retained", hud.box.words == 52 && hud.box.state == .writing)
+        hud.hide(); check("writing completion becomes Done", hud.box.state == .done)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+        check("Done returns to rest after 750ms", hud.box.state == .resting)
+        hud.writing(); hud.hide(); hud.show("New progress", level: false)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+        check("old completion cannot hide newer progress", hud.box.state == .message && hud.box.message == "New progress")
+        hud.rest(); check("rest does not block suggestions", !hud.isShowing)
+        var answer: Bool?
+        hud.ask("These words are waiting. Copy them or throw them away?", yes: "Copy", no: "Throw away") { answer = $0 }
+        capture("r3-recovery-question")
+        hud.dismissExtras()
+        check("dismiss never answers or reopens recovery", answer == nil && hud.dismissedQuestion && hud.isShowing)
+        hud.stopAsking(); check("stopped recovery clears dismissal", !hud.isShowing)
+        hud.ask("These words are waiting.", yes: "Copy", no: "Throw away") { answer = $0 }
+        hud.perform("choice0"); check("recovery button preserves callback", answer == true)
+        check("suggestion offered at rest", hud.suggest("Scarlett") { answer = $0 })
+        capture("r3-word-suggestion"); hud.perform("choice1"); check("suggestion Not now callback", answer == false)
+        let warning = "Didn't confirm all the words. Press ⌃⌥V to paste the checked text"
+        hud.flash(warning, for: 30); capture("r3-warning")
+        check("flash keeps full message", hud.box.message == warning)
+        hud.outside(event); check("typing dismisses flash", hud.box.state == .resting)
+        hud.show("Transcribing… 42%", level: false); capture("r3-progress")
+        check("progress kept", hud.box.message == "Transcribing… 42%")
+        hud.show("", level: true); hud.caption("Here are the actual words that were dictated into this test.")
+        capture("r3-caption")
+        check("raw caption counted before tail", hud.box.words == 11)
+        let reason = "Typing stopped (you clicked). 52 words so far, all go in at the end."
+        hud.stoppedTyping(reason); hud.caption("must not replace the reason"); capture("r3-stopped-typing")
+        check("typing-stop reason preserved", hud.box.message == reason && hud.isTypingStopped)
+        hud.writing("All your words go in now"); capture("r3-writing-note")
+        check("writing note kept", hud.box.message == "All your words go in now")
+        hud.show("No sound from Scarlett", level: false); hud.frozen = false; hud.frame(); hud.frozen = true
+        check("no-sound flash stays a message", hud.box.state == .needs && !hud.listeningActive)
+        hud.show("", level: true); hud.micName = "Scarlett"; hud.silentFor = 2
+        hud.frozen = false; hud.frame(); hud.frozen = true
+        check("silence produces Needs you", hud.box.state == .needs && hud.box.message == "No sound from Scarlett")
+        hud.level(0.5); hud.frozen = false; hud.frame(); hud.frozen = true
+        check("audio recovers listening", hud.box.state == .listening)
+        hud.show("No sound from " + String(repeating: "Long named audio interface ", count: 15), level: false)
+        capture("r3-long-mic-name")
+        check("long mic name wraps above rail", hud.box.needsOverflow && hud.box.detailHeight > 40)
+        hud.writing(); hud.box.words = 52; hud.box.freeze = false; hud.box.reducedMotion = true; hud.box.stateAge = 0
+        capture("r3-reduced-motion-writing")
+        hud.box.freeze = true; hud.box.reducedMotion = false
+        let beforeClick = started
+        hud.rest()
+        let click = NSEvent.mouseEvent(with: .leftMouseDown, location: CGPoint(x: 16, y: 20), modifierFlags: [],
+            timestamp: 1, windowNumber: hud.panel.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+        hud.box.mouseDown(with: click); hud.box.mouseUp(with: click)
+        check("resting rail click starts once", started == beforeClick + 1)
+        hud.perform("options")
+        let arrow = hud.box.subviews.first { ($0 as? NSButton)?.title == "" } as? NSButton
+        check("arrow owns its hit target", hud.box.hitTest(hud.box.convert(CGPoint(x: hud.box.bounds.width - 20, y: hud.box.bounds.height - 20), to: hud.box.superview)) === arrow)
+        arrow?.performClick(nil)
+        check("arrow closes menu without starting", !hud.box.menuOpen && started == beforeClick + 1)
+        hud.rest(); hud.menuAvailability = { (false, false, false) }; hud.perform("options")
+        let pasteButton = hud.box.subviews.first { ($0 as? NSButton)?.title == "Paste last" } as? NSButton
+        check("unavailable paste is disabled", pasteButton?.isEnabled == false)
+        hud.perform("paste"); check("unavailable paste does not run", pasted == 1)
+        hud.menuAvailability = { (true, true, true) }
+        hud.rest(); let restingOrigin = hud.panel.frame.origin
+        hud.perform("options")
+        check("menu bottom stays fixed", hud.panel.frame.minY == restingOrigin.y)
+        hud.box.onDrag(CGPoint(x: restingOrigin.x + 35, y: restingOrigin.y + 25), true)
+        check("drag closes menu", !hud.box.menuOpen)
+        let saved = hud.panel.frame.origin
+        let reopened = HUD(defaults: defaults, observesEvents: false); reopened.frozen = true; reopened.rest()
+        check("position restored across instances", reopened.panel.frame.origin == saved)
+        reopened.shutdown(); hud.shutdown(); defaults.removePersistentDomain(forName: suite)
+        let result: [String: Any] = ["passed": passed, "failed": failed, "captures": records,
+            "scope": "Native offscreen rendering and synthetic interactions. No recording, insertion, media or installation."]
+        if let data = try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: directory.appendingPathComponent("verification.json"))
+        }
+        print("Talking bar native checks: \(passed) passed, \(failed) failed")
+        return failed == 0 ? 0 : 1
+    }
+
+    func shutdown() {
+        hideAt?.cancel(); tick?.invalidate(); tick = nil; panel.orderOut(nil)
+        monitors.forEach(NSEvent.removeMonitor); monitors.removeAll()
+        if let screenWatch { NotificationCenter.default.removeObserver(screenWatch) }; screenWatch = nil
+    }
+}
+
+private final class TalkingBarPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+    override func animationResizeTime(_ newFrame: NSRect) -> TimeInterval { 0.28 }
 }
