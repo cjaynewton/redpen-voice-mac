@@ -54,6 +54,13 @@ func browserDiscoveryChecks(_ check: (String, Bool, String) -> Void) {
         try (loop + noSuccess).write(to: fixture, atomically: true, encoding: .utf8)
         let timed = try run("/usr/bin/osascript", [fixture.path, "unused", journal.path, permit.path, "0"])
         check("browser.discovery.timeoutKeepsUncertainty", timed.0 == 0 && timed.1 == "slow", timed.1)
-        check("browser.discovery.timeoutStillJournalsEveryAttempt", try String(contentsOf: journal, encoding: .utf8).split(separator: "\n").count == 4, "")
+        // Changed on purpose (Nov 13 2026): the tab that timed out is journalled again with "!" in front, so
+        // only it gets a second look on release. Every attempt is still journalled before its ask.
+        let timedLines = try String(contentsOf: journal, encoding: .utf8).split(separator: "\n").map(String.init)
+        check("browser.discovery.timeoutStillJournalsEveryAttempt", timedLines == ["1388778235", "414388973", "77", "!77", "88"], timedLines.joined(separator: ","))
+        let read = BrowserMedia.discoveryJournal(timedLines, runnerStopped: false)
+        check("browser.discovery.journalNamesOnlyTheTimedOutTab", read.touched == [1388778235, 414388973, 77, 88] && read.unanswered == [77], "")
+        let cut = BrowserMedia.discoveryJournal(["5", "!5", "6"], runnerStopped: true)
+        check("browser.discovery.stoppedRunnerLeavesItsLastTabUnanswered", cut.touched == [5, 6] && cut.unanswered == [5, 6], "")
     } catch { check("browser.discovery.harness", false, String(describing: error)) }
 }

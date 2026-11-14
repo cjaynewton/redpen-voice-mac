@@ -14,7 +14,9 @@ public final class BrowserPauseOperation {
     public enum Reply: Equatable {
         case ids([Int]), candidate(String), paused(Int)
         case empty, navigated, timeout, refused, notAllowed, failed
-        case discovered(tab: Int?, count: Int, touched: [Int], slow: Bool, refused: Bool)
+        /// `unanswered` lists the tabs that timed out, when the runner could say. nil means unknown: on a slow
+        /// result every tab it touched then counts as unanswered.
+        case discovered(tab: Int?, count: Int, touched: [Int], slow: Bool, refused: Bool, unanswered: [Int]? = nil)
     }
     public let token: String
     public let entered: TimeInterval
@@ -25,6 +27,12 @@ public final class BrowserPauseOperation {
     public private(set) var inFlight: Action?
     public private(set) var counts: [Int: Int] = [:]
     public private(set) var touched: Set<Int> = []
+    /// Tabs whose page answered, so no pause script of this ask can still be waiting there.
+    public private(set) var answered: Set<Int> = []
+    /// How long this ask may run and whether a timed-out known tab is asked again. Only ever shortened.
+    public private(set) var budget: MediaPauseBudget
+    /// Browser calls made and how many timed out, for the one summary log line.
+    public private(set) var calls = 0, timeouts = 0
     public private(set) var candidates: Set<Int> = []
     public let inheritedTokens: [String]
     public let inheritedTabs: Set<Int>
@@ -35,6 +43,7 @@ public final class BrowserPauseOperation {
     public var onFinish: (() -> Void)?
     public var onSettled: (() -> Void)?
     public var onSlow: (() -> Void)?
+    public var onLimit: ((MediaPauseBudget) -> Void)?
     public var onProgress: ((String, Int?, TimeInterval, Int) -> Void)?
     private let now: () -> TimeInterval
     private let perform: (Action, TimeInterval, @escaping (Reply) -> Void) -> Void
@@ -43,9 +52,10 @@ public final class BrowserPauseOperation {
     private let needsTakeoverDiscovery: Bool
 
     public init(token: String, owner: Int, preferredTab: Int? = nil, candidates: [Int] = [],
-                inheritedTokens: [String] = [], inheritedTabs: Set<Int> = [], entered: TimeInterval? = nil, now: @escaping () -> TimeInterval,
+                inheritedTokens: [String] = [], inheritedTabs: Set<Int> = [], entered: TimeInterval? = nil,
+                budget: MediaPauseBudget = .heard, now: @escaping () -> TimeInterval,
                 perform: @escaping (Action, TimeInterval, @escaping (Reply) -> Void) -> Void) {
-        self.token = token; self.owner = owner; self.now = now; self.perform = perform
+        self.token = token; self.owner = owner; self.now = now; self.perform = perform; self.budget = budget
         self.inheritedTokens = inheritedTokens; self.inheritedTabs = inheritedTabs
         needsTakeoverDiscovery = !inheritedTokens.isEmpty
         self.candidates = Set(candidates)
@@ -56,12 +66,25 @@ public final class BrowserPauseOperation {
         queue = known.filter { seen.insert($0).inserted }.map { .pause($0, document: BrowserMedia.token(), retry: false) }
         queue.append(.discover(excluding: []))
     }
-    public var reconciliationTabs: [Int] {
-        // A batch may visit many empty tabs. Reconcile confirmed pauses before spending time on uncertain ones.
-        counts.keys.sorted() + touched.union(inheritedTabs).subtracting(counts.keys).sorted()
+    /// What this ask leaves behind. A confirmed pause, or a tab of the hold it took over that has not answered
+    /// clear, is held. A tab that was sent a pause and never answered is only a loose end (Nov 13 2026).
+    public var hold: MediaHold {
+        let held = counts.keys.sorted() + inheritedTabs.subtracting(answered).subtracting(counts.keys).sorted()
+        return MediaHold(held: held, unanswered: touched.subtracting(answered).subtracting(held).sorted())
     }
+    /// The tabs one release pass looks at: held first, then those that never answered. A tab that answered
+    /// with nothing playing is finished with and is not asked again.
+    public var reconciliationTabs: [Int] { hold.releaseTabs }
     public var reconciliationTokens: [String] { inheritedTokens + [token] }
-    public var remaining: TimeInterval { max(0, Self.totalBudget - (now() - entered)) }
+    public var remaining: TimeInterval { max(0, budget.total - (now() - entered)) }
+    /// The listen came back quiet after this ask began: shorten it. Never lengthens.
+    public func limit(to tighter: MediaPauseBudget) {
+        guard !finished else { return }
+        budget = MediaPauseBudget(total: min(budget.total, tighter.total), retries: budget.retries && tighter.retries)
+        if !budget.retries { queue.removeAll { if case .pause(_, _, true) = $0 { return true }; return false } }
+        onLimit?(budget)
+        tick()
+    }
     public var canDispatch: Bool { !stopped && !finished && remaining > 0 }
     public func start() { advance() }
     public func tick() {
@@ -95,7 +118,7 @@ public final class BrowserPauseOperation {
         var action = queue.removeFirst()
         if case .discover = action { action = .discover(excluding: touched.sorted()) }
         if case .pause(let id, _, _) = action { touched.insert(id); candidates.insert(id) }
-        inFlight = action
+        inFlight = action; calls += 1
         let tab: Int?
         switch action { case .pause(let id, _, _): tab = id; default: tab = nil }
         onProgress?("\(action.phase)-dispatch", tab, now() - entered, 0)
@@ -112,16 +135,21 @@ public final class BrowserPauseOperation {
         onProgress?("\(action.phase)-result-\(reply.code)", tab, now() - entered, reply.count)
         // Even a cancelled or transferred request can have paused. Keep its partial evidence for reconciliation.
         if case .pause(let id, _, _) = action, case .paused(let count) = reply, count > 0 { counts[id] = count }
-        if case .discovered(let tab, let count, let tried, let slow, let refused) = reply {
+        // Any answer but a timeout means the page ran the script or never will: nothing waits in that tab.
+        if case .pause(let id, _, _) = action, reply != .timeout { answered.insert(id) }
+        if case .discovered(let tab, let count, let tried, let slow, let refused, let unanswered) = reply {
             touched.formUnion(tried); candidates.formUnion(tried)
             if let tab, count > 0 { counts[tab] = count; touched.insert(tab); candidates.insert(tab) }
+            if let unanswered { answered.formUnion(Set(tried).subtracting(unanswered)); timeouts += unanswered.count }
+            else if !slow { answered.formUnion(tried) }
+            else { timeouts += 1 }
             if slow { uncertain = true; recovery = true }
             if refused { refusal = .refused }
         }
-        if reply == .timeout { uncertain = true; recovery = true }
+        if reply == .timeout { uncertain = true; recovery = true; timeouts += 1 }
         if reply == .refused || reply == .notAllowed || reply == .failed { refusal = reply }
         guard canDispatch else { settleIfIdle(); return }
-        if case .pause(let id, let document, false) = action, reply == .timeout {
+        if budget.retries, case .pause(let id, let document, false) = action, reply == .timeout {
             queue.insert(.pause(id, document: document, retry: true), at: 0)
         }
         // A normal pass stops at the first success. A takeover must also reclaim all known old marks.
@@ -142,7 +170,7 @@ public final class BrowserPauseOperation {
 
 extension BrowserPauseOperation.Reply {
     public var count: Int {
-        switch self { case .ids(let ids): return ids.count; case .paused(let count): return count; case .discovered(_, let count, _, _, _): return count; default: return 0 }
+        switch self { case .ids(let ids): return ids.count; case .paused(let count): return count; case .discovered(_, let count, _, _, _, _): return count; default: return 0 }
     }
     /// Only fixed labels and numbers may reach progress logs.
     public var code: Int {

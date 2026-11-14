@@ -49,7 +49,18 @@ enum Media {
     }
 
     /// How a pause was made, so the video comes back the same way: the key again, or the same Chrome tabs.
-    enum Paused { case key, chrome(token: String, tabs: [Int]) }
+    /// For Chrome the hold says which tabs are really paused and which only never answered (Nov 13 2026).
+    enum Paused { case key, chrome(token: String, hold: MediaHold) }
+
+    /// The uptime after which no pause call of one ask may keep running. Shortened, never lengthened, when the
+    /// sound listen comes back quiet while a call is already out.
+    final class Deadline: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: TimeInterval
+        init(_ value: TimeInterval) { self.value = value }
+        var uptime: TimeInterval { lock.withLock { value } }
+        func shorten(to earlier: TimeInterval) { lock.withLock { value = min(value, earlier) } }
+    }
 
     /// Chrome is always paused by a page script, never by a media key. The sound-confirmed non-Chrome
     /// path retains its existing media-key behavior. A quiet check never presses a key.
@@ -69,18 +80,23 @@ enum Media {
 
     /// A takeover starts a fresh pass after the gesture is confirmed. Include every known candidate, not just
     /// confirmed pauses, and adopt still-paused elements before sealing their old owners.
+    /// `done` gets a hold only when a pause was confirmed or taken over. An ask that paused nothing hands back
+    /// nil: no hold, so the next press starts fresh. One summary line is logged per ask, with measured times.
     static func pauseBrowser(owner: Int, requestedAt: TimeInterval? = nil, candidates: [Int] = [], inheritedTokens: [String] = [],
-                             inheritedTabs: Set<Int> = [], stillPaused: @escaping () -> Bool,
+                             inheritedTabs: Set<Int> = [], budget: MediaPauseBudget = .heard,
+                             stillPaused: @escaping () -> Bool,
                              needsPause: @escaping () -> Bool,
                              done: @escaping (Paused?, BrowserMedia.Outcome?) -> Void) -> BrowserPauseOperation {
         let token = BrowserMedia.token()
         let permit = FileManager.default.temporaryDirectory.appendingPathComponent("redpen-pause-permit-" + token)
         let permitCreated = FileManager.default.createFile(atPath: permit.path, contents: Data("1".utf8), attributes: [.posixPermissions: 0o600])
-        let entered = requestedAt ?? ProcessInfo.processInfo.systemUptime
+        let began = ProcessInfo.processInfo.systemUptime
+        let entered = requestedAt ?? began
         let epochStart = Date().timeIntervalSince1970 * 1000
-        let leftAtStart = max(0, BrowserPauseOperation.totalBudget - (ProcessInfo.processInfo.systemUptime - entered))
-        let epochEnd = epochStart + leftAtStart * 1000
-        let operation = BrowserPauseOperation(token: token, owner: owner, preferredTab: recentTab, candidates: candidates, inheritedTokens: inheritedTokens, inheritedTabs: inheritedTabs, entered: entered, now: { ProcessInfo.processInfo.systemUptime }) { action, limit, reply in
+        // The press, on the page's clock. A page script refuses to act once its ask's time is up.
+        let epochEntered = epochStart - (began - entered) * 1000
+        let deadline = Deadline(entered + budget.total)
+        let operation = BrowserPauseOperation(token: token, owner: owner, preferredTab: recentTab, candidates: candidates, inheritedTokens: inheritedTokens, inheritedTabs: inheritedTabs, entered: entered, budget: budget, now: { ProcessInfo.processInfo.systemUptime }) { action, limit, reply in
             chrome.async {
                 // Queue time is inside the transaction budget. Recheck on the owning queue immediately before launch.
                 let allowed = DispatchQueue.main.sync { stillPaused() && needsPause() }
@@ -88,6 +104,9 @@ enum Media {
                 let args: [String]
                 let journal: URL?
                 let script: String
+                let remaining = deadline.uptime - ProcessInfo.processInfo.systemUptime
+                guard remaining > 0 else { DispatchQueue.main.async { reply(.timeout) }; return }
+                let expires = epochEntered + (deadline.uptime - entered) * 1000
                 switch action {
                 case .discover(let excluded):
                     let file = FileManager.default.temporaryDirectory.appendingPathComponent("redpen-pause-" + token)
@@ -95,65 +114,83 @@ enum Media {
                         DispatchQueue.main.async { reply(.failed) }; return
                     }
                     journal = file; script = BrowserMedia.discoveryRunner
-                    args = [BrowserMedia.directPauseScript(token: token, document: BrowserMedia.token(), expires: epochEnd,
+                    args = [BrowserMedia.directPauseScript(token: token, document: BrowserMedia.token(), expires: expires,
                                                           started: epochStart, inheriting: inheritedTokens), file.path, permit.path, "0"] + excluded.map(String.init)
                 case .pause(let id, let document, let retry):
                     journal = nil; script = BrowserMedia.actionRunner
-                    let js = retry ? BrowserMedia.pauseScript(token: token, document: document, expires: epochEnd, inheriting: inheritedTokens)
-                        : BrowserMedia.directPauseScript(token: token, document: document, expires: epochEnd, started: epochStart, inheriting: inheritedTokens)
+                    let js = retry ? BrowserMedia.pauseScript(token: token, document: document, expires: expires, inheriting: inheritedTokens)
+                        : BrowserMedia.directPauseScript(token: token, document: document, expires: expires, started: epochStart, inheriting: inheritedTokens)
                     args = ["page", String(id), js]
                 }
                 defer { if let journal { try? FileManager.default.removeItem(at: journal) } }
-                let remaining = BrowserPauseOperation.totalBudget - (ProcessInfo.processInfo.systemUptime - entered)
-                guard remaining > 0 else { DispatchQueue.main.async { reply(.timeout) }; return }
-                Log.note("media browser: token=\(token) phase=\(action.phase) process_start elapsed_ms=\(Log.ms(BrowserPauseOperation.totalBudget - remaining))")
-                let r = runAction(args, limit: min(limit, remaining), script: script)
-                let touched = journal.flatMap { try? String(contentsOf: $0, encoding: .utf8) }?.split(separator: "\n").compactMap { Int($0) } ?? []
-                let result = actionReply(action, r, touched: touched)
+                let r = runAction(args, limit: min(limit, remaining), script: script, until: deadline)
+                let lines = journal.flatMap { try? String(contentsOf: $0, encoding: .utf8) }?.split(separator: "\n").map(String.init) ?? []
+                let result = actionReply(action, r, journal: lines)
                 DispatchQueue.main.async { reply(result) }
             }
         }
         operation.onStop = { try? FileManager.default.removeItem(at: permit) }
-        operation.onProgress = { phase, tab, elapsed, count in
-            Log.note("media browser: token=\(token) phase=\(phase) tab=\(tab.map(String.init) ?? "0") count=\(count) elapsed_ms=\(Log.ms(elapsed))")
+        operation.onLimit = { [weak operation] tighter in
+            // A call already out is cut at the shorter time, and the ask is told when that time comes.
+            deadline.shorten(to: entered + tighter.total)
+            let left = max(0, deadline.uptime - ProcessInfo.processInfo.systemUptime)
+            DispatchQueue.main.asyncAfter(deadline: .now() + left) { [weak operation] in
+                guard let operation, !operation.finished else { return }; operation.tick()
+            }
         }
-        operation.onSlow = { Log.note("media browser: token=\(token) slow=1 elapsed_ms=4000") }
         operation.onFinish = { [weak operation] in
             try? FileManager.default.removeItem(at: permit)
             guard let operation else { return }
             let result = operation.outcome
             if let tab = operation.counts.keys.sorted().first { recentTab = tab }
-            Log.note("media browser: token=\(token) finished state=\(operation.state) count=\(operation.counts.values.reduce(0, +)) elapsed_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime - operation.entered))")
+            let hold = operation.hold
+            // One line per ask (Nov 13 2026): counts and measured times only. dispatch_ms is press to ask.
+            Log.note("media browser: pause state=\(operation.state) outcome=\(outcomeWord(result)) confirmed=\(operation.counts.count) held=\(hold.held.count) unanswered=\(hold.unanswered.count) calls=\(operation.calls) timeouts=\(operation.timeouts) takeover=\(inheritedTokens.isEmpty ? 0 : 1) budget_ms=\(Log.ms(operation.budget.total)) dispatch_ms=\(Log.ms(began - entered)) elapsed_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime - entered))")
             guard stillPaused(), needsPause() else { done(nil, result); return }
-            switch result {
-            case .handled, .failed("slow"):
-                // Every dispatched candidate is reconciled, including any unacknowledged first pause.
-                done(.chrome(token: token, tabs: operation.reconciliationTabs), result)
-            default:
-                done(nil, result)
-            }
+            // Only a confirmed or taken-over pause is a hold. Timeouts with nothing confirmed leave none, so
+            // the next press is a fresh start and never a takeover.
+            done(hold.holds ? .chrome(token: token, hold: hold) : nil, result)
         }
-        Log.note("media browser: token=\(token) queue_enter elapsed_ms=0")
         DispatchQueue.main.async { operation.start() }
         DispatchQueue.main.asyncAfter(deadline: .now() + max(0, BrowserPauseOperation.slowAfter - (ProcessInfo.processInfo.systemUptime - entered))) { [weak operation] in
             guard let operation, !operation.finished else { return }; operation.tick()
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + leftAtStart) { [weak operation] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, deadline.uptime - ProcessInfo.processInfo.systemUptime)) { [weak operation] in
             guard let operation, !operation.finished else { return }; operation.tick()
         }
         return operation
     }
 
+    /// A fixed word for the log, never Chrome's own error text.
+    private static func outcomeWord(_ outcome: BrowserMedia.Outcome) -> String {
+        switch outcome {
+        case .handled: return "paused"
+        case .nothingFound: return "nothing"
+        case .scriptsOff: return "scriptsOff"
+        case .notAllowed: return "notAllowed"
+        case .failed(let why): return why == "slow" ? "slow" : "failed"
+        }
+    }
+
     struct ActionOutput { let status: Int32; let output: String; let error: String; let timedOut: Bool }
     /// The runner returns only IDs, a generated identity or a count. Errors are classified, never logged verbatim.
-    private static func runAction(_ args: [String], limit: Double, script: String = BrowserMedia.actionRunner) -> ActionOutput {
+    private static func runAction(_ args: [String], limit: Double, script: String = BrowserMedia.actionRunner,
+                                  until deadline: Deadline? = nil) -> ActionOutput {
         let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         p.arguments = ["-e", script] + args
         let out = Pipe(), err = Pipe(); p.standardOutput = out; p.standardError = err
         let finished = DispatchSemaphore(value: 0)
         p.terminationHandler = { _ in finished.signal() }
         do { try p.run() } catch { return ActionOutput(status: 1, output: "", error: "", timedOut: false) }
-        if finished.wait(timeout: .now() + limit) == .timedOut {
+        // With a deadline the wait is taken in short steps, so a shortened ask stops its call on time.
+        let end = ProcessInfo.processInfo.systemUptime + limit
+        var exited = false
+        while !exited {
+            let left = min(end, deadline?.uptime ?? end) - ProcessInfo.processInfo.systemUptime
+            guard left > 0 else { break }
+            exited = finished.wait(timeout: .now() + (deadline == nil ? left : min(left, 0.05))) == .success
+        }
+        if !exited {
             p.terminate()
             // Reap only the interpreter, never wait for Chrome. A journalled AppleEvent may still arrive.
             if finished.wait(timeout: .now() + 0.05) == .timedOut {
@@ -166,15 +203,17 @@ enum Media {
                             output: String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "",
                             error: String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "", timedOut: false)
     }
-    static func actionReply(_ action: BrowserPauseOperation.Action, _ r: ActionOutput, touched: [Int] = []) -> BrowserPauseOperation.Reply {
+    static func actionReply(_ action: BrowserPauseOperation.Action, _ r: ActionOutput, journal: [String] = []) -> BrowserPauseOperation.Reply {
         if case .discover = action {
             let output = r.output.trimmingCharacters(in: .whitespacesAndNewlines)
             let bits = output.split(separator: ":")
             let tab = bits.count == 2 ? Int(bits[0]) : nil
             let count = bits.count == 2 ? Int(bits[1]) ?? 0 : 0
+            var (touched, unanswered) = BrowserMedia.discoveryJournal(journal, runnerStopped: r.timedOut)
+            if let tab, count > 0 { unanswered.removeAll { $0 == tab } }
             return .discovered(tab: tab, count: count, touched: touched,
                 slow: r.timedOut || r.status != 0 || output == "slow",
-                refused: output == "refused" || r.error.contains("-1743"))
+                refused: output == "refused" || r.error.contains("-1743"), unanswered: unanswered)
         }
         if r.timedOut || r.error.contains("-1712") { return .timeout }
         if r.status != 0 {
@@ -198,10 +237,11 @@ enum Media {
                        allowed: @escaping () -> Bool = { true },
                        progress: @escaping (BrowserResumeOperation.Result) -> Void = { _ in },
                        done: @escaping (BrowserResumeOperation.Result) -> Void = { _ in }) -> BrowserResumeOperation? {
-        guard case .chrome(let token, let tabs) = paused else {
+        guard case .chrome(let token, let hold) = paused else {
             if allowed(), play { pressPlayPause() }
             done(.init(requested: [], resumed: [], cleared: [], cancelled: !allowed())); return nil
         }
+        let tabs = hold.releaseTabs
         guard !token.isEmpty, !tabs.isEmpty else {
             done(.init(requested: [], resumed: [], cleared: [], cancelled: false)); return nil
         }
@@ -216,7 +256,7 @@ enum Media {
                 let left = end - ProcessInfo.processInfo.systemUptime
                 guard allowed(), left > 0 else { break }
                 let output = runAction(["page", String(tab), js], limit: min(left, BrowserPauseOperation.actionBudget))
-                if output.status == 0, !output.timedOut, let count = Int(output.output.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                if let count = resumeCount(output) {
                     if count > 0 { resumed.insert(tab) } else { cleared.insert(tab) }
                 }
             }
@@ -228,13 +268,8 @@ enum Media {
                 guard DispatchQueue.main.sync(execute: allowed) else { DispatchQueue.main.async { reply(nil) }; return }
                 let left = end - ProcessInfo.processInfo.systemUptime
                 guard left > 0 else { DispatchQueue.main.async { reply(nil) }; return }
-                let started = ProcessInfo.processInfo.systemUptime
                 let output = runAction(["page", String(tab), js], limit: min(limit, left))
-                let count = output.status == 0 && !output.timedOut ? Int(output.output.trimmingCharacters(in: .whitespacesAndNewlines)) : nil
-                if count == nil {
-                    let ms = Int((ProcessInfo.processInfo.systemUptime - started) * 1000)
-                    Log.note("media browser: resume tab=\(tab) no answer timed_out=\(output.timedOut) status=\(output.status) elapsed_ms=\(ms)")
-                }
+                let count = resumeCount(output)
                 DispatchQueue.main.async { reply(count) }
             }
         }
@@ -242,6 +277,10 @@ enum Media {
         operation.onFinish = done
         DispatchQueue.main.async { operation.start() }
         return operation
+    }
+
+    static func resumeCount(_ output: ActionOutput) -> Int? {
+        BrowserMedia.resumeCount(status: output.status, output: output.output, timedOut: output.timedOut)
     }
 
     /// The last confirmed tab is tried in one call before discovery.

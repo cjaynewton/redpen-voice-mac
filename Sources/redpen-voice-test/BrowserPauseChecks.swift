@@ -12,8 +12,9 @@ func browserPauseChecks(_ check: (String, Bool, String) -> Void) {
         var reply: ((Op.Reply) -> Void)?
         var finishes = 0, slows = 0
         var preferred: Int? = 101
+        var budget = MediaPauseBudget.heard
         lazy var op: Op = {
-            let result = Op(token: "fake", owner: 1, preferredTab: preferred, now: { self.time }) { action, limit, done in
+            let result = Op(token: "fake", owner: 1, preferredTab: preferred, budget: budget, now: { self.time }) { action, limit, done in
                 self.actions.append(action); self.limits.append(limit); self.reply = done
                 precondition(limit > 0 && limit <= Op.totalBudget)
             }
@@ -35,7 +36,9 @@ func browserPauseChecks(_ check: (String, Bool, String) -> Void) {
     incident.answer(.discovered(tab: 77, count: 1, touched: [414388973,77], slow: false, refused: true), after: 1.1)
     c("0623RecoveredInTwoCalls", incident.op.finished && incident.actions.count == 2 && incident.op.counts == [77:1])
     c("0623RefusalDoesNotHideSuccess", incident.op.outcome == .handled(tabs: [77], count: 1))
-    c("0623ReconciliationIncludesEveryAttempt", incident.op.reconciliationTabs == [77,101,414388973])
+    // Changed on purpose (Nov 13 2026): tabs that answered with nothing playing are finished with. Only the
+    // confirmed pause is held and looked at on release.
+    c("0623ReconciliationOnlyTheConfirmedPause", incident.op.reconciliationTabs == [77] && incident.op.hold == MediaHold(held: [77], unanswered: []))
     c("0623TimingSimulated", abs(incident.time - 2.03) < 0.001)
     let fresh = Fake(); fresh.preferred = nil; fresh.op.start()
     fresh.answer(.discovered(tab: 44, count: 2, touched: [1,44], slow: false, refused: false), after: 1)
@@ -46,7 +49,10 @@ func browserPauseChecks(_ check: (String, Bool, String) -> Void) {
     slow.time = 8; slow.op.tick()
     slow.answer(.discovered(tab: nil, count: 0, touched: [7,8], slow: true, refused: false), after: 0)
     c("budgetStopsDiscovery", slow.op.finished && slow.finishes == 1 && slow.actions.count == 1)
-    c("timeoutJournalRetained", slow.op.reconciliationTabs == [7,8] && slow.op.outcome == .failed("slow"))
+    // Changed on purpose (Nov 13 2026). This used to assert that a slow result keeps its tabs as a hold, which
+    // is what made every later press a takeover. A slow result with nothing confirmed now leaves no hold. Its
+    // tabs are only loose ends for one look on release.
+    c("slowResultLeavesNoHold", !slow.op.hold.holds && slow.op.hold.unanswered == [7,8] && slow.op.outcome == .failed("slow"))
     let partial = Fake(); partial.preferred = nil; partial.op.start(); partial.time = 8
     partial.answer(.discovered(tab: 5, count: 1, touched: [5], slow: true, refused: false), after: 0)
     c("partialPauseAtBudgetRetained", partial.op.finished && partial.op.outcome == .handled(tabs: [5], count: 1))
@@ -145,7 +151,78 @@ func browserPauseChecks(_ check: (String, Bool, String) -> Void) {
     let discoverTransfer = Fake(); discoverTransfer.preferred = nil; discoverTransfer.op.start()
     discoverTransfer.op.transfer(to: 2)
     discoverTransfer.answer(.discovered(tab: 9, count: 1, touched: [8,9], slow: false, refused: false))
-    c("transferredDiscoveryKeepsLateMarks", discoverTransfer.op.state == .transferred && discoverTransfer.op.reconciliationTabs == [9,8])
+    c("transferredDiscoveryKeepsLateMarks", discoverTransfer.op.state == .transferred && discoverTransfer.op.reconciliationTabs == [9] && discoverTransfer.op.hold.holds)
+
+    // Nov 12 2026 replay. Timeouts with nothing confirmed leave no hold, and the next press is fresh.
+    let nov12 = Fake(); nov12.op.start(); nov12.answer(.timeout, after: 1.2); nov12.answer(.timeout, after: 1.2)
+    nov12.answer(.discovered(tab: nil, count: 0, touched: [7,8,9], slow: true, refused: false, unanswered: [8]), after: 2)
+    c("nov12TimeoutsLeaveNoHold", nov12.op.finished && !nov12.op.hold.holds && nov12.op.outcome == .failed("slow"))
+    c("nov12OnlyUnansweredTabsGetALook", nov12.op.hold.unanswered == [8, 101] && nov12.op.reconciliationTabs == [8, 101])
+    c("nov12NextPressIsFresh", !MediaHold.nextPressTakesOver(nov12.op.hold, askRunning: false))
+    c("nov12CountsForOneLogLine", nov12.op.calls == 3 && nov12.op.timeouts == 3)
+    c("runningAskCanStillBeTakenOver", MediaHold.nextPressTakesOver(.none, askRunning: true))
+    c("confirmedPauseIsTakenOver", MediaHold.nextPressTakesOver(incident.op.hold, askRunning: false))
+    let answeredEmpty = Fake(); answeredEmpty.op.start(); answeredEmpty.answer(.paused(0))
+    answeredEmpty.answer(.discovered(tab: nil, count: 0, touched: [3,4], slow: false, refused: false))
+    c("allAnsweredEmptyLeavesNothing", answeredEmpty.op.finished && answeredEmpty.op.hold == .none && answeredEmpty.op.outcome == .nothingFound)
+    // A takeover that cannot reach a tab of the hold it took over still holds it, so it gets its release.
+    let stuck = Op(token: "new", owner: 2, candidates: [1], inheritedTokens: ["old"], inheritedTabs: [1], now: { 0 }) { action, _, reply in
+        if case .pause = action { reply(.timeout) } else { reply(.discovered(tab: nil, count: 0, touched: [], slow: false, refused: false)) }
+    }
+    stuck.start()
+    c("takenOverTabStaysHeldUntilItAnswers", stuck.finished && stuck.hold == MediaHold(held: [1], unanswered: []))
+    let cleared = Op(token: "new", owner: 2, candidates: [1], inheritedTokens: ["old"], inheritedTabs: [1], now: { 0 }) { action, _, reply in
+        if case .pause = action { reply(.paused(0)) } else { reply(.discovered(tab: nil, count: 0, touched: [], slow: false, refused: false)) }
+    }
+    cleared.start()
+    c("takenOverTabThatAnswersClearIsLetGo", cleared.finished && cleared.hold == .none)
+
+    // A quiet listen (D-1446 still asks Chrome): about 2.5 seconds in all and never a retry.
+    let quiet = Fake(); quiet.budget = .quiet; quiet.op.start(); quiet.answer(.timeout, after: 1.2)
+    c("quietListenNeverRetries", quiet.actions.count == 2 && quiet.actions.last == .discover(excluding: [101]))
+    c("quietCallsBounded", quiet.limits.count == 2 && quiet.limits[0] == 1.2 && abs(quiet.limits[1] - 1.3) < 0.001)
+    quiet.time = 2.5; quiet.op.tick()
+    quiet.answer(.discovered(tab: nil, count: 0, touched: [5], slow: true, refused: false, unanswered: [5]), after: 0)
+    c("quietListenCappedAtTwoAndAHalf", quiet.op.finished && quiet.time == 2.5 && !quiet.op.hold.holds && quiet.actions.count == 2)
+    let lateQuiet = Fake(); lateQuiet.op.start(); lateQuiet.time = 1
+    var limited: MediaPauseBudget?
+    lateQuiet.op.onLimit = { limited = $0 }
+    lateQuiet.op.limit(to: .quiet)
+    c("lateQuietListenShortensTheAsk", lateQuiet.op.budget == .quiet && limited == .quiet && abs(lateQuiet.op.remaining - 1.5) < 0.001)
+    lateQuiet.op.limit(to: .heard)
+    c("budgetNeverLengthens", lateQuiet.op.budget == .quiet)
+    lateQuiet.time = 2.6; lateQuiet.op.tick(); lateQuiet.answer(.timeout, after: 0)
+    c("lateQuietStopsAtTheCapWithoutRetry", lateQuiet.op.finished && lateQuiet.actions.count == 1 && !lateQuiet.op.hold.holds)
+    c("budgetFollowsTheListen", MediaPauseBudget.after(heardSound: nil) == .heard && MediaPauseBudget.after(heardSound: true) == .heard
+        && MediaPauseBudget.after(heardSound: false) == .quiet && MediaPauseBudget.heard.total == Op.totalBudget && MediaPauseBudget.heard.retries)
+    c("heardSoundKeepsEightSecondsAndRetry", known.op.budget == .heard && retry.actions.count == 3)
+    // Live words never wait on Chrome once the listen heard nothing.
+    c("draftsNotHeldWhenQuiet", !MediaPauseBudget.openingWaitsForChrome(heardSound: false))
+    c("draftsWaitWhileSoundMayBeInTheOpening", MediaPauseBudget.openingWaitsForChrome(heardSound: true) && MediaPauseBudget.openingWaitsForChrome(heardSound: nil))
+
+    // Release: one pass. A closed tab answers empty and is cleared, a timeout is tried once and dropped.
+    c("closedTabAnswersEmptyAndIsCleared", BrowserMedia.resumeCount(status: 0, output: "\n", timedOut: false) == 0)
+    c("releaseAnswerRead", BrowserMedia.resumeCount(status: 0, output: "2\n", timedOut: false) == 2
+        && BrowserMedia.resumeCount(status: 0, output: "1", timedOut: true) == nil && BrowserMedia.resumeCount(status: 1, output: "", timedOut: false) == nil)
+    var releaseReply: ((Int?) -> Void)?, releaseTabs: [Int] = [], releaseDone: BrowserResumeOperation.Result?
+    let held = MediaHold(held: [1, 2, 3], unanswered: [4, 1])
+    c("holdListsEachTabOnce", held.releaseTabs == [1, 2, 3, 4] && held.holds && !MediaHold.none.holds)
+    let release = BrowserResumeOperation(tabs: held.releaseTabs, now: { 0 }, allowed: { true }) { tab, _, reply in releaseTabs.append(tab); releaseReply = reply }
+    release.onFinish = { releaseDone = $0 }
+    release.start(); releaseReply?(1); releaseReply?(0)
+    c("interruptedReleaseKeepsOnlyUnreachedHeldTabs", held.remaining(after: release.result) == MediaHold(held: [3], unanswered: []))
+    releaseReply?(nil); releaseReply?(nil)
+    c("releaseTriesEachTabOnce", releaseTabs == [1, 2, 3, 4] && release.finished)
+    c("releaseTimeoutsAreDropped", releaseDone?.timedOut == [3, 4] && releaseDone?.resumed == [1] && releaseDone?.cleared == [2])
+    c("holdNeverOutlivesOneReleasePass", releaseDone.map { held.remaining(after: $0) } == MediaHold.none)
+    var pressAllowed = true, pressReply: ((Int?) -> Void)?
+    let interrupted = BrowserResumeOperation(tabs: [1, 2], now: { 0 }, allowed: { pressAllowed }) { _, _, reply in pressReply = reply }
+    interrupted.start(); pressAllowed = false; pressReply?(nil)
+    c("noAnswerAfterANewPressIsNotATry", interrupted.finished && interrupted.result.cancelled && interrupted.result.timedOut.isEmpty && interrupted.result.waiting == [1, 2])
+    var loose = MediaLooseEnds()
+    loose.add(token: "a", tabs: [1, 2]); loose.add(token: "", tabs: [9]); loose.add(token: "b", tabs: [2, 3]); loose.add(token: "c", tabs: [])
+    let taken = loose.take()
+    c("looseEndsGetOneLookThenAreForgotten", taken?.token == "b" && taken?.inheriting == ["a"] && taken?.tabs == [1, 2, 3] && loose.isEmpty && loose.take() == nil)
 
     // Execute the actual generated JavaScript in an inert DOM with fake media and a fake wall clock.
     let scripts: [String: String] = [
@@ -217,6 +294,11 @@ func browserPauseChecks(_ check: (String, Bool, String) -> Void) {
     a=media();items=[a];window={};run('direct');window={};out.directRetryNavigation=run('pause')===-1;
     a=media();a.muted=true;b=media();b.volume=0;items=[a,b];window={};out.directIgnoresInaudible=run('direct')===0&&!a.paused&&!b.paused;
     a=media();items=[a];window={};time=8001;out.directExpired=run('direct')===-1&&!a.paused;
+    // A pause that timed out can still land late, before its ask's time is up. The one look on release plays
+    // back only the video that ask marked, and seals the ask so nothing lands after it.
+    time=0;a=media();b=media();b.paused=true;items=[a,b];window={};run('direct');
+    out.lateLandedPauseIsPlayedBackByTheLook=a.paused&&run('seal')===1&&!a.paused&&a.plays===1&&b.plays===0&&b.paused;
+    out.nothingLandsAfterTheLook=run('direct')===-1&&!a.paused&&a.pauses===1;
     process.stdout.write(JSON.stringify(out));
     """#
     let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/env"); p.arguments = ["node", "-e", js]
@@ -225,7 +307,7 @@ func browserPauseChecks(_ check: (String, Bool, String) -> Void) {
         try p.run(); input.fileHandleForWriting.write(try JSONSerialization.data(withJSONObject: scripts)); try input.fileHandleForWriting.close()
         let data = output.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
         let results = try JSONSerialization.jsonObject(with: data) as? [String: Bool] ?? [:]
-        c("pageHarnessRan", p.terminationStatus == 0 && results.count == 36)
+        c("pageHarnessRan", p.terminationStatus == 0 && results.count == 38)
         for name in results.keys.sorted() { c("page." + name, results[name] == true) }
     } catch { check("browser.operation.pageHarnessRan", false, String(describing: error)) }
 }

@@ -77,7 +77,8 @@ public enum BrowserMedia {
     }
 
     /// One discovery process, stopping at the first successful tab. IDs are journalled BEFORE execute so a
-    /// timeout still supplies exact reconciliation targets. The journal contains only numeric IDs, never URLs.
+    /// timeout still supplies exact reconciliation targets. A tab that times out is journalled again with "!"
+    /// in front. The journal contains only numeric IDs and that mark, never URLs.
     public static let discoveryRunner = """
     on run argv
         set js to item 1 of argv
@@ -88,6 +89,7 @@ public enum BrowserMedia {
         set refused to false
         set ordered to my orderedTabs()
         repeat with t in ordered
+            set tid to ""
             try
                 try
                     if (read POSIX file permitPath) is not "1" then return ""
@@ -110,7 +112,21 @@ public enum BrowserMedia {
                 end if
             on error msg number n
                 if n is -1743 then error msg number n
-                if n is -1712 then set slow to true
+                if n is -1712 then
+                    set slow to true
+                    -- Name the tab that never answered, so only it gets a second look when the talking ends.
+                    if tid is not "" then
+                        try
+                            set journal to open for access POSIX file journalPath with write permission
+                            write ("!" & tid & linefeed) to journal starting at eof
+                            close access journal
+                        on error
+                            try
+                                close access POSIX file journalPath
+                            end try
+                        end try
+                    end if
+                end if
                 if msg contains "Apple Events" or msg contains "turned off" then set refused to true
             end try
         end repeat
@@ -377,6 +393,23 @@ public enum BrowserMedia {
         if tabs.isEmpty, output.contains("slow") { return .failed("slow") }
         if tabs.isEmpty, output.contains("refused") { return .scriptsOff }
         return tabs.isEmpty ? .nothingFound : .handled(tabs: tabs, count: count)
+    }
+
+    /// How many videos one tab played again on release. A clean answer with no number means the tab is closed
+    /// or its page was replaced: nothing of ours is left there, so it counts as cleared (0). nil only when
+    /// Chrome did not answer.
+    public static func resumeCount(status: Int32, output: String, timedOut: Bool) -> Int? {
+        guard status == 0, !timedOut else { return nil }
+        return Int(output.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    }
+
+    /// Reads the discovery journal: one line per tab asked, written before the ask, and "!" plus the tab for
+    /// each one that timed out. A runner stopped mid-ask leaves its last tab with no answer either.
+    public static func discoveryJournal(_ lines: [String], runnerStopped: Bool) -> (touched: [Int], unanswered: [Int]) {
+        let touched = lines.compactMap { Int($0) }
+        var unanswered = lines.compactMap { $0.hasPrefix("!") ? Int($0.dropFirst()) : nil }
+        if runnerStopped, let last = lines.last.flatMap({ Int($0) }), !unanswered.contains(last) { unanswered.append(last) }
+        return (touched, unanswered)
     }
 
     /// True when the sound comes from Chrome: its helper processes live inside Google Chrome.app.
