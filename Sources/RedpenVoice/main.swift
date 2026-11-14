@@ -1214,7 +1214,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return
                 }
                 self.browserTakeover = nil
-                guard !takeover.tabs.isEmpty else {
+                // The earlier ask can confirm a pause after the press read its hold and end before this runs.
+                // Read what it left once more, so a video it paused is taken over and never dropped.
+                let left = self.browserPause?.hold ?? .none
+                let heldTabs = takeover.tabs.union(left.held)
+                let candidates = Set(takeover.candidates).union(left.releaseTabs).sorted()
+                guard !heldTabs.isEmpty else {
                     // The earlier ask ended with nothing paused: nothing to take over, so this press asks fresh.
                     self.dropEmptyChromeAsk()
                     self.startMedia(players, session: s, pending: pending, capture: capture, press: thisPress)
@@ -1224,8 +1229,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.mediaPauseMonitor.stop()
                 let owner = self.mediaPause.generation
                 self.browserInheritedTokens = takeover.tokens
-                self.browserPause = Media.pauseBrowser(owner: owner, requestedAt: capture.beganUptime, candidates: takeover.candidates,
-                    inheritedTokens: takeover.tokens, inheritedTabs: takeover.tabs,
+                self.browserPause = Media.pauseBrowser(owner: owner, requestedAt: capture.beganUptime, candidates: candidates,
+                    inheritedTokens: takeover.tokens, inheritedTabs: heldTabs,
                     stillPaused: { [weak self] in self?.mediaPause.owns(owner) == true },
                     needsPause: { [weak self, weak s] in self?.session === s && s != nil }) { [weak self, weak s] how, outcome in
                     guard let self, let s, self.mediaPause.owns(owner), self.session === s else { return }
@@ -1459,8 +1464,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                      play: config.resumeMedia ?? true, inheriting: loose.inheriting, allowed: { [weak self] in
             guard let self else { return false }
             return self.session == nil && self.pendingStart == nil && self.writing == 0
-        }, done: { result in
+        }, done: { [weak self] result in
             Log.note("media browser: release held=0 played=\(result.resumed.count) cleared=\(result.cleared.count) dropped=\(result.unresolved.count) cancelled=\(result.cancelled) elapsed_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime - began))")
+            // A press cut the look short: the tabs it never reached keep their one look for later.
+            if result.cancelled { self?.mediaLooseEnds.restore(loose, unreached: result.waiting) }
         })
     }
 
@@ -3104,6 +3111,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// per release, and "resumed" is logged only when something was played.
     private func releaseBrowserPause(play: Bool) {
         let how = heldMedia
+        // The ask is let go here, so the hold it confirmed must be on record before it goes. A dictation that
+        // ended before Chrome answered never stored it, and a press in the first moment of this pass would
+        // otherwise find nothing held and leave the video paused.
+        if case .chrome = how { pausedHow = how }
         browserPause = nil
         browserTakeover = nil
         let generation = mediaPause.generation

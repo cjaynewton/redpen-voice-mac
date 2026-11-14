@@ -14,6 +14,9 @@ public final class BrowserPauseOperation {
     public enum Reply: Equatable {
         case ids([Int]), candidate(String), paused(Int)
         case empty, navigated, timeout, refused, notAllowed, failed
+        /// The call was never sent to Chrome: the ask was stopped or handed on while the call waited its turn.
+        /// The page said nothing, so a tab of a hold this ask took over stays held.
+        case unsent
         /// `unanswered` lists the tabs that timed out, when the runner could say. nil means unknown: on a slow
         /// result every tab it touched then counts as unanswered.
         case discovered(tab: Int?, count: Int, touched: [Int], slow: Bool, refused: Bool, unanswered: [Int]? = nil)
@@ -136,7 +139,8 @@ public final class BrowserPauseOperation {
         // Even a cancelled or transferred request can have paused. Keep its partial evidence for reconciliation.
         if case .pause(let id, _, _) = action, case .paused(let count) = reply, count > 0 { counts[id] = count }
         // Any answer but a timeout means the page ran the script or never will: nothing waits in that tab.
-        if case .pause(let id, _, _) = action, reply != .timeout { answered.insert(id) }
+        // A call that was never sent is no answer at all.
+        if case .pause(let id, _, _) = action, reply != .timeout, reply != .unsent { answered.insert(id) }
         if case .discovered(let tab, let count, let tried, let slow, let refused, let unanswered) = reply {
             touched.formUnion(tried); candidates.formUnion(tried)
             if let tab, count > 0 { counts[tab] = count; touched.insert(tab); candidates.insert(tab) }
@@ -176,7 +180,7 @@ extension BrowserPauseOperation.Reply {
     public var code: Int {
         switch self {
         case .ids: return 0; case .candidate: return 1; case .paused: return 2; case .empty: return 3
-        case .navigated: return 4; case .timeout: return 5; case .refused: return 6; case .notAllowed: return 7; case .failed: return 8; case .discovered: return 9
+        case .navigated: return 4; case .timeout: return 5; case .refused: return 6; case .notAllowed: return 7; case .failed: return 8; case .discovered: return 9; case .unsent: return 10
         }
     }
 }

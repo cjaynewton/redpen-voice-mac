@@ -176,6 +176,19 @@ func browserPauseChecks(_ check: (String, Bool, String) -> Void) {
     }
     cleared.start()
     c("takenOverTabThatAnswersClearIsLetGo", cleared.finished && cleared.hold == .none)
+    // A call that was never sent (the ask was stopped while the call waited its turn) is no answer. The tab of
+    // the hold it took over stays held, so its video is still played again. It used to come back as `.empty`,
+    // which read as "answered clear" and let the tab go (lead review, Nov 13 2026).
+    let unsent = Op(token: "new", owner: 2, candidates: [1], inheritedTokens: ["old"], inheritedTabs: [1], now: { 0 }) { action, _, reply in
+        if case .pause = action { reply(.unsent) } else { reply(.discovered(tab: nil, count: 0, touched: [], slow: false, refused: false)) }
+    }
+    unsent.start()
+    c("unsentCallLeavesTakenOverTabHeld", unsent.finished && unsent.hold == MediaHold(held: [1], unanswered: []) && unsent.timeouts == 0)
+    let unsentFresh = Op(token: "new", owner: 2, preferredTab: 5, now: { 0 }) { action, _, reply in
+        if case .pause = action { reply(.unsent) } else { reply(.discovered(tab: nil, count: 0, touched: [], slow: false, refused: false)) }
+    }
+    unsentFresh.start()
+    c("unsentCallIsNeverAHold", unsentFresh.finished && !unsentFresh.hold.holds && unsentFresh.hold.unanswered == [5])
 
     // A quiet listen (D-1446 still asks Chrome): about 2.5 seconds in all and never a retry.
     let quiet = Fake(); quiet.budget = .quiet; quiet.op.start(); quiet.answer(.timeout, after: 1.2)
@@ -223,6 +236,15 @@ func browserPauseChecks(_ check: (String, Bool, String) -> Void) {
     loose.add(token: "a", tabs: [1, 2]); loose.add(token: "", tabs: [9]); loose.add(token: "b", tabs: [2, 3]); loose.add(token: "c", tabs: [])
     let taken = loose.take()
     c("looseEndsGetOneLookThenAreForgotten", taken?.token == "b" && taken?.inheriting == ["a"] && taken?.tabs == [1, 2, 3] && loose.isEmpty && loose.take() == nil)
+    // A look a new press cut short is not a look: the tabs it never reached are kept, with every ask's token.
+    if let taken {
+        loose.add(token: "d", tabs: [7])
+        loose.restore(taken, unreached: [2, 3, 9])
+        let again = loose.take()
+        c("cutShortLookKeepsUnreachedTabs", again.map { Set($0.tabs) } == [2, 3, 7] && again.map { Set($0.inheriting + [$0.token]) } == ["a", "b", "d"] && loose.isEmpty)
+        loose.restore(taken, unreached: [])
+        c("finishedLookRestoresNothing", loose.isEmpty && loose.take() == nil)
+    }
 
     // Execute the actual generated JavaScript in an inert DOM with fake media and a fake wall clock.
     let scripts: [String: String] = [

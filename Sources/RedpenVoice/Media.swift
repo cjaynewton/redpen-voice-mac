@@ -100,7 +100,9 @@ enum Media {
             chrome.async {
                 // Queue time is inside the transaction budget. Recheck on the owning queue immediately before launch.
                 let allowed = DispatchQueue.main.sync { stillPaused() && needsPause() }
-                guard allowed, permitCreated, FileManager.default.fileExists(atPath: permit.path) else { DispatchQueue.main.async { reply(.empty) }; return }
+                // Not sent, so not an answer: `.empty` here once read as "the tab answered clear" and let go of a
+                // held tab that was never asked.
+                guard allowed, permitCreated, FileManager.default.fileExists(atPath: permit.path) else { DispatchQueue.main.async { reply(.unsent) }; return }
                 let args: [String]
                 let journal: URL?
                 let script: String

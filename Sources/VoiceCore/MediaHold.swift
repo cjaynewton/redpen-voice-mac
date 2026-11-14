@@ -81,4 +81,10 @@ public struct MediaLooseEnds: Equatable, Sendable {
         tokens = []; tabs = []
         return out
     }
+
+    /// A look that a new press cut short is not a look. The tabs it never reached are kept for the next one.
+    public mutating func restore(_ taken: (token: String, inheriting: [String], tabs: [Int]), unreached: Set<Int>) {
+        let left = taken.tabs.filter(unreached.contains)
+        for token in taken.inheriting + [taken.token] { add(token: token, tabs: left) }
+    }
 }
