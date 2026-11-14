@@ -27,6 +27,7 @@ def block(source, marker):
 
 
 transcriber_source = (ROOT / "Sources/RedpenVoice/Transcriber.swift").read_text()
+insert_source_early = (ROOT / "Sources/RedpenVoice/Insert.swift").read_text()
 session = block(transcriber_source, "final class Session:")
 gate = block(transcriber_source, "actor Gate {")
 recording = block((ROOT / "Sources/RedpenVoice/SoundTap.swift").read_text(), "final class Recording:")
@@ -111,6 +112,7 @@ wiring_checks += [
 ]
 chrome_media = block(app_source, "private func startChromeMedia(")
 wiring_checks += [
+    ("accessibility skip is for live pieces only and logged once", "let typeDirectly = confirmed && app.map { axMemory.skips($0) } == true" in insert_source_early and "if let app, axMemory.missed(app) {" in insert_source_early),
     ("drafts cut from the first sound and wake every tenth of a second", "let chunker = DraftChunker()" in block(session, "func streamDrafts()") and "milliseconds(100)" in block(session, "func streamDrafts()") and "first: !wroteWords" in block(session, "func streamDrafts()")),
     ("a stretch with no speech is never sent to the engine", 'let text = speech ? await echoStripped(' in block(session, "func streamDrafts()")),
     ("Whisper checks end only at drafts cut in a pause", "DraftChunker.checkCut(ds.map { ($0.end, $0.atPause) }" in block(session, "private func draftCheckCut(") and "atPause: proposed.atPause && !moved" in block(session, "func streamDrafts()")),
@@ -353,7 +355,9 @@ func AXUIElementCopyAttributeValue(_ el: AXUIElement, _ attr: CFString, _ result
 }
 func AXUIElementGetTypeID() -> CFTypeID { CFGetTypeID(Insert.element) }
 func AXUIElementSetAttributeValue(_ el: AXUIElement, _ attr: CFString, _ value: CFString) -> FakeAXResult {
+    Insert.axCalls += 1
     guard Insert.axAccepts else { return .failure }
+    if Insert.axNoEffect { return .success }
     if let range = Insert.cursorOverride {
         Insert.box = (Insert.box as NSString).replacingCharacters(in: range, with: value as String)
         Insert.cursorOverride = NSRange(location: range.location + (value as String).utf16.count, length: 0)
@@ -366,6 +370,7 @@ enum Insert {
     static var deleted = 0, typed = "", attempts = 0
     static var typedSome = false, typedCount = 0, typedPadding = 0, unconfirmed = false
     static var axAccepts = false
+    static var axNoEffect = false, axCalls = 0
     static var observedInsertion = false
     static var dropTyping = false, partialTyping = false, pasteCalls = 0
     static var cursorOverride: NSRange?
@@ -394,10 +399,12 @@ enum Insert {
     static var canConfirm = true
     static var onConfirm: (() -> Void)?
     static var lastEdit: (element: AXUIElement, before: String, range: NSRange, replacement: String)?
-    static func reset(_ value: String) { CGEventSource.times = [:]; box = value; deleted = 0; typed = ""; attempts = 0; canConfirm = true; onConfirm = nil; onTypeChunk = nil; axAccepts = false; typedSome = false; typedCount = 0; dropTyping = false; partialTyping = false; pasteCalls = 0; cursorOverride = nil; cursorAccepts = true; cursorNoEffect = false; focusIsOriginal = true; onCursorSet = nil }
+    static func reset(_ value: String) { CGEventSource.times = [:]; box = value; deleted = 0; typed = ""; attempts = 0; canConfirm = true; onConfirm = nil; onTypeChunk = nil; axAccepts = false; axNoEffect = false; typedSome = false; typedCount = 0; dropTyping = false; partialTyping = false; pasteCalls = 0; cursorOverride = nil; cursorAccepts = true; cursorNoEffect = false; focusIsOriginal = true; onCursorSet = nil }
     static func value(_ e: AXUIElement) -> String? { box }
     static func selectedRange(_ e: AXUIElement) -> NSRange? { cursorOverride ?? NSRange(location: box.utf16.count, length: 0) }
     static func focusedElement() -> (AXUIElement, Int)? { focusIsOriginal ? (element, 1) : nil }
+    static var axMemory = InsertMemory()
+    static func axApp(_ pid: Int) -> InsertMemory.App { .init(pid: pid, launched: 1) }
     static func forgetLast() {}
     static func backspace(_ count: Int, while still: () async -> Bool) async -> Int {
         attempts += 1
@@ -502,6 +509,25 @@ final class Calls: @unchecked Sendable {
         Insert.reset(caretBox); Insert.axAccepts = true
         let sentBack = await Insert.takeBack(" Voice words", expectedBox: caretBox, from: Insert.element, while: { false })
         check("take-back adapter never deletes after send", !sentBack && Insert.box == caretBox)
+        // An app that accepts the Accessibility insert and does nothing is remembered after two misses in a row:
+        // live pieces then skip the attempt and are typed directly. The whole-dictation path still tries it.
+        Insert.axMemory = InsertMemory()
+        var axSeen: [Int] = []
+        for _ in 0..<4 {
+            Insert.reset("Box"); Insert.axAccepts = true; Insert.axNoEffect = true; Insert.axCalls = 0
+            let piece = await Insert.text(" piece", joining: 1, confirmed: true, while: { true })
+            check("live piece still lands when accessibility does nothing", piece && Insert.box.hasSuffix("piece") && Insert.box.hasPrefix("Box"))
+            axSeen.append(Insert.axCalls)
+        }
+        check("accessibility attempt skipped after two misses in a row", axSeen == [1, 1, 0, 0])
+        Insert.reset("Box"); Insert.axAccepts = true; Insert.axNoEffect = true; Insert.axCalls = 0
+        let wholeText = await Insert.text(" whole", while: { true })
+        check("whole dictation path still tries accessibility", wholeText && Insert.axCalls == 1 && Insert.box.hasSuffix("whole"))
+        Insert.axMemory = InsertMemory()
+        Insert.reset("Box"); Insert.axAccepts = true; Insert.axCalls = 0
+        let working = await Insert.text(" piece", joining: 1, confirmed: true, while: { true })
+        check("an app where accessibility works is never skipped", working && Insert.axCalls == 1 && !Insert.axMemory.skips(Insert.axApp(1)))
+        Insert.axMemory = InsertMemory()
         // Execute the production finishing adapter against an inert editor.
         Insert.reset("old")
         Insert.dropTyping = true
@@ -1206,7 +1232,7 @@ with tempfile.TemporaryDirectory(prefix="first-words-", dir=ROOT / ".build") as 
     source.write_text(bar_checks + "\n" + finish_checks + "\n" + pause_checks + "\n" + stubs.replace("__PRODUCTION_GATE__", gate) + session + "\n}\n" + recording + insert_stubs + replacement_adapter + "\n" + text_adapter + "\n" + finishing_adapter + "\n" + position_adapter + "\n" + takeback_adapter + "\n" + click_continue + "\n}\n" + click_adapter + "\n" + tests)
     core = ROOT / "Sources/VoiceCore"
     files = [core / name for name in ["BrowserMedia.swift", "BrowserPauseOperation.swift", "BrowserResumeOperation.swift", "MediaPauseOwnership.swift", "MediaHold.swift", "MediaEcho.swift", "MediaAudio.swift", "MediaOpening.swift", "MediaGate.swift", "Chunker.swift", "DraftChunker.swift",
-                                    "Silence.swift", "FocusGate.swift", "CheckedTail.swift", "BoxText.swift", "FinishInBox.swift", "TalkingWords.swift", "EnterSend.swift", "LongTalk.swift", "BoxMatch.swift", "DictationEnding.swift", "TalkKeyState.swift", "DictationDelivery.swift", "TalkTimingTrace.swift", "TalkCapture.swift", "StartTargetWait.swift", "FastFinish.swift", "EditWait.swift", "SerialEdits.swift", "EditBoundary.swift", "DraftSafety.swift", "OwnWindowClicks.swift", "DraftInput.swift", "Names.swift", "Fillers.swift"]]
+                                    "Silence.swift", "FocusGate.swift", "CheckedTail.swift", "BoxText.swift", "FinishInBox.swift", "TalkingWords.swift", "EnterSend.swift", "LongTalk.swift", "BoxMatch.swift", "DictationEnding.swift", "TalkKeyState.swift", "DictationDelivery.swift", "TalkTimingTrace.swift", "TalkCapture.swift", "StartTargetWait.swift", "FastFinish.swift", "EditWait.swift", "SerialEdits.swift", "EditBoundary.swift", "DraftSafety.swift", "OwnWindowClicks.swift", "DraftInput.swift", "Names.swift", "Fillers.swift", "InsertMemory.swift"]]
     subprocess.run(["xcrun", "swiftc", "-O", "-parse-as-library", "-swift-version", "5", str(source),
                     *map(str, files), "-o", str(tmp / "check")], cwd=ROOT, check=True)
     subprocess.run([str(tmp / "check")], cwd=ROOT, check=True, env=os.environ)

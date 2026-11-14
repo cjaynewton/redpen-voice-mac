@@ -11,6 +11,7 @@ func check(_ name: String, _ ok: Bool, _ detail: String = "") {
 
 browserPauseChecks(check)
 draftChunkerChecks(check)
+insertMemoryChecks(check)
 
 // Fn start repair: one bounded capture through both taps; no ASR/media permission for a disposable gesture.
 do {

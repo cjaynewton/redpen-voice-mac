@@ -50,11 +50,17 @@ enum Insert {
                   oldRange.length <= oldValue.utf16.count - oldRange.location else { return }
             lastEdit = (el, oldValue, oldRange, inserted)
         }
-        if let before = oldRange, AXUIElementSetAttributeValue(el, kAXSelectedTextAttribute as CFString, padded as CFString) == .success {
+        // An app where the Accessibility insert says yes and does nothing (T3 Code): after two misses in a row a
+        // live piece skips the attempt, its two reads and its wait, and is typed directly (Nov 13 2026). A whole
+        // dictation still tries it: that path has no wait to save.
+        let app = focusedElement().map { axApp($0.1) }
+        let typeDirectly = confirmed && app.map { axMemory.skips($0) } == true
+        if !typeDirectly, let before = oldRange, AXUIElementSetAttributeValue(el, kAXSelectedTextAttribute as CFString, padded as CFString) == .success {
             if confirmed, let expected {
                 unconfirmed = true  // an accepted AX edit may already be in the box when Escape interrupts the read
                 endPosting()
                 if await confirm(expected, in: el, while: still, attempts: 2) {
+                    if let app { axMemory.landed(app) }
                     unconfirmed = false; recordEdit(padded); remember(padded); return true
                 }
                 // An accepted edit can arrive late. Only fall back when neither text nor cursor changed.
@@ -64,6 +70,7 @@ enum Insert {
             }
             // Moved by the length of the text: it landed. Otherwise the app said yes and did nothing.
             if !confirmed, let after = selectedRange(el), after.location == before.location + (padded as NSString).length || after.location > before.location {
+                if let app { axMemory.landed(app) }
                 recordEdit(padded); remember(padded); return true
             }
             guard await still() else { return false }
@@ -72,6 +79,9 @@ enum Insert {
                 posting = true
             }
             Log.note("insert: accessibility accepted but cursor did not move, typing")
+            if let app, axMemory.missed(app) {
+                Log.note("insert: accessibility insert does nothing in this app (pid \(app.pid)), live pieces are typed directly from now on")
+            }
         }
         // Focus can move between the check and here: never type into a page or a video.
         guard Self.canTypeAtFocus else { Log.note("insert: focus left the text box, not typed"); return false }
@@ -103,6 +113,13 @@ enum Insert {
             Log.note("insert: typing not seen in the box after a second")
         }
         return ok
+    }
+
+    /// Apps where the Accessibility insert has done nothing twice in a row, for this run of Voice.
+    static var axMemory = InsertMemory()
+    /// The app a box belongs to: its process number and launch time, so a reused number starts clean.
+    static func axApp(_ pid: pid_t) -> InsertMemory.App {
+        .init(pid: Int(pid), launched: NSRunningApplication(processIdentifier: pid)?.launchDate?.timeIntervalSince1970 ?? 0)
     }
 
     /// A real click may finish the current chunk stream only at its proven insertion point.
