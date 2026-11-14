@@ -73,7 +73,7 @@ wiring_checks = [
     ("slow AX calls get policy timeout", "min(StartTargetWait.callTimeout, left)" in target_source),
     ("target cap runs synchronous fallback only after policy decision", "case .fallback:" in resolve_target and "accepted = fallbackStartTarget(capture)" in resolve_target and "StartTargetWait.cap" in prepare),
     ("fallback retains old focus capture with identity rechecks", all(term in fallback_target for term in ["Insert.focus().kind == .text", "Insert.focusedElement()", "Self.boxPrint(element, withText: true)", "CFEqual(current, element)", "CFEqual(currentWindow, window)"]) and fallback_target.count("startTargetUnchanged(capture)") == 2),
-    ("unverified target keeps complete ending for explicit paste", "let targetUncertain = startTargetUncertain" in app_source and "var kept = targetUncertain" in app_source and "unverified start target, kept for Paste last" in app_source),
+    ("unverified target keeps complete ending for explicit paste", "let targetUncertain = startTargetUncertain" in app_source and "var kept = targetUncertain" in app_source and "DictationEnding.holdsUncheckedStart(" in app_source and "unchecked start box and a send was seen, kept for Paste last" in app_source),
     ("unverified target blocks legacy live typing", "guard !startTargetUncertain else" in block(app_source, "private func piece(")),
     ("slow and capped counts and elapsed time logged", all(term in resolve_target for term in ["elapsed_ms=", "slow_count=", "capped_count=", "accepted="])),
     ("first draft trace carries no text length", "StartTrace.note(.firstDraftReady, gesture: traceID)" in session and "firstDraftReady, gesture: traceID, count:" not in session),
@@ -154,7 +154,7 @@ wiring_checks += [
     ("discard proves uncertain draft before removal", "reconcileLateDraft(d)" in block(app_source, "private func removeDrafts(") and "guard d.lateDraft == nil else { return false }" in app_source),
     ("cleanup network outside edit queue", end_source.index("await Cleanup.run(raw)") < end_source.index("await self.edits.enqueue")),
     ("tap classification sleeps outside edit queue", "Task.sleep" not in queued_finish),
-    ("long paste quiet wait outside edit queue", "Task.sleep" not in block(app_source, "private func finishLongDrafts(")),
+    ("long paste quiet wait outside edit queue", block(app_source, "private func finishLongDrafts(").count("Task.sleep") == 1 and "Insert.pasteBusy, mine(), Date() < pasteDeadline" in block(app_source, "private func finishLongDrafts(")),
     ("queued finish revalidates tap before editing", "guard self.deliveries.waitForTap(after: gen) <= 0" in queued_finish),
     ("Paste last serialized and revalidates generation", "edits.enqueue" in block(app_source, "private func pasteLastNow(") and "self.delivery == gen" in block(app_source, "private func pasteLastNow(")),
     ("waiting timer coalesces pending edit jobs", "!self.waitingCheckPending" in block(app_source, "private func holdForClick(")),
@@ -174,7 +174,7 @@ wiring_checks += [
     ("own temporary deletion is not mistaken for a send", "self.sameStartContext(start)" in block(app_source, "private func swapEnding(") and "!self.wasSent(start)" not in block(app_source, "private func swapEnding(") and "focusedStart(start, duringOwnEdit: true)" in block(app_source, "private func finishLongDrafts(")),
     ("take-back proves unique span and selected range", all(x in block(insert_source, "static func takeBack(_") for x in ["FinishInBox.span", "exactRange: owned", "selectedRange(el) == edit.range", "FinishInBox.exact(before, $0)"])),
     ("confirmation remembers any partial arrival", "observedInsertion = true" in block(insert_source, "private static func confirm(") and "!observedInsertion" in block(insert_source, "static func finishingText(")),
-    ("finishing insertion cannot erase a user selection", "guard range?.length == 0" in block(insert_source, "static func finishingText(")),
+    ("finishing insertion cannot erase a user selection", "if found.length > 0" in block(insert_source, "static func finishingText(") and "positionAfter(found, expected: before" in block(insert_source, "static func finishingText(")),
     ("paste notice has no timer", "hud.show(text, level: false)" in block(app_source, "private func keepForPaste(") and "asyncAfter" not in block(app_source, "private func keepForPaste(")),
     ("paste notice dismisses on input and new recording", "dismissPasteNotice()" in begin and "dismissPasteNotice()" in block(app_source, "private func escapePressed(") and block(app_source, "private func installWatches()").count("dismissPasteNotice()") == 3),
     ("Fn companion never marks starting box edited", "DraftInput.isTalkKey(Int(e.keyCode)" in block(app_source, "private func installWatches()") and "code == 179" in block(hold_source, "private func key(")),
@@ -359,12 +359,14 @@ enum Insert {
     static var cursorAccepts = true, cursorNoEffect = false, focusIsOriginal = true
     static var onCursorSet: (() -> Void)?
     enum PasteShape { case whole, append }
-    struct PasteResult { let landed: Bool }
+    struct PasteResult { let landed: Bool; var posted = false }
+    static var finishLeftNothing = false
+    static var pendingEdit: (element: AXUIElement, before: String, range: NSRange, inserted: String, expected: String)?
     static func pasteContext(_ e: AXUIElement) -> [String] { ["same chat"] }
     static func paste(_ words: String, shape: PasteShape, while still: () -> Bool) async -> PasteResult {
         guard still() else { return .init(landed: false) }
         pasteCalls += 1; box += words
-        return .init(landed: true)
+        return .init(landed: true, posted: true)
     }
     static var dictation: Int?
     static var draftAttempt: (element: AXUIElement, draft: DictationEnding.LateDraft)?
@@ -498,7 +500,8 @@ final class Calls: @unchecked Sendable {
         Insert.reset("old")
         Insert.cursorOverride = NSRange(location: 0, length: 3)
         let selection = await Insert.finishingText(" complete", while: { true })
-        check("finishing adapter preserves user's selection", !selection && Insert.typed.isEmpty && Insert.pasteCalls == 0 && Insert.box == "old")
+        // D-1603: selected words are never replaced. The cursor moves past the selection and the words go in after it.
+        check("finishing adapter preserves user's selection", selection && Insert.pasteCalls == 0 && Insert.box == "old complete")
         Insert.reset("old")
         Insert.partialTyping = true
         let partial = await Insert.finishingText(" complete", while: { true })
@@ -628,12 +631,17 @@ final class Calls: @unchecked Sendable {
         check("actual adapter stops partial edit without retry", !(await Insert.replaceDraft("Keep wrong words", with: "Keep checked words", expectedBox: Insert.box, in: Insert.element, while: { Insert.deleted < 1 })) && Insert.deleted == 1 && Insert.attempts == 1 && Insert.typed.isEmpty)
         Insert.reset("Keep words")
         Insert.canConfirm = false
-        check("actual adapter needs confirmation and never retries", !(await Insert.replaceDraft("Keep words", with: "Keep words.", expectedBox: Insert.box, in: Insert.element, while: { true })) && Insert.attempts == 1 && Insert.typed == ".")
+        // Since 1a82909 one exact read of the same focused box counts as landed after a stopped wait. Still one attempt.
+        check("actual adapter accepts an exact box read and never retries", (await Insert.replaceDraft("Keep words", with: "Keep words.", expectedBox: Insert.box, in: Insert.element, while: { true })) && Insert.attempts == 1 && Insert.typed == ".")
+        Insert.reset("Keep words")
+        Insert.canConfirm = false; Insert.onConfirm = { Insert.box = "" }
+        check("actual adapter needs the expected text and never retries", !(await Insert.replaceDraft("Keep words", with: "Keep words.", expectedBox: "Keep words", in: Insert.element, while: { true })) && Insert.attempts == 1 && Insert.typed == ".")
 
         for change in ["sent", "moved", "Escape"] {
             Insert.reset("Keep words")
             var ownsBox = true
-            Insert.onConfirm = { ownsBox = false }
+            // The box no longer reads as expected once the wait stops (a send empties it, say), so nothing is confirmed.
+            Insert.onConfirm = { ownsBox = false; Insert.box = "" }
             let edited = await Insert.replaceDraft("Keep words", with: "Keep words.", expectedBox: "Keep words", in: Insert.element, while: { ownsBox })
             check("actual asynchronous adapter refuses confirmation after \(change)", !edited && Insert.attempts == 1 && Insert.typed == ".")
         }
