@@ -185,6 +185,64 @@ check("names.keep", names.apply("priya said kmf") == "Priya said KMF")
 check("names.punct", names.apply("Is redpen's build done?") == "Is Redpen's build done?")
 check("names.start", names.apply("redpen. redpen!") == "Redpen. Redpen!")
 
+// Names heard wrong, by sound (Nov 13 2026). Names of two or more words only, with the guards Redpen Grammar
+// tested against the same list. Voice changes words without asking, so a one-word name stays exact.
+let heardWrong = Names(text: """
+Redpen
+Redpen Voice
+Redpen Grammar
+StoryBrand
+story brand = StoryBrand
+Claude
+Monica
+Royal Winter Fair
+""")
+func soundCheck(_ name: String, _ said: String, _ want: String) {
+    let got = heardWrong.apply(said)
+    check("names.sound." + name, got == want, got)
+}
+soundCheck("redFanVoice", "So now all of a sudden you take Red Fan voice.", "So now all of a sudden you take Redpen Voice.")
+soundCheck("redPlanGrammar", "Yes, so it is red plan grammar.", "Yes, so it is Redpen Grammar.")
+soundCheck("redBenVoice", "Open Red Ben voice now", "Open Redpen Voice now")
+soundCheck("sameLettersSpacedApart", "the red pen voice app", "the Redpen Voice app")
+soundCheck("threeWordName", "we ran the royal winter fare plan", "we ran the Royal Winter Fair plan")
+soundCheck("twice", "Red Fan voice and red plan grammar", "Redpen Voice and Redpen Grammar")
+for (i, said) in ["a red pan on the stove", "the red fan in the voice booth", "read the plan for grammar class"].enumerated() {
+    soundCheck("realPhraseLeftAlone.\(i)", said, said)
+}
+// A one-word name is matched only as written, never by sound.
+for (i, said) in ["Red Ben is here", "Money can buy a lot", "It is as true today", "My neck hurts", "He read Penn's book on the red planet"].enumerated() {
+    soundCheck("oneWordNameStaysExact.\(i)", said, said)
+}
+// "store brand" is everyday speech for him and must never become StoryBrand (found over 36,500 of his words).
+for (i, said) in ["store brand", "Store brands", "the store brand", "Store brand sales rose. The store brands won."].enumerated() {
+    soundCheck("storeBrandLeftAlone.\(i)", said, said)
+}
+soundCheck("exactPairStillWorks", "We read the story brand book last year.", "We read the StoryBrand book last year.")
+// Never across punctuation or more than one space, never a word with an apostrophe, never a plural.
+for (i, said) in ["Red Fan, voice", "the red. Fan voice", "Red  Fan voice", "Red Fan's voice", "two Redpen voices"].enumerated() {
+    soundCheck("guards.\(i)", said, said)
+}
+soundCheck("nameSaidRightWithNeighbours", "use Redpen Voice today and Redpen Grammar too", "use Redpen Voice today and Redpen Grammar too")
+soundCheck("capitalsFromTheBareLine", "open redpen voice", "open Redpen Voice")
+// One word of the name said right beside a different real word is not a mishearing.
+let twoWords = Names(text: "Claude Code")
+check("names.sound.otherRealWordLeftAlone", twoWords.apply("ask Claude copy the file") == "ask Claude copy the file" && twoWords.apply("the claud code tool") == "the Claude Code tool", twoWords.apply("the claud code tool"))
+// Exact entries win first: what a pair wrote is never rewritten by sound.
+let pairFirst = Names(text: "red fan = Red Fan Club\nRedpen Voice")
+check("names.sound.exactEntriesWinFirst", pairFirst.apply("join red fan voice") == "join Red Fan Club voice", pairFirst.apply("join red fan voice"))
+// A list with no name of two or more words changes nothing by sound.
+let oneWordOnly = Names(text: "Redpen\nStoryBrand\nMonica\nkmf = KMF")
+check("names.sound.noMultiWordNamesChangesNothing", oneWordOnly.apply("Red Fan voice and red plan grammar, money can, store brand") == "Red Fan voice and red plan grammar, money can, store brand")
+check("names.sound.shortOrCapitalNamesAreOut", Names(text: "MMK Retail\nGo Pro\nChat GPT").apply("mmk retale and go bro and chat gbt") == "mmk retale and go bro and chat gbt")
+// A bare line all in lower case protects a phrase and never changes the capitals of what was said.
+let protected = Names(text: "StoryBrand\nStory Brand Guide\nstore brand guide\nstore brand")
+check("names.protect.capitalsKept", protected.apply("Store brand is cheaper. The Store Brand won.") == "Store brand is cheaper. The Store Brand won.")
+check("names.protect.neverTakenForAName", protected.apply("Read the store brand guide") == "Read the store brand guide" && protected.apply("two Store brand guides") == "two Store brand guides")
+check("names.protect.soundStillWorksBesideIt", protected.apply("Read the story brant guide") == "Read the Story Brand Guide", protected.apply("Read the story brant guide"))
+check("names.protect.capitalBareLineStillEnforced", Names(text: "Priya\nstore brand").apply("priya likes Store brand") == "Priya likes Store brand")
+check("names.protect.stillListed", protected.spellings.contains("store brand") && protected.entries.count == 4)
+
 // History: append, last, trim, nothing lost when inserted is false.
 let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("rv-test-\(UUID().uuidString)/history.jsonl")
 let h = History(url: tmp)
