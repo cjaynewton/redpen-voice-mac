@@ -436,7 +436,8 @@ final class Transcriber {
 
         // MARK: Fast draft, Whisper checks (D-764)
         /// A short stretch Parakeet wrote at a small pause, by its place in the audio.
-        struct Draft { let start: Int; let end: Int; let text: String }
+        /// `atPause` is false when the cut was forced inside running speech, which may be inside a word.
+        struct Draft { let start: Int; let end: Int; let text: String; var atPause = true }
         /// The draft engine (Parakeet). When set, drafts are written at every short pause and Whisper rereads whole
         /// runs of drafts (4 s or more, cut where a draft ended), so each check covers drafts exactly.
         var drafter: AsrManager?
@@ -537,45 +538,50 @@ final class Transcriber {
             return p.at.addingTimeInterval(-Double(p.count - i) / Double(Chunker.rate))
         }
 
-        /// Starts the draft loop: every quarter second, at a short pause, Parakeet writes what was said since the last
-        /// draft. About a fifth of a second a stretch on an M1 Max.
+        /// Starts the draft loop: every tenth of a second Parakeet may write what was said since the last draft.
+        /// DraftChunker decides where (Nov 13 2026): counted from the first sound of speech, at a short pause,
+        /// or at the quietest point once enough speech exists. A stretch with no speech is stepped over and
+        /// never sent to the engine. About a fifth of a second a stretch on an M1 Max.
         func streamDrafts() {
             guard let drafter else { return }
-            let chunker = Chunker(minSeconds: 0.8, maxSeconds: 6, pauseSeconds: 0.2)
+            let chunker = DraftChunker()
             draftLoop = Task.detached(priority: .userInitiated) { [self] in
                 var from = 0
+                var wroteWords = false
                 while true {
-                    let nap = Task { try await Task.sleep(for: .milliseconds(200)) }
+                    let nap = Task { try await Task.sleep(for: .milliseconds(100)) }
                     if !lock.withLock({ if stopped { return false }; draftNap = nap; return true }) { nap.cancel() }
                     _ = try? await nap.value
                     let (audio, done, ready) = lock.withLock { draftNap = nil; return (samples, stopped, mediaReadyLocked()) }
                     if done { break }
                     if !ready { continue }
-                    guard let proposed = chunker.cut(audio, from: from),
-                          let c = openingCut(proposed, from: from, available: audio.count) else { continue }
-                    let text = await echoStripped((try? await Transcriber.parakeetText(drafter, Array(audio[from..<c]))) ?? "", from: from)
+                    guard let proposed = chunker.cut(audio, from: from, first: !wroteWords),
+                          let c = openingCut(proposed.end, from: from, available: audio.count) else { continue }
+                    // The media opening can move the first cut later (MediaOpening.cut). Judge the piece that
+                    // will really be sent: a moved cut may now hold speech and is no longer known to be a pause.
+                    let moved = c != proposed.end
+                    let speech = moved ? DraftChunker.hasSpeech(audio, from: from, to: c) : proposed.speech
+                    let text = speech ? await echoStripped((try? await Transcriber.parakeetText(drafter, Array(audio[from..<c]))) ?? "", from: from) : ""
                     // The draft and its callback go out together, so a Whisper check can never reach the app first.
                     lock.withLock {
                         if !tracedFirstDraft, !text.isEmpty {
                             tracedFirstDraft = true
                             StartTrace.note(.firstDraftReady, gesture: traceID)
                         }
-                        drafts.append(Draft(start: from, end: c, text: text))
+                        drafts.append(Draft(start: from, end: c, text: text, atPause: proposed.atPause && !moved))
                         if !cancelled { onDraft?(drafts.count - 1, text) }
                     }
+                    if !text.isEmpty { wroteWords = true }
                     from = c
                 }
             }
         }
 
-        /// Where Whisper cuts in draft mode: the first draft end at least 4 s after the last check (never past 25 s).
+        /// Where Whisper cuts in draft mode: the first draft that ended in a real pause at least 4 s after the last
+        /// check (never past 25 s). A draft cut inside running speech never ends a check, so the final text, which is
+        /// these checks plus one hearing of everything after the last, is never joined inside a word.
         private func draftCheckCut(_ ds: [Draft], from: Int) -> (end: Int, upTo: Int)? {
-            guard checkedUpTo < ds.count else { return nil }
-            for i in checkedUpTo..<ds.count where ds[i].end - from >= 4 * Chunker.rate {
-                if ds[i].end - from > 25 * Chunker.rate, i > checkedUpTo { return (ds[i - 1].end, i) }
-                return (ds[i].end, i + 1)
-            }
-            return nil
+            DraftChunker.checkCut(ds.map { ($0.end, $0.atPause) }, checkedUpTo: checkedUpTo, from: from)
         }
 
         /// Starts writing pieces as they finish. Whisper only.
@@ -1178,19 +1184,20 @@ final class Transcriber {
     func draftTest(_ url: URL) async throws -> [String: Any] {
         guard let whisper, let parakeet else { throw NSError(domain: "RedpenVoice", code: 4, userInfo: [NSLocalizedDescriptionKey: "both engines needed"]) }
         let audio = try AudioProcessor.loadAudioAsFloatArray(fromPath: url.path)
-        let dch = Chunker(minSeconds: 0.8, maxSeconds: 6, pauseSeconds: 0.2)
-        var drafts: [(end: Int, text: String)] = [], dfrom = 0, wcut = 0, checked = 0
+        let dch = DraftChunker()
+        var drafts: [(end: Int, text: String)] = [], pauses: [Bool] = [], dfrom = 0, wcut = 0, checked = 0
         var final: [String] = [], checks = 0, changed = 0, words = 0, draftSecs: [Double] = []
         var heard = 0
         while heard < audio.count {
             heard = min(audio.count, heard + 3200)
             let visible = Array(audio[0..<heard])
-            if let c = dch.cut(visible, from: dfrom) {
+            if let c = dch.cut(visible, from: dfrom, first: !drafts.contains { !$0.text.isEmpty }) {
                 let t0 = Date()
-                drafts.append((c, try await Self.parakeetText(parakeet, Array(audio[dfrom..<c]))))
-                draftSecs.append(Date().timeIntervalSince(t0)); dfrom = c
+                drafts.append((c.end, c.speech ? try await Self.parakeetText(parakeet, Array(audio[dfrom..<c.end])) : ""))
+                pauses.append(c.atPause)
+                draftSecs.append(Date().timeIntervalSince(t0)); dfrom = c.end
             }
-            if let i = (checked..<drafts.count).first(where: { drafts[$0].end - wcut >= 4 * Chunker.rate }) {
+            if let i = DraftChunker.checkCut(zip(drafts, pauses).map { ($0.0.end, $0.1) }, checkedUpTo: checked, from: wcut).map({ $0.upTo - 1 }) {
                 let w = try await Self.whisperText(whisper, Array(audio[wcut..<drafts[i].end]))
                 let d = drafts[checked...i].map(\.text).joined(separator: " ")
                 checks += 1; let n = Corrections.wordsChanged(d, w); if n > 0 { changed += 1; words += n }

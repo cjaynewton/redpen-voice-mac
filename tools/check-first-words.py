@@ -111,6 +111,10 @@ wiring_checks += [
 ]
 chrome_media = block(app_source, "private func startChromeMedia(")
 wiring_checks += [
+    ("drafts cut from the first sound and wake every tenth of a second", "let chunker = DraftChunker()" in block(session, "func streamDrafts()") and "milliseconds(100)" in block(session, "func streamDrafts()") and "first: !wroteWords" in block(session, "func streamDrafts()")),
+    ("a stretch with no speech is never sent to the engine", 'let text = speech ? await echoStripped(' in block(session, "func streamDrafts()")),
+    ("Whisper checks end only at drafts cut in a pause", "DraftChunker.checkCut(ds.map { ($0.end, $0.atPause) }" in block(session, "private func draftCheckCut(") and "atPause: proposed.atPause && !moved" in block(session, "func streamDrafts()")),
+    ("Whisper stream keeps its own chunker", "s.stream(Chunker(pauseSeconds: talk.pauseSeconds))" in app_source),
     ("Chrome pause outside sound callback", chrome_media.index("whenMediaConfirmed(") > chrome_media.index("SoundTap.loudness(") and "Media.pauseBrowser" not in block(chrome_media, "SoundTap.loudness(")),
     ("Chrome pause independent of target discovery", "waitForTarget: false" in chrome_media and "!waitForTarget || pendingStart == nil" in confirmed),
     ("Chrome result and sound join before cleanup only when sound was heard", "guard heard, !settled" in chrome_media and "guard answered || !waits" in chrome_media and "MediaPauseBudget.openingWaitsForChrome(heardSound: MediaGate.isPlaying(peak: peak))" in chrome_media),
@@ -1201,7 +1205,7 @@ with tempfile.TemporaryDirectory(prefix="first-words-", dir=ROOT / ".build") as 
     click_continue = block(insert_source, "static func canCompleteDraftAfterClick(")
     source.write_text(bar_checks + "\n" + finish_checks + "\n" + pause_checks + "\n" + stubs.replace("__PRODUCTION_GATE__", gate) + session + "\n}\n" + recording + insert_stubs + replacement_adapter + "\n" + text_adapter + "\n" + finishing_adapter + "\n" + position_adapter + "\n" + takeback_adapter + "\n" + click_continue + "\n}\n" + click_adapter + "\n" + tests)
     core = ROOT / "Sources/VoiceCore"
-    files = [core / name for name in ["BrowserMedia.swift", "BrowserPauseOperation.swift", "BrowserResumeOperation.swift", "MediaPauseOwnership.swift", "MediaHold.swift", "MediaEcho.swift", "MediaAudio.swift", "MediaOpening.swift", "MediaGate.swift", "Chunker.swift",
+    files = [core / name for name in ["BrowserMedia.swift", "BrowserPauseOperation.swift", "BrowserResumeOperation.swift", "MediaPauseOwnership.swift", "MediaHold.swift", "MediaEcho.swift", "MediaAudio.swift", "MediaOpening.swift", "MediaGate.swift", "Chunker.swift", "DraftChunker.swift",
                                     "Silence.swift", "FocusGate.swift", "CheckedTail.swift", "BoxText.swift", "FinishInBox.swift", "TalkingWords.swift", "EnterSend.swift", "LongTalk.swift", "BoxMatch.swift", "DictationEnding.swift", "TalkKeyState.swift", "DictationDelivery.swift", "TalkTimingTrace.swift", "TalkCapture.swift", "StartTargetWait.swift", "FastFinish.swift", "EditWait.swift", "SerialEdits.swift", "EditBoundary.swift", "DraftSafety.swift", "OwnWindowClicks.swift", "DraftInput.swift", "Names.swift", "Fillers.swift"]]
     subprocess.run(["xcrun", "swiftc", "-O", "-parse-as-library", "-swift-version", "5", str(source),
                     *map(str, files), "-o", str(tmp / "check")], cwd=ROOT, check=True)
