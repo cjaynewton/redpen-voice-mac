@@ -463,11 +463,13 @@ struct SettingsView: View {
                     .labelsHidden().toggleStyle(.switch).tint(Ink.red).disabled(!model.config.pauseMedia)
             }
             Divider().overlay(Ink.line)
-            row("Level bar", "The bar near the bottom of the screen while you talk.") {
-                Picker("", selection: Binding(get: { model.config.levelLook },
-                                              set: { v in model.config.showLevel = v != "off"; if v != "off" { model.config.levelStyle = v } })) {
+            row("Level bar") {
+                // The bar always shows now, so there is no Off. A config saved with it off still loads, and is
+                // shown and drawn as the red pen line until another look is picked.
+                Picker("", selection: Binding(get: { model.config.levelLook == "off" ? "pen" : model.config.levelLook },
+                                              set: { v in model.config.showLevel = true; model.config.levelStyle = v })) {
                     Text("Red pen line").tag("pen"); Text("Bars from the middle").tag("bars"); Text("Rolling tape").tag("tape")
-                    Text("Breathing dot").tag("dot"); Text("Classic bars").tag("classic"); Divider(); Text("Off").tag("off")
+                    Text("Breathing dot").tag("dot"); Text("Classic bars").tag("classic")
                 }.labelsHidden().frame(width: 220, alignment: .trailing)
             }
             Divider().overlay(Ink.line)

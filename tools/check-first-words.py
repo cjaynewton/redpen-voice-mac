@@ -111,7 +111,10 @@ wiring_checks += [
     ("browser reference and audio deadlines unchanged", "private var mediaOpening = MediaOpening()" in session and "MediaOpening.timeout" not in media_adapter and "SoundTap" not in media_adapter),
 ]
 chrome_media = block(app_source, "private func startChromeMedia(")
+settings_source = (ROOT / "Sources/RedpenVoice/SettingsWindow.swift").read_text()
 wiring_checks += [
+    ("level bar setting has no Off and no stale help line", 'Text("Classic bars").tag("classic")\n' in settings_source and settings_source.count('tag("off")') == 1 and "near the bottom of the screen" not in settings_source and 'row("Level bar") {' in settings_source),
+    ("a config saved with the level bar off still loads as the pen line", 'model.config.levelLook == "off" ? "pen" : model.config.levelLook' in settings_source and 'var levelLook: String { showLevel ? (levelStyle ?? "pen") : "off" }' in (ROOT / "Sources/RedpenVoice/Config.swift").read_text() and app_source.count('config.levelLook == "off"') == 3),
     ("draft blocked line names the kind and never the key", all(term in block(app_source, "private func draftBlocked(") for term in ["category=click", "category=\\((input.kind ?? .otherKey).rawValue)"]) and all(term not in block(app_source, "private func draftBlocked(") for term in ["keyAt", "nearestTalkAt", "keyCode"])),
     ("accessibility skip is for live pieces only and logged once", "let typeDirectly = confirmed && app.map { axMemory.skips($0) } == true" in insert_source_early and "if let app, axMemory.missed(app) {" in insert_source_early),
     ("drafts cut from the first sound and wake every tenth of a second", "let chunker = DraftChunker()" in block(session, "func streamDrafts()") and "milliseconds(100)" in block(session, "func streamDrafts()") and "first: !wroteWords" in block(session, "func streamDrafts()")),
