@@ -29,7 +29,9 @@ public struct Names: Equatable {
         listed = Set(entries.flatMap { [$0.heard.lowercased(), $0.meant.lowercased()] })
         for spelling in spellings {
             let words = spelling.split(separator: " ").count
-            guard words >= 2, let letters = Self.soundable(spelling) else { continue }
+            // A name has a capital. A listed phrase all in lower case ("generally speaking") is ordinary words,
+            // and matching it by sound would rewrite ordinary speech ("in general speaking engagements").
+            guard words >= 2, spelling != spelling.lowercased(), let letters = Self.soundable(spelling) else { continue }
             let key = Self.soundKey(letters)
             if key.count >= 3 { soundNames.append(SoundName(spelling: spelling, words: words, letters: letters, key: key)) }
         }
@@ -82,7 +84,8 @@ public struct Names: Equatable {
     }
 
     /// Whole plain words only. A word with an apostrophe ("Penn's", "don't") is never part of a name heard wrong.
-    private static let word = try! NSRegularExpression(pattern: "(?<![A-Za-z'\u{2019}])[A-Za-z]{2,}(?![A-Za-z'\u{2019}])")
+    /// Nor is a word with a digit against it ("voice2", "v2beta"): that is an identifier, not a spoken name.
+    private static let word = try! NSRegularExpression(pattern: "(?<![\\p{L}\\p{N}'\u{2019}])[A-Za-z]{2,}(?![\\p{L}\\p{N}'\u{2019}])")
 
     /// Runs of spoken words that sound like a listed name of two or more words, in reading order, none
     /// overlapping. The run has the name's word count, give or take one, and never fewer than two words.

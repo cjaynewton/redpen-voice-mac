@@ -71,7 +71,7 @@ final class DraftInputMonitor: @unchecked Sendable {
             guard modifierCodes.contains(code) else { return }
         } else if type != .keyDown { return }
         // Special keys only (codes above 127: never letters, digits or F-keys), to learn what the Fn key posts.
-        if !talk, code > 127 { DispatchQueue.main.async { Log.note("draft input: special key code \(code)") } }
+        if !talk, code > 127 { DispatchQueue.main.async { Log.note("draft input: special key") } }
         let at = Double(event.timestamp) / 1_000_000_000
         if !talk, EnterSend.keyCodes.contains(code), skip(at) { return }
         // The kind only, for the log: a modifier pressed alone, or another key. Never which key.

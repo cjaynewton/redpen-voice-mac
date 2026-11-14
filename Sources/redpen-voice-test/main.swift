@@ -241,6 +241,14 @@ check("names.protect.capitalsKept", protected.apply("Store brand is cheaper. The
 check("names.protect.neverTakenForAName", protected.apply("Read the store brand guide") == "Read the store brand guide" && protected.apply("two Store brand guides") == "two Store brand guides")
 check("names.protect.soundStillWorksBesideIt", protected.apply("Read the story brant guide") == "Read the Story Brand Guide", protected.apply("Read the story brant guide"))
 check("names.protect.capitalBareLineStillEnforced", Names(text: "Priya\nstore brand").apply("priya likes Store brand") == "Priya likes Store brand")
+// Lead review, Nov 13 2026. Only a name (a listed spelling with a capital) is matched by sound. A listed phrase
+// all in lower case is ordinary words, so ordinary speech near it is left alone. A word with a digit against
+// it is an identifier, never part of a spoken name.
+let phraseList = Names(text: "generally speaking\ncourt heart = cohort\nfour deployed = forward deployed\nblocking chart\nWispr Flow\nRedpen Voice")
+check("names.sound.lowercasePhraseIsNotAName", phraseList.apply("in general speaking engagements with a blocking cart") == "in general speaking engagements with a blocking cart")
+check("names.sound.exactPhraseEntryStillApplies", phraseList.apply("four deployed and forward deploy") == "forward deployed and forward deploy")
+check("names.sound.capitalNameStillMatched", phraseList.apply("wisp or flow and Red Fan voice") == "Wispr Flow and Redpen Voice")
+check("names.sound.digitBesideAWordIsLeftAlone", phraseList.apply("red fan voice2 and v2red fan voice") == "red fan voice2 and v2red fan voice")
 check("names.protect.stillListed", protected.spellings.contains("store brand") && protected.entries.count == 4)
 
 // History: append, last, trim, nothing lost when inserted is false.
