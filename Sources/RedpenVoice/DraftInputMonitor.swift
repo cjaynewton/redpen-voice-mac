@@ -25,10 +25,10 @@ final class DraftInputMonitor: @unchecked Sendable {
         return input
     }
 
-    func record(talkKey: Bool, at time: Double) {
+    func record(talkKey: Bool, modifier: Bool = false, at time: Double) {
         lock.lock(); defer { lock.unlock() }
         inputs.removeAll { $0.value == nil }
-        for input in inputs { input.value?.record(talkKey: talkKey, at: time) }
+        for input in inputs { input.value?.record(talkKey: talkKey, modifier: modifier, at: time) }
     }
 
     func start() {
@@ -74,6 +74,7 @@ final class DraftInputMonitor: @unchecked Sendable {
         if !talk, code > 127 { DispatchQueue.main.async { Log.note("draft input: special key code \(code)") } }
         let at = Double(event.timestamp) / 1_000_000_000
         if !talk, EnterSend.keyCodes.contains(code), skip(at) { return }
-        record(talkKey: talk, at: at)
+        // The kind only, for the log: a modifier pressed alone, or another key. Never which key.
+        record(talkKey: talk, modifier: type == .flagsChanged, at: at)
     }
 }

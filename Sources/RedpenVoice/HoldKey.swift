@@ -138,7 +138,8 @@ final class HoldKey {
         let code = Int(e.keyCode)
         guard isTalkKey(code), let flag = Self.modifiers[code] else {
             if !isOwn(e) {
-                draftInputMonitor.record(talkKey: false, at: e.timestamp)
+                // Still counted as typing, so live words stop exactly as before. Only its kind is noted.
+                draftInputMonitor.record(talkKey: false, modifier: true, at: e.timestamp)
                 apply(state.otherKey(at: e.timestamp))
             }
             return

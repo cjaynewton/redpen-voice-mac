@@ -78,7 +78,7 @@ wiring_checks = [
     ("unverified target blocks legacy live typing", "guard !startTargetUncertain else" in block(app_source, "private func piece(")),
     ("slow and capped counts and elapsed time logged", all(term in resolve_target for term in ["elapsed_ms=", "slow_count=", "capped_count=", "accepted="])),
     ("first draft trace carries no text length", "StartTrace.note(.firstDraftReady, gesture: traceID)" in session and "firstDraftReady, gesture: traceID, count:" not in session),
-    ("non-text key downs and modifier changes invalidate target", 'draftInputMonitor.record(talkKey: false, at: e.timestamp)' in block(hold_source, "private func key(") and 'draftInputMonitor.record(talkKey: false, at: e.timestamp)' in block(hold_source, "private func flagsChanged(") and "guard talk, modifierCodes" not in (ROOT / "Sources/RedpenVoice/DraftInputMonitor.swift").read_text()),
+    ("non-text key downs and modifier changes invalidate target", 'draftInputMonitor.record(talkKey: false, at: e.timestamp)' in block(hold_source, "private func key(") and 'draftInputMonitor.record(talkKey: false, modifier: true, at: e.timestamp)' in block(hold_source, "private func flagsChanged(") and 'apply(state.otherKey(at: e.timestamp))' in block(hold_source, "private func flagsChanged(") and "guard talk, modifierCodes" not in (ROOT / "Sources/RedpenVoice/DraftInputMonitor.swift").read_text()),
 ]
 media_adapter = (ROOT / "Sources/RedpenVoice/Media.swift").read_text()
 resume_media = block(app_source, "private func resumeNow()")
@@ -112,6 +112,7 @@ wiring_checks += [
 ]
 chrome_media = block(app_source, "private func startChromeMedia(")
 wiring_checks += [
+    ("draft blocked line names the kind and never the key", all(term in block(app_source, "private func draftBlocked(") for term in ["category=click", "category=\\((input.kind ?? .otherKey).rawValue)"]) and all(term not in block(app_source, "private func draftBlocked(") for term in ["keyAt", "nearestTalkAt", "keyCode"])),
     ("accessibility skip is for live pieces only and logged once", "let typeDirectly = confirmed && app.map { axMemory.skips($0) } == true" in insert_source_early and "if let app, axMemory.missed(app) {" in insert_source_early),
     ("drafts cut from the first sound and wake every tenth of a second", "let chunker = DraftChunker()" in block(session, "func streamDrafts()") and "milliseconds(100)" in block(session, "func streamDrafts()") and "first: !wroteWords" in block(session, "func streamDrafts()")),
     ("a stretch with no speech is never sent to the engine", 'let text = speech ? await echoStripped(' in block(session, "func streamDrafts()")),

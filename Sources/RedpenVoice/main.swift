@@ -1864,12 +1864,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The first reason is the one the bar gives.
         if d.stopWhy == nil { d.stopWhy = TalkingWords.Stop(reason) }
         if d.reportedFailures.insert(reason).inserted {
+            // The kind of input that stopped live words, never which key (Nov 13 2026). The old line compared
+            // the newest key press with the talk key, so a Shift tap earlier in the dictation read as the
+            // talk key itself, 0.001 ms away.
             var detail = ""
-            if reason == .hardwareKey, let sample = d.hardwareSample {
-                let nearest = sample.nearestTalkAt.map { String(format: "%.6f", $0) } ?? "none"
-                let gap = sample.nearestTalkAt.map { String(format: "%.3fms", (sample.keyAt - $0) * 1000) } ?? "none"
-                detail = "; keyAt \(String(format: "%.6f", sample.keyAt)), nearest talk \(nearest), difference \(gap)"
-            }
+            if reason == .hardwareKey {
+                let input = d.input.snapshot()
+                detail = "; category=\((input.kind ?? .otherKey).rawValue)"
+                if let at = input.typingAt, let sample = d.hardwareSample { detail += ", \(Log.ms(sample.now - at))ms before this check" }
+            } else if reason == .hardwareClick { detail = "; category=click" }
             Log.note("draft blocked: \(reason.rawValue) (\(path))\(detail)")
         }
         return false
