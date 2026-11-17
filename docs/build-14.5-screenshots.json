@@ -1,0 +1,101 @@
+{
+  "sourceCommit": "8777647505800f24e37e241b80627b75e0b6ae13",
+  "version": "0.12.2",
+  "build": "14.5",
+  "executableSHA256": "2548964e69d34388910540e8a5a9b4abdb393447aa44e21e9f21f1f6041ad29e",
+  "nativeOffscreen": true,
+  "syntheticData": true,
+  "normalAppDelegateCreated": false,
+  "screenshots": [
+    {
+      "file": "docs/screenshots/menu-dark.png",
+      "sha256": "ca791a42557722a2ba9df77fbf33cc52b2f3c018e69d50447ce34917ccad5068",
+      "fixture": "dark-menu.png"
+    },
+    {
+      "file": "docs/screenshots/menu-meeting-dark.png",
+      "sha256": "00a3ddfb392fa47779dd51a99de90efeeb8ac3d3a83bb12cf5542e58acfbfc57",
+      "fixture": "dark-meetings.png"
+    },
+    {
+      "file": "docs/screenshots/settings-dark.png",
+      "sha256": "37c6e8da576129a02d476b8ae769c71f5fc24ba3d843804edc7706cf4b7ec3cf",
+      "fixture": "dark-settings-general.png"
+    },
+    {
+      "file": "docs/screenshots/settings-meeting-dark.png",
+      "sha256": "23e853123c08505065194b8b61ee7d0aef5b6e195a181aa2d28d1ff4b6afe3f1",
+      "fixture": "dark-settings-meetings.png"
+    },
+    {
+      "file": "docs/screenshots/history-dark.png",
+      "sha256": "58d8f8363324e2dfe3bde63b95a95d00174f055a0fa5080422275aac69df3aa8",
+      "fixture": "dark-history.png"
+    },
+    {
+      "file": "docs/screenshots/stats-dark.png",
+      "sha256": "7ea790694b9f5b5166baad9957f392c56269afa34d90a1a6aacb5a2cadc4ce6e",
+      "fixture": "dark-stats.png"
+    },
+    {
+      "file": "docs/screenshots/floating-bar-dark.png",
+      "sha256": "ce0fc14fe532c4c7752947884db61250f97b7d065db56f7c081abcfd4c65c6cb",
+      "fixture": "dark-settings-floating-bar.png"
+    },
+    {
+      "file": "docs/screenshots/menu-light.png",
+      "sha256": "029bfb823af639c60508b165dfb1aaac37e5d57dbbcc740fd3e7c8087bd20209",
+      "fixture": "light-menu.png"
+    },
+    {
+      "file": "docs/screenshots/menu-meeting-light.png",
+      "sha256": "22d50d5811aa65e43732b4731479b89ab9c4fc7962f3a017a68c094fb627369d",
+      "fixture": "light-meetings.png"
+    },
+    {
+      "file": "docs/screenshots/settings-light.png",
+      "sha256": "17f402903e778f85a96eeeef892982575391e56941d576d1ec7d4c12c1b8870c",
+      "fixture": "light-settings-general.png"
+    },
+    {
+      "file": "docs/screenshots/settings-meeting-light.png",
+      "sha256": "9a198a428c45a25a7fd8c125475af29ebc510798baaf3d45e372a80291ac5d1d",
+      "fixture": "light-settings-meetings.png"
+    },
+    {
+      "file": "docs/screenshots/history-light.png",
+      "sha256": "16e5053b5a90b810b1b34d4461135aa8a8e7d5a70f2d4eb36a7957e6a906b152",
+      "fixture": "light-history.png"
+    },
+    {
+      "file": "docs/screenshots/stats-light.png",
+      "sha256": "330b535a0406cba81cf579ee0376fdd33a224e034cf8837c81a2cbace0ee1ad3",
+      "fixture": "light-stats.png"
+    },
+    {
+      "file": "docs/screenshots/floating-bar-light.png",
+      "sha256": "a42d5a017d850f797e6d5c2f0b8da4dbe841fb134fdc6baf4b0cb0ee5869a3f8",
+      "fixture": "light-settings-floating-bar.png"
+    },
+    {
+      "file": "docs/screenshots/wave-ribbon-red.png",
+      "sha256": "839fa35696bbf21b0084309b1ede4ae2368253110cacb4ef98421fbb88d4e755",
+      "fixture": "dark-bar/wave-ribbon-red.png"
+    },
+    {
+      "file": "docs/screenshots/wave-strokes-coral.png",
+      "sha256": "e6f2aaee45ff8eed7e62e6fc6a907c1b1731281c27a2e26ab8a0cd7027660e4e",
+      "fixture": "dark-bar/wave-strokes-coral.png"
+    },
+    {
+      "file": "docs/screenshots/wave-thread-green.png",
+      "sha256": "a4e74a92856398a3a964f9f65616ced138a5d800622102bdd9c6fada798e3f6b",
+      "fixture": "dark-bar/wave-thread-green.png"
+    },
+    {
+      "file": "docs/screenshots/wave-ribbon-writing.png",
+      "sha256": "ce2649e8055f280fe0ff2a03dbf5c4c46e138d74cce45c368148f5f2fee0c135",
+      "fixture": "dark-bar/wave-ribbon-writing.png"
+    }
+  ]
+}
