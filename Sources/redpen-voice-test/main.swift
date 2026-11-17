@@ -9,6 +9,14 @@ func check(_ name: String, _ ok: Bool, _ detail: String = "") {
     if ok { pass += 1 } else { fail += 1; print("FAIL \(name) \(detail)") }
 }
 
+// Focused inert checks. Exits before the wider suite, with no microphone, input events or live Chrome calls.
+if CommandLine.arguments.contains("--media-delivery") {
+    browserPauseChecks(check)
+    deliveryDiagnosticsChecks(check)
+    print("\(pass) passed, \(fail) failed (simulated browser/text-box checks only)")
+    exit(fail == 0 ? 0 : 1)
+}
+
 browserPauseChecks(check)
 draftChunkerChecks(check)
 insertMemoryChecks(check)

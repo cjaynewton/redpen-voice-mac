@@ -102,12 +102,18 @@ enum Media {
                 let allowed = DispatchQueue.main.sync { stillPaused() && needsPause() }
                 // Not sent, so not an answer: `.empty` here once read as "the tab answered clear" and let go of a
                 // held tab that was never asked.
-                guard allowed, permitCreated, FileManager.default.fileExists(atPath: permit.path) else { DispatchQueue.main.async { reply(.unsent) }; return }
+                guard allowed, permitCreated, FileManager.default.fileExists(atPath: permit.path) else {
+                    Log.note("media browser action: owner=\(owner) reason=not_dispatched allowed=\(allowed ? 1 : 0) permit_created=\(permitCreated ? 1 : 0)")
+                    DispatchQueue.main.async { reply(.unsent) }; return
+                }
                 let args: [String]
                 let journal: URL?
                 let script: String
                 let remaining = deadline.uptime - ProcessInfo.processInfo.systemUptime
-                guard remaining > 0 else { DispatchQueue.main.async { reply(.timeout) }; return }
+                guard remaining > 0 else {
+                    Log.note("media browser action: owner=\(owner) reason=deadline_before_dispatch")
+                    DispatchQueue.main.async { reply(.timeout) }; return
+                }
                 let expires = epochEntered + (deadline.uptime - entered) * 1000
                 switch action {
                 case .discover(let excluded):
@@ -127,8 +133,10 @@ enum Media {
                 defer { if let journal { try? FileManager.default.removeItem(at: journal) } }
                 let r = runAction(args, limit: min(limit, remaining), script: script, until: deadline)
                 let lines = journal.flatMap { try? String(contentsOf: $0, encoding: .utf8) }?.split(separator: "\n").map(String.init) ?? []
-                let result = actionReply(action, r, journal: lines)
-                DispatchQueue.main.async { reply(result) }
+                let report = BrowserActionReport(action: action, status: r.status, output: r.output,
+                                                 error: r.error, timedOut: r.timedOut, journal: lines)
+                Log.note("media browser action: owner=\(owner) \(report.fields)")
+                DispatchQueue.main.async { reply(report.reply) }
             }
         }
         operation.onStop = { try? FileManager.default.removeItem(at: permit) }
@@ -147,7 +155,7 @@ enum Media {
             if let tab = operation.counts.keys.sorted().first { recentTab = tab }
             let hold = operation.hold
             // One line per ask (Nov 13 2026): counts and measured times only. dispatch_ms is press to ask.
-            Log.note("media browser: pause state=\(operation.state) outcome=\(outcomeWord(result)) confirmed=\(operation.counts.count) held=\(hold.held.count) unanswered=\(hold.unanswered.count) calls=\(operation.calls) timeouts=\(operation.timeouts) takeover=\(inheritedTokens.isEmpty ? 0 : 1) budget_ms=\(Log.ms(operation.budget.total)) dispatch_ms=\(Log.ms(began - entered)) elapsed_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime - entered))")
+            Log.note("media browser: pause state=\(operation.state) outcome=\(outcomeWord(result)) confirmed=\(operation.counts.count) held=\(hold.held.count) unanswered=\(hold.unanswered.count) calls=\(operation.calls) timeouts=\(operation.timeouts) takeover=\(inheritedTokens.isEmpty ? 0 : 1) budget_ms=\(Log.ms(operation.budget.total)) dispatch_ms=\(Log.ms(began - entered)) elapsed_ms=\(Log.ms(ProcessInfo.processInfo.systemUptime - entered)) owner=\(owner)")
             guard stillPaused(), needsPause() else { done(nil, result); return }
             // Only a confirmed or taken-over pause is a hold. Timeouts with nothing confirmed leave none, so
             // the next press is a fresh start and never a takeover.
@@ -204,32 +212,6 @@ enum Media {
         return ActionOutput(status: p.terminationStatus,
                             output: String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "",
                             error: String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "", timedOut: false)
-    }
-    static func actionReply(_ action: BrowserPauseOperation.Action, _ r: ActionOutput, journal: [String] = []) -> BrowserPauseOperation.Reply {
-        if case .discover = action {
-            let output = r.output.trimmingCharacters(in: .whitespacesAndNewlines)
-            let bits = output.split(separator: ":")
-            let tab = bits.count == 2 ? Int(bits[0]) : nil
-            let count = bits.count == 2 ? Int(bits[1]) ?? 0 : 0
-            var (touched, unanswered) = BrowserMedia.discoveryJournal(journal, runnerStopped: r.timedOut)
-            if let tab, count > 0 { unanswered.removeAll { $0 == tab } }
-            return .discovered(tab: tab, count: count, touched: touched,
-                slow: r.timedOut || r.status != 0 || output == "slow",
-                refused: output == "refused" || r.error.contains("-1743"), unanswered: unanswered)
-        }
-        if r.timedOut || r.error.contains("-1712") { return .timeout }
-        if r.status != 0 {
-            if r.error.contains("-1743") || r.error.lowercased().contains("not authorized") { return .notAllowed }
-            if r.error.contains("Apple Events") || r.error.contains("turned off") { return .refused }
-            return .failed
-        }
-        let output = r.output.trimmingCharacters(in: .whitespacesAndNewlines)
-        switch action {
-        case .discover: return .empty
-        case .pause:
-            guard let count = Int(output) else { return .empty }
-            return count < 0 ? .navigated : .paused(count)
-        }
     }
 
     /// Reconcile only dispatched tabs. Resume work has its own queue and a short per-action bound, so it never

@@ -387,9 +387,11 @@ enum Insert {
         }
         guard let clipboard = PasteClipboardLoan(text) else { return PasteResult(landed: false, copied: false) }
         var posted = false
+        var targetCheck: PasteTargetCheck?
         func failed(_ reason: String) -> PasteResult {
             let copied = clipboard.finish(confirmed: false) == .kept
             Log.note("paste: \(reason); clipboard \(copied ? "kept for Command-V" : "changed, left alone")")
+            if let targetCheck { Log.note("paste target: \(targetCheck.fields)") }
             return PasteResult(landed: false, copied: copied, posted: posted)
         }
         guard let (element, pid) = target else { return failed("no text target") }
@@ -402,18 +404,21 @@ enum Insert {
         while !Task.isCancelled {
             guard still() else { return failed("ownership changed") }
             let sameElement = focusedElement().map { $0.1 == pid && CFEqual($0.0, element) } ?? false
-            var sameTarget = sameElement && NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
-                && pasteContext(element) == context
+            let sameApp = NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+            // Preserve short-circuiting: do not add AX reads when the target already changed.
+            let currentContext = sameElement && sameApp ? pasteContext(element) : nil
             let currentValue = value(element), currentRange = selectedRange(element)
-            if attempt.postedAt == nil {
-                // Do not paste at a cursor or into text the user changed while releasing the shortcut.
-                sameTarget = sameTarget && currentValue == evidence.before && currentRange == evidence.range
-            }
+            let check = PasteTargetCheck(sameElement: sameElement, sameApp: sameApp,
+                sameTitle: currentContext.map { $0.first == context.first },
+                sameAddress: currentContext.map { Array($0.dropFirst()) == Array(context.dropFirst()) },
+                sameValue: currentValue == evidence.before, sameSelection: currentRange == evidence.range,
+                posted: attempt.postedAt != nil, landed: evidence.landed(value: currentValue, range: currentRange))
+            targetCheck = check
             let keysDown = modifierKeys.contains { CGEventSource.keyState(.hidSystemState, key: CGKeyCode($0)) }
                 || triggerKey.map { CGEventSource.keyState(.hidSystemState, key: $0) } == true
             let decision = attempt.next(at: ProcessInfo.processInfo.systemUptime, modifiersDown: keysDown,
-                                        sameTarget: sameTarget, clipboardOwned: clipboard.ownsClipboard,
-                                        landed: evidence.landed(value: currentValue, range: currentRange))
+                                        sameTarget: check.sameTarget, clipboardOwned: clipboard.ownsClipboard,
+                                        landed: check.landed)
             switch decision {
             case .post:
                 guard let pair = VoiceEvents.keyboardPair(key: vKey, flags: .maskCommand) else {

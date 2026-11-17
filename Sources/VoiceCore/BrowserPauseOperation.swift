@@ -19,7 +19,7 @@ public final class BrowserPauseOperation {
         case unsent
         /// `unanswered` lists the tabs that timed out, when the runner could say. nil means unknown: on a slow
         /// result every tab it touched then counts as unanswered.
-        case discovered(tab: Int?, count: Int, touched: [Int], slow: Bool, refused: Bool, unanswered: [Int]? = nil)
+        case discovered(counts: [Int: Int], touched: [Int], slow: Bool, refused: Bool, unanswered: [Int]? = nil, failed: Bool = false, notAllowed: Bool = false)
     }
     public let token: String
     public let entered: TimeInterval
@@ -52,7 +52,6 @@ public final class BrowserPauseOperation {
     private let perform: (Action, TimeInterval, @escaping (Reply) -> Void) -> Void
     private var queue: [Action] = []
     private var stopped = false
-    private let needsTakeoverDiscovery: Bool
 
     public init(token: String, owner: Int, preferredTab: Int? = nil, candidates: [Int] = [],
                 inheritedTokens: [String] = [], inheritedTabs: Set<Int> = [], entered: TimeInterval? = nil,
@@ -60,7 +59,6 @@ public final class BrowserPauseOperation {
                 perform: @escaping (Action, TimeInterval, @escaping (Reply) -> Void) -> Void) {
         self.token = token; self.owner = owner; self.now = now; self.perform = perform; self.budget = budget
         self.inheritedTokens = inheritedTokens; self.inheritedTabs = inheritedTabs
-        needsTakeoverDiscovery = !inheritedTokens.isEmpty
         self.candidates = Set(candidates)
         self.entered = entered ?? now()
         var known = candidates
@@ -141,14 +139,18 @@ public final class BrowserPauseOperation {
         // Any answer but a timeout means the page ran the script or never will: nothing waits in that tab.
         // A call that was never sent is no answer at all.
         if case .pause(let id, _, _) = action, reply != .timeout, reply != .unsent { answered.insert(id) }
-        if case .discovered(let tab, let count, let tried, let slow, let refused, let unanswered) = reply {
+        if case .discovered(let discovered, let tried, let slow, let refused, let unanswered, let failed, let notAllowed) = reply {
             touched.formUnion(tried); candidates.formUnion(tried)
-            if let tab, count > 0 { counts[tab] = count; touched.insert(tab); candidates.insert(tab) }
+            for (tab, count) in discovered where count > 0 {
+                counts[tab] = count; touched.insert(tab); candidates.insert(tab); answered.insert(tab)
+            }
             if let unanswered { answered.formUnion(Set(tried).subtracting(unanswered)); timeouts += unanswered.count }
             else if !slow { answered.formUnion(tried) }
             else { timeouts += 1 }
             if slow { uncertain = true; recovery = true }
             if refused { refusal = .refused }
+            if failed { refusal = .failed }
+            if notAllowed { refusal = .notAllowed; queue.removeAll() }
         }
         if reply == .timeout { uncertain = true; recovery = true; timeouts += 1 }
         if reply == .refused || reply == .notAllowed || reply == .failed { refusal = reply }
@@ -156,15 +158,15 @@ public final class BrowserPauseOperation {
         if budget.retries, case .pause(let id, let document, false) = action, reply == .timeout {
             queue.insert(.pause(id, document: document, retry: true), at: 0)
         }
-        // A normal pass stops at the first success. A takeover must also reclaim all known old marks.
-        if !counts.isEmpty && !needsTakeoverDiscovery { queue.removeAll() }
+        // A known tab can pause first, but discovery must still check the other playing tabs.
+        // The same deadline/cancellation rules bound both normal and takeover passes.
         if reply == .notAllowed { queue.removeAll() }
         advance()
     }
     private func settleIfIdle() {
         guard !finished, inFlight == nil, stopped || queue.isEmpty else { return }
         finished = true
-        if state != .cancelled && state != .transferred { state = uncertain ? .uncertain : (counts.isEmpty ? .pending : .confirmed) }
+        if state != .cancelled && state != .transferred { state = uncertain || refusal != nil ? .uncertain : (counts.isEmpty ? .pending : .confirmed) }
         let finish = onFinish; onFinish = nil
         finish?()
         let settled = onSettled; onSettled = nil
@@ -174,7 +176,7 @@ public final class BrowserPauseOperation {
 
 extension BrowserPauseOperation.Reply {
     public var count: Int {
-        switch self { case .ids(let ids): return ids.count; case .paused(let count): return count; case .discovered(_, let count, _, _, _, _): return count; default: return 0 }
+        switch self { case .ids(let ids): return ids.count; case .paused(let count): return count; case .discovered(let counts, _, _, _, _, _, _): return counts.values.reduce(0, +); default: return 0 }
     }
     /// Only fixed labels and numbers may reach progress logs.
     public var code: Int {

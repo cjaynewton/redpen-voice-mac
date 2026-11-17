@@ -76,9 +76,9 @@ public enum BrowserMedia {
             + "if(\(play ? "true" : "false")&&held&&!rest.length&&!audible&&m.paused){var p=m.play();if(p&&p.catch)p.catch(function(){});n++}});return n})()"
     }
 
-    /// One discovery process, stopping at the first successful tab. IDs are journalled BEFORE execute so a
-    /// timeout still supplies exact reconciliation targets. A tab that times out is journalled again with "!"
-    /// in front. The journal contains only numeric IDs and that mark, never URLs.
+    /// One bounded discovery process checks every reachable tab, including after a successful pause.
+    /// Journal each attempt before sending, and each answer immediately, so a killed runner cannot lose
+    /// earlier confirmed pauses. Lines contain numeric IDs/counts/errors, never URLs or page content.
     public static let discoveryRunner = """
     on run argv
         set js to item 1 of argv
@@ -87,7 +87,8 @@ public enum BrowserMedia {
         set excluded to items 4 thru -1 of argv
         set slow to false
         set refused to false
-        set ordered to my orderedTabs()
+        set found to {}
+        set ordered to my orderedTabs(journalPath)
         repeat with t in ordered
             set tid to ""
             try
@@ -108,9 +109,17 @@ public enum BrowserMedia {
                         error msg number n
                     end try
                     set result to my pauseTab(contents of t, js)
-                    if result is not missing value and (result as integer) > 0 then return tid & ":" & (result as text)
+                    if result is not missing value then
+                        set n to result as integer
+                        -- Persist success before moving to another tab. Zero/negative answers also seal the attempt.
+                        my recordLine(journalPath, "=" & tid & ":" & (n as text))
+                        if n > 0 then set end of found to tid & ":" & (n as text)
+                    else
+                        my recordLine(journalPath, "=" & tid & ":0")
+                    end if
                 end if
             on error msg number n
+                my recordLine(journalPath, "?" & tid & ":" & (n as text))
                 if n is -1743 then error msg number n
                 if n is -1712 then
                     set slow to true
@@ -130,12 +139,24 @@ public enum BrowserMedia {
                 if msg contains "Apple Events" or msg contains "turned off" then set refused to true
             end try
         end repeat
-        if slow then return "slow"
-        if refused then return "refused"
-        return ""
+        if slow then set end of found to "slow"
+        if refused then set end of found to "refused"
+        set AppleScript's text item delimiters to ","
+        return found as text
     end run
 
-    on orderedTabs()
+    on recordLine(journalPath, entry)
+        set journal to open for access POSIX file journalPath with write permission
+        try
+            write (entry & linefeed) to journal starting at eof
+            close access journal
+        on error msg number n
+            close access journal
+            error msg number n
+        end try
+    end recordLine
+
+    on orderedTabs(journalPath)
         set fronts to {}
         set likely to {}
         set others to {}
@@ -166,6 +187,7 @@ public enum BrowserMedia {
                         end if
                     end repeat
                     on error msg number n
+                        my recordLine(journalPath, "?window:" & (n as text))
                         if n is -1743 then error msg number n
                         -- One unreadable window cannot prevent checking the others.
                     end try
