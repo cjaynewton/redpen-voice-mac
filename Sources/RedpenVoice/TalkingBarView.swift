@@ -36,6 +36,8 @@ final class TalkingBarView: NSView {
     var state = TalkingBar.State.resting
     var indicatorShape = VoiceIndicator.Shape.ribbon
     var indicatorColour = VoiceIndicator.colour(VoiceIndicator.defaultColour)
+    /// Only the embedded Settings preview supplies a backdrop. The floating HUD stays transparent.
+    var previewBackdrop: NSColor?
     var style = "pen"
     var small = false
     var smallNeedsMessage = false
@@ -264,7 +266,7 @@ final class TalkingBarView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         // Clear previously painted pixels when a full notice contracts into the transparent mark.
-        NSColor.clear.setFill(); bounds.fill(using: .copy)
+        (previewBackdrop ?? .clear).setFill(); bounds.fill(using: .copy)
         NSGraphicsContext.current?.compositingOperation = .sourceOver
         if tucked {
             Self.label.setFill()

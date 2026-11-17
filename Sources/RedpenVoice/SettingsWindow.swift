@@ -274,18 +274,13 @@ struct SettingsView: View {
         case .bar:
             Text("Starts small at the bottom of the screen, above the Dock. The mark responds to your voice.")
                 .font(.system(size: 13)).foregroundStyle(Ink.mid).padding(.bottom, 14)
-            row("Shape") {
-                Picker("Shape", selection: $indicatorShape) {
-                    ForEach(VoiceIndicator.Shape.allCases, id: \.rawValue) { shape in
-                        Text(shape.title).tag(shape.rawValue)
-                    }
-                }.labelsHidden().frame(width: 180)
-            }
+            IndicatorShapeChoices(selection: $indicatorShape, colour: indicatorColour)
+                .padding(.bottom, 18)
             row("Colour", "Any colour works with every shape.") {
-                ColorPicker("Indicator colour", selection: Binding(
+                ColorPicker("Custom colour", selection: Binding(
                     get: { Color(nsColor: VoiceIndicator.colour(indicatorColour)) },
                     set: { indicatorColour = VoiceIndicator.hex(NSColor($0)) }), supportsOpacity: false)
-                    .labelsHidden()
+                    .fixedSize()
             }
             HStack(spacing: 16) {
                 Button("Redpen red") { indicatorColour = "FF574B" }
