@@ -132,7 +132,7 @@ final class HUD {
                                 styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
         TalkingBarView.registerFonts()
         panel.level = .statusBar; panel.isOpaque = false; panel.backgroundColor = .clear
-        panel.hasShadow = true; panel.hidesOnDeactivate = false
+        panel.hasShadow = false; panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         box.frame = panel.contentView!.bounds; box.autoresizingMask = [.width, .height]
         panel.contentView = box
@@ -382,7 +382,9 @@ final class HUD {
         case "cancel": if box.canCancel { onCancel() }
         case "paste": if box.canPaste { onPaste() }
         case "notes": onNotes()
-        case "settings": onSettings()
+        case "settings":
+            SettingsWindow.requestedSection = box.microphoneWarning ? "Talking" : "Floating bar"
+            onSettings()
         default: break
         }
     }
@@ -433,6 +435,8 @@ final class HUD {
         box.smallNeedsMessage = !listeningActive
         box.canKeepBar = listeningActive
         box.showTimer = showTimer
+        box.indicatorShape = VoiceIndicator.shape(defaults)
+        box.indicatorColour = VoiceIndicator.colour(defaults.string(forKey: VoiceIndicator.colourKey) ?? VoiceIndicator.defaultColour)
         box.dragged = placements.position(on: id) != nil || dragging
         box.tucked = box.state == .resting && docked && tuckAtEdge && !edgeRevealed && !dragging
         box.setAccessibilityHelp(box.tucked ? "Voice is tucked here. Click or hover to reveal it." : "Drag to move. Click the mark for recording controls. Right-click for more options.")
@@ -501,29 +505,36 @@ final class HUD {
         hud.rest(); check("idle hidden by default", !hud.wantsVisible && !hud.panel.isVisible)
         check("panel cannot steal text focus", !hud.panel.canBecomeKey && !hud.panel.canBecomeMain)
         hud.show("", level: true); capture("trial-bottom-listening")
-        check("compact bar is 72x28", hud.panel.frame.size == CGSize(width: 72, height: 28))
+        check("unframed indicator is 116x40", hud.panel.frame.size == CGSize(width: 116, height: 40))
         if let screen = hud.currentScreen {
             check("B above bottom centre", hud.panel.frame.midX == screen.visibleFrame.midX && hud.panel.frame.minY == screen.visibleFrame.minY + TrialBarPlacement.bottomInset)
         }
-        hud.box.reducedMotion = false
-        hud.box.smooth = 0; hud.box.history = .init(repeating: 0, count: 90)
-        let quietMark = hud.box.markHeights
-        capture("trial-voice-quiet")
-        hud.box.smooth = 0.75; hud.box.history = .init(repeating: 0.6, count: 90)
-        let speakingMark = hud.box.markHeights
-        check("mark follows microphone level", zip(quietMark, speakingMark).allSatisfy { $0 < $1 })
-        check("mark remains inside compact bar", speakingMark.allSatisfy { $0.isFinite && $0 > 0 && $0 <= 26 })
-        capture("trial-voice-speaking")
-        hud.box.phase += 10
-        check("mark does not fake a timer pulse", hud.box.markHeights == speakingMark)
-        hud.box.reducedMotion = true
-        let reducedMark = hud.box.markHeights
-        hud.box.smooth = 0; hud.box.history = .init(repeating: 0, count: 90)
-        check("reduce motion keeps mark steady", hud.box.markHeights == reducedMark)
-        hud.box.reducedMotion = false
-        hud.box.smooth = .nan; hud.box.history = .init(repeating: .infinity, count: 90)
-        check("invalid audio cannot corrupt mark geometry", hud.box.markHeights == quietMark)
-        hud.box.smooth = 0; hud.box.history = .init(repeating: 0, count: 90)
+        for shape in VoiceIndicator.Shape.allCases {
+            func points(_ level: CGFloat, phase: Double = 1, reduced: Bool = false) -> [CGPoint] {
+                VoiceIndicator.points(shape: shape, stroke: 0, level: level, phase: phase, writing: false, reducedMotion: reduced)
+            }
+            let quiet = points(0), speaking = points(0.75)
+            check(shape.title + " follows measured level", quiet != speaking)
+            check(shape.title + " quiet does not fake speech", quiet == points(0, phase: 8))
+            check(shape.title + " reduced motion holds steady", points(0, reduced: true) == points(0.8, phase: 8, reduced: true))
+            check(shape.title + " invalid level stays finite", points(.nan) == quiet && points(.infinity) == quiet)
+            check(shape.title + " fits fixed footprint", speaking.allSatisfy { $0.x >= 0 && $0.x <= 116 && $0.y >= 0 && $0.y <= 40 })
+            defaults.set(shape.rawValue, forKey: VoiceIndicator.shapeKey)
+            for (name, colour) in [("red", "FF574B"), ("coral", "EE816C"), ("green", "B4E66B")] {
+                defaults.set(colour, forKey: VoiceIndicator.colourKey)
+                hud.show("", level: true); hud.box.smooth = 0.75
+                capture("wave-" + shape.rawValue + "-" + name)
+                check(shape.title + " " + name + " independent colour", VoiceIndicator.hex(hud.box.indicatorColour) == colour)
+                check(shape.title + " " + name + " fixed bounds", hud.panel.frame.size == CGSize(width: 116, height: 40))
+            }
+            hud.writing(); capture("wave-" + shape.rawValue + "-writing")
+            hud.hide(); capture("wave-" + shape.rawValue + "-complete")
+        }
+        defaults.removeObject(forKey: VoiceIndicator.shapeKey); defaults.removeObject(forKey: VoiceIndicator.colourKey)
+        hud.show("", level: true)
+        check("new preference defaults to red ribbon", hud.box.indicatorShape == .ribbon && VoiceIndicator.hex(hud.box.indicatorColour) == "FF574B")
+        check("invalid stored shape defaults safely", VoiceIndicator.Shape(rawValue: "other") == nil)
+        check("invalid colour defaults safely", VoiceIndicator.hex(VoiceIndicator.colour("not-a-colour")) == "FF574B")
         let initialFrame = hud.panel.frame
         hud.refineCapture(textBox: CGRect(x: 5000, y: 0, width: 100, height: 100), window: nil)
         check("late focus refinement keeps recording steady", hud.panel.frame == initialFrame)
@@ -531,39 +542,53 @@ final class HUD {
         hud.onFinish = { finished += 1 }; hud.onCancel = { cancelled += 1 }; hud.onStart = { started += 1 }
         hud.onPaste = { pasted += 1 }; hud.onNotes = { notes += 1 }; hud.onSettings = { settings += 1 }
         hud.perform("options"); capture("trial-finish-cancel")
-        check("controls expand together", hud.panel.frame.size == CGSize(width: 264, height: 48))
-        check("Finish and Cancel labelled", hud.box.subviews.compactMap { ($0 as? NSButton)?.title } == ["Finish", "Cancel"])
+        check("controls are detached above fixed mark", hud.panel.frame.size == CGSize(width: 272, height: 128))
+        check("Finish and Cancel labelled", hud.box.subviews.compactMap { ($0 as? NSButton)?.title } == ["Finish", "Cancel", "Settings…", ""])
         (hud.box.subviews.first { ($0 as? NSButton)?.title == "Finish" } as? NSButton)?.performClick(nil)
         check("Finish once through real callback", finished == 1 && !hud.box.menuOpen)
         hud.perform("cancel"); hud.perform("paste"); hud.perform("notes"); hud.perform("settings")
         check("existing callbacks preserved", cancelled == 1 && pasted == 1 && notes == 1 && settings == 1)
+        check("explicit Settings selects indicator choices", SettingsWindow.requestedSection == "Floating bar")
+        hud.perform("options")
+        let settingsBeforeClick = settings
+        (hud.box.subviews.first { ($0 as? NSButton)?.title == "Settings…" } as? NSButton)?.performClick(nil)
+        check("visible Settings invokes callback once", settings == settingsBeforeClick + 1 && !hud.box.menuOpen)
+        hud.box.beginPointer(at: .zero, local: CGPoint(x: 58, y: hud.box.bounds.height-20)); hud.box.endPointer()
+        check("wave click opens controls without Settings or finish", hud.box.menuOpen && settings == settingsBeforeClick + 1 && finished == 1)
+        hud.dismissExtras()
         hud.perform("options"); hud.dismissExtras()
         check("dismiss controls does not cancel", hud.box.state == .listening && cancelled == 1)
         defaults.set(true, forKey: "VoiceTrial.showTimer"); hud.layout(animated: false); capture("trial-timer")
-        check("timer bar is 104x30", hud.panel.frame.size == CGSize(width: 104, height: 30))
+        check("explicit timer stays 164x40", hud.panel.frame.size == CGSize(width: 164, height: 40))
         defaults.set(false, forKey: "VoiceTrial.showTimer")
         hud.caption("These are the actual words shown on the bar."); capture("trial-live-caption")
-        check("live caption does not grow the bar", hud.box.shownMessage.isEmpty && hud.panel.frame.size == CGSize(width: 72, height: 28))
+        check("live caption does not grow the bar", hud.box.shownMessage.isEmpty && hud.panel.frame.size == CGSize(width: 116, height: 40))
         hud.perform("options"); capture("trial-live-caption-details")
         check("live words available on click", hud.box.shownMessage.contains("actual words"))
         hud.dismissExtras()
         hud.stoppedTyping("Typing stopped (you clicked). 52 words so far, all go in at the end.")
         capture("trial-stopped-typing")
-        check("typing-stop status stays discreet", hud.box.shownMessage.isEmpty && hud.listeningActive && hud.panel.frame.size == CGSize(width: 72, height: 28))
+        check("typing-stop status stays discreet", hud.box.shownMessage.isEmpty && hud.listeningActive && hud.panel.frame.size == CGSize(width: 116, height: 40))
         check("typing-stop detail stays accessible", (hud.box.accessibilityValue() as? String)?.contains("you clicked") == true && hud.box.toolTip?.contains("you clicked") == true)
         hud.perform("options"); capture("trial-stopped-typing-details")
         check("stopped typing explained on click", hud.box.shownMessage.contains("you clicked") && hud.listeningActive)
         hud.dismissExtras()
         check("closing details preserves recording", hud.listeningActive && hud.box.message.contains("you clicked") && cancelled == 1)
         hud.writing("All your words go in now"); capture("trial-writing-detail")
-        check("writing details preserved", hud.box.shownMessage == "All your words go in now")
+        check("writing stays fixed and details are retained", hud.box.shownMessage.isEmpty && hud.box.message == "All your words go in now" && hud.panel.frame.size == CGSize(width: 116, height: 40))
+        hud.perform("options"); capture("trial-writing-controls")
+        check("writing details available on click", hud.box.shownMessage == "All your words go in now")
         hud.show("No sound from Scarlett", level: false); capture("trial-no-sound")
         check("no-sound warning preserved", hud.box.shownMessage == "No sound from Scarlett")
-        check("terminal warning has no unrelated recording buttons", hud.box.subviews.isEmpty)
+        check("terminal warning offers microphone Settings", hud.box.subviews.compactMap { ($0 as? NSButton)?.title } == ["Check microphone"])
+        let beforeMic = settings
+        (hud.box.subviews.first as? NSButton)?.performClick(nil)
+        check("Check microphone opens Talking without clearing warning", settings == beforeMic+1 && SettingsWindow.requestedSection == "Talking" && hud.box.state == .needs)
+        SettingsWindow.requestedSection = nil
         hud.show("", level: true)
         hud.box.state = .needs; hud.box.message = "No sound from Scarlett. Check the microphone connection."
         hud.perform("options"); capture("trial-live-no-sound-controls")
-        check("live warning exposes labelled controls", hud.box.subviews.compactMap { ($0 as? NSButton)?.title } == ["Finish", "Cancel"])
+        check("live warning exposes labelled controls", hud.box.subviews.compactMap { ($0 as? NSButton)?.title } == ["Finish", "Cancel", "Settings…", ""])
         (hud.box.subviews.first { ($0 as? NSButton)?.title == "Finish" } as? NSButton)?.performClick(nil)
         check("live warning Finish retains real callback", finished == 2 && hud.listeningActive)
         hud.perform("options")
@@ -605,11 +630,11 @@ final class HUD {
             hud.rest(); capture("trial-edge-tab")
             check("docked idle retrievable with keep off", hud.wantsVisible && hud.box.tucked && hud.panel.frame.width == 12)
             hud.perform("reveal"); capture("trial-edge-revealed")
-            check("tab reveal is functional", !hud.box.tucked && hud.panel.frame.width == 84)
+            check("tab reveal is functional", !hud.box.tucked && hud.panel.frame.width == 116)
             hud.show("", level: true); capture("trial-edge-recording")
-            check("recording never tucked", !hud.box.tucked && hud.panel.frame.width == 84)
+            check("recording never tucked", !hud.box.tucked && hud.panel.frame.width == 116)
             hud.perform("centre"); capture("trial-centre-again")
-            check("centre clears only current placement", hud.placements.position(on: hud.displayID(screen)) == nil && hud.panel.frame.width == 72)
+            check("centre clears only current placement", hud.placements.position(on: hud.displayID(screen)) == nil && hud.panel.frame.width == 116)
         }
         hud.keepBarOnScreen = true; hud.rest(); hud.perform("start")
         check("idle click original start", started == 1)

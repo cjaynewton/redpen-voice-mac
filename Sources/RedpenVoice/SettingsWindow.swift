@@ -151,16 +151,19 @@ final class SettingsModel: ObservableObject {
 
 @MainActor
 final class SettingsWindow {
+    static var requestedSection: String?
     private var window: NSWindow?
     let model: SettingsModel
     init(model: SettingsModel) { self.model = model }
 
     func show() {
+        let requested = Self.requestedSection
+        Self.requestedSection = nil
         if window == nil {
             Ink.registerFonts()
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 880, height: 720), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
             w.title = "Redpen Voice"
-            w.contentView = NSHostingView(rootView: SettingsView(model: model).buttonBorderShape(.roundedRectangle(radius: 4)))
+            w.contentView = NSHostingView(rootView: SettingsView(model: model, initialSection: requested ?? "General").buttonBorderShape(.roundedRectangle(radius: 4)))
             w.contentMinSize = NSSize(width: 820, height: 500)
             w.center(); w.isReleasedWhenClosed = false
             window = w
@@ -168,6 +171,7 @@ final class SettingsWindow {
         }
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+        if let requested { NotificationCenter.default.post(name: Notification.Name("VoiceSettingsSection"), object: requested) }
     }
 }
 
@@ -195,6 +199,8 @@ struct SettingsView: View {
     @State private var appearanceRevision = 0
     @AppStorage("VoiceTrial.showTimer") private var showTimer = false
     @AppStorage("VoiceTrial.tuckAtEdge") private var tuckAtEdge = true
+    @AppStorage("VoiceIndicator.shape") private var indicatorShape = "ribbon"
+    @AppStorage("VoiceIndicator.colour") private var indicatorColour = VoiceIndicator.defaultColour
 
     init(model: SettingsModel, initialSection: String = "General") {
         self.model = model
@@ -238,8 +244,13 @@ struct SettingsView: View {
         .background(Ink.paper)
         .frame(minWidth: 820, minHeight: 500)
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("VoiceAppearanceChanged"))) { _ in appearanceRevision += 1 }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("VoiceSettingsSection"))) { note in
+            if let name = note.object as? String, let requested = Section(rawValue: name) { section = requested }
+        }
         .onChange(of: showTimer) { _, _ in barPreferencesChanged() }
         .onChange(of: tuckAtEdge) { _, _ in barPreferencesChanged() }
+        .onChange(of: indicatorShape) { _, _ in barPreferencesChanged() }
+        .onChange(of: indicatorColour) { _, _ in barPreferencesChanged() }
         .onChange(of: section) { previous, current in
             if previous == .talking, current != .talking { model.stopListening() }
         }
@@ -263,6 +274,26 @@ struct SettingsView: View {
         case .bar:
             Text("Starts small at the bottom of the screen, above the Dock. The mark responds to your voice.")
                 .font(.system(size: 13)).foregroundStyle(Ink.mid).padding(.bottom, 14)
+            row("Shape") {
+                Picker("Shape", selection: $indicatorShape) {
+                    ForEach(VoiceIndicator.Shape.allCases, id: \.rawValue) { shape in
+                        Text(shape.title).tag(shape.rawValue)
+                    }
+                }.labelsHidden().frame(width: 180)
+            }
+            row("Colour", "Any colour works with every shape.") {
+                ColorPicker("Indicator colour", selection: Binding(
+                    get: { Color(nsColor: VoiceIndicator.colour(indicatorColour)) },
+                    set: { indicatorColour = VoiceIndicator.hex(NSColor($0)) }), supportsOpacity: false)
+                    .labelsHidden()
+            }
+            HStack(spacing: 16) {
+                Button("Redpen red") { indicatorColour = "FF574B" }
+                Button("Coral") { indicatorColour = "EE816C" }
+                Button("Green") { indicatorColour = "B4E66B" }
+                Spacer()
+                Button("Reset to red ribbon") { indicatorShape = "ribbon"; indicatorColour = VoiceIndicator.defaultColour }
+            }.font(.system(size: 12)).padding(.vertical, 12)
             row("Show timer", "Adds elapsed time beside the mark.") {
                 Toggle("", isOn: $showTimer).labelsHidden().toggleStyle(.switch).tint(Ink.red)
             }
@@ -273,7 +304,7 @@ struct SettingsView: View {
             row("Tuck at the screen edge", "Drag to the left or right edge. It tucks while idle and returns when you speak.") {
                 Toggle("", isOn: $tuckAtEdge).labelsHidden().toggleStyle(.switch).tint(Ink.red)
             }
-            Text("Drag to place it. Each screen remembers its position until Voice quits. Click the mark for Finish and Cancel.")
+            Text("Drag to place it. Each screen remembers its position until Voice quits. Click the mark for Finish, Cancel and Settings.")
                 .font(.system(size: 13)).foregroundStyle(Ink.mid).fixedSize(horizontal: false, vertical: true).padding(.vertical, 16)
             Button("Move to bottom centre") { NotificationCenter.default.post(name: Notification.Name("VoiceTrialBarCentreAgain"), object: nil) }
         case .names:

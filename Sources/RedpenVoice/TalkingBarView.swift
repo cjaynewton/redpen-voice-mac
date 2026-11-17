@@ -34,6 +34,8 @@ final class TalkingBarView: NSView {
     }
 
     var state = TalkingBar.State.resting
+    var indicatorShape = VoiceIndicator.Shape.ribbon
+    var indicatorColour = VoiceIndicator.colour(VoiceIndicator.defaultColour)
     var style = "pen"
     var small = false
     var smallNeedsMessage = false
@@ -43,6 +45,8 @@ final class TalkingBarView: NSView {
     var recordingActive: Bool { state == .listening || (state == .needs && canKeepBar) }
     var hasRecordingControls: Bool { state == .listening || state == .writing || (state == .needs && canKeepBar) }
     var compact: Bool { false }
+    var microphoneWarning: Bool { state == .needs && message.hasPrefix("No sound from ") && choices.isEmpty }
+    var controlsOpen: Bool { menuOpen && hasRecordingControls }
     var shownMessage: String {
         // Routine listening detail is available on click, not an automatic banner over the user's work.
         // Actual errors and recovery questions use other states and keep their text and choices visible.
@@ -50,6 +54,7 @@ final class TalkingBarView: NSView {
             if !menuOpen { return "" }
             if message.range(of: #"^(\d+ words?|Hands-free · (\d+ words? · )?tap .+ to stop)$"#, options: .regularExpression) != nil { return "" }
         }
+        if state == .writing && !menuOpen { return "" }
         return message
     }
     var menuOpen = false
@@ -61,15 +66,6 @@ final class TalkingBarView: NSView {
     var stateAge = 1.0
     var smooth: CGFloat = 0
     var history = [CGFloat](repeating: 0, count: 90)
-    /// Follow the measured microphone level. Short delays give the two side strokes a natural response.
-    var markHeights: [CGFloat] {
-        let scale = min(1, (railHeight - 10) / 26)
-        guard recordingActive, !reducedMotion else { return [8, 20, 8].map { $0 * scale } }
-        func strength(_ value: CGFloat) -> CGFloat { sqrt(min(1, max(0, value.isFinite ? value : 0))) }
-        let left = history.count >= 5 ? history[history.count - 5] : smooth
-        let right = history.count >= 3 ? history[history.count - 3] : smooth
-        return [4 + 12 * strength(left), 8 + 18 * strength(smooth), 4 + 12 * strength(right)].map { $0 * scale }
-    }
     var reducedMotion = false
     var freeze = false
     var choices: [String] = []
@@ -90,10 +86,15 @@ final class TalkingBarView: NSView {
     private var moved = false
     private var gripPressed = false
     private var hoverGrip = false
+    private var paintedPoints: [Int: [CGPoint]] = [:]
+    private var lastPaint = Date.timeIntervalSinceReferenceDate
     override var isFlipped: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override var acceptsFirstResponder: Bool { true }
-    var railHeight: CGFloat { tucked ? 44 : menuOpen && hasRecordingControls ? 48 : (showTimer || state == .writing) ? 30 : 28 }
+    var railHeight: CGFloat { tucked ? 44 : 40 }
+    var headerHeight: CGFloat { controlsOpen ? 32 : 0 }
+    var actionHeight: CGFloat { controlsOpen ? 44 : microphoneWarning ? 36 : 0 }
+    var detailFrame: CGRect { CGRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - railHeight - 12)) }
     private func choiceFrames(width: CGFloat) -> [CGRect] {
         var x: CGFloat = 16, y: CGFloat = 0
         return choices.map { title in
@@ -105,19 +106,18 @@ final class TalkingBarView: NSView {
     }
     private var choiceHeight: CGFloat { choiceFrames(width: bounds.width).last.map { $0.maxY + 8 } ?? 0 }
     var messageFrame: CGRect {
-        CGRect(x: 16, y: 10, width: max(0, bounds.width - 32),
-               height: max(0, bounds.height - railHeight - choiceHeight - 16))
+        CGRect(x: 16, y: headerHeight + 10, width: max(0, bounds.width - 32),
+               height: max(0, detailFrame.height - headerHeight - choiceHeight - actionHeight - 20))
     }
     var detailHeight: CGFloat {
         let rect = (shownMessage as NSString).boundingRect(with: NSSize(width: max(28, bounds.width - 32), height: 2000),
             options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: Self.font(15)])
-        return (shownMessage.isEmpty ? 0 : ceil(rect.height) + 20) + choiceHeight
+        return headerHeight + (shownMessage.isEmpty ? 0 : ceil(rect.height) + 20) + choiceHeight + actionHeight
     }
     func desiredSize(maxWidth: CGFloat) -> CGSize {
         var size = TrialBarPlacement.size(timer: showTimer, dragged: dragged, expanded: menuOpen && hasRecordingControls, tucked: tucked)
-        if state == .writing && !menuOpen { size = CGSize(width: 112, height: 30) }
         if state == .message || state == .needs { size.width = max(size.width, 248) }
-        if !shownMessage.isEmpty || !choices.isEmpty {
+        if !shownMessage.isEmpty || !choices.isEmpty || controlsOpen {
             let messageWidth = min(480, (shownMessage as NSString).size(withAttributes: [.font: Self.font(15)]).width + 32)
             let choicesWidth = choices.reduce(CGFloat(24)) { width, title in
                 width + ceil((title as NSString).size(withAttributes: [.font: Self.font(14)]).width) + 32
@@ -125,7 +125,7 @@ final class TalkingBarView: NSView {
             size.width = min(maxWidth, max(size.width, messageWidth, min(480, choicesWidth)))
             let old = frame.size
             setFrameSize(NSSize(width: size.width, height: old.height))
-            size.height += detailHeight
+            size.height += detailHeight + 12
             setFrameSize(old)
         }
         size.width = min(maxWidth, size.width)
@@ -139,26 +139,31 @@ final class TalkingBarView: NSView {
             let b = BarButton(frame: rect)
             b.title = title; b.hint = hint; b.icon = icon; b.primary = primary; b.isEnabled = enabled
             b.run = { [weak self] in self?.onAction(action) }
-            b.setAccessibilityLabel(title.isEmpty ? (menuOpen ? "Hide options" : "Show options") : title)
+            b.setAccessibilityLabel(title.isEmpty ? "Close controls" : title)
             b.setAccessibilityHelp(hint)
             addSubview(b); buttons.append(b)
         }
-        let railY = bounds.height - railHeight
-        if menuOpen && hasRecordingControls {
-            button("Finish", "", "", "finish", CGRect(x: 7, y: railY + 7, width: 72, height: 32), enabled: canFinish, primary: true)
+        if controlsOpen {
+            let y = detailFrame.maxY - 40
+            button("Finish", "", "", "finish", CGRect(x: 12, y: y, width: 66, height: 30), enabled: canFinish, primary: true)
             buttons.last?.selected = true
-            button("Cancel", "", "", "cancel", CGRect(x: bounds.width - 71, y: railY + 7, width: 64, height: 32), enabled: canCancel)
+            button("Cancel", "", "", "cancel", CGRect(x: 82, y: y, width: 68, height: 30), enabled: canCancel)
+            button("Settings…", "", "", "settings", CGRect(x: bounds.width - 104, y: y, width: 92, height: 30))
+            button("", "", "x", "dismiss", CGRect(x: bounds.width - 36, y: 7, width: 24, height: 24))
+        } else if microphoneWarning {
+            button("Check microphone", "", "", "settings",
+                   CGRect(x: (bounds.width - 160)/2, y: detailFrame.maxY - 34, width: 160, height: 30))
         }
         for (index, rect) in choiceFrames(width: bounds.width).enumerated() {
-            button(choices[index], "", "", "choice\(index)", rect.offsetBy(dx: 0, dy: railY - choiceHeight))
+            button(choices[index], "", "", "choice\(index)", rect.offsetBy(dx: 0, dy: detailFrame.maxY - choiceHeight - actionHeight))
             buttons.last?.selected = true
         }
         setAccessibilityElement(true)
         setAccessibilityRole(menuOpen || !choices.isEmpty || state == .message || state == .needs ? .group : .button)
-        setAccessibilityLabel(tucked ? "Reveal Voice" : recordingActive ? "Recording. Show Finish and Cancel" : state == .resting ? "Start dictation" : state.rawValue.capitalized)
-        let accessibleMessage = state == .listening ? message : shownMessage
+        setAccessibilityLabel(tucked ? "Reveal Voice" : recordingActive ? "Recording. Show Finish, Cancel and Settings" : state == .resting ? "Start dictation" : state.rawValue.capitalized)
+        let accessibleMessage = message
         setAccessibilityValue(accessibleMessage.isEmpty ? (showTimer ? "\(seconds) seconds" : "") : accessibleMessage)
-        toolTip = state == .listening && !message.isEmpty ? message + " Click for details and recording controls." : nil
+        toolTip = hasRecordingControls ? (message.isEmpty ? "Click for Finish, Cancel and Settings." : message + " Click for details and controls.") : nil
         needsDisplay = true
     }
     override func viewDidChangeEffectiveAppearance() {
@@ -238,7 +243,7 @@ final class TalkingBarView: NSView {
         dragStart = nil
         if moved { onDrag(window?.frame.origin ?? dragOrigin, true) }
         else if pointerWasTucked { onAction("reveal") }
-        else if recordingActive { onAction("options") }
+        else if hasRecordingControls { onAction("options") }
         else if state == .resting { onAction("start") }
         // A click on a notice clears it, like Esc. Listening ignores it (dismissal never stops a recording).
         else if state == .message || state == .done || state == .needs { onAction("dismiss") }
@@ -258,52 +263,89 @@ final class TalkingBarView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        Self.surface.setFill()
-        NSBezierPath(roundedRect: bounds, xRadius: 4, yRadius: 4).fill()
-        drawMarkSurface()
-    }
-    private func drawMarkSurface() {
-        Self.border.setStroke()
-        let outline = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 4, yRadius: 4)
-        outline.lineWidth = 1; outline.stroke()
+        // Clear previously painted pixels when a full notice contracts into the transparent mark.
+        NSColor.clear.setFill(); bounds.fill(using: .copy)
+        NSGraphicsContext.current?.compositingOperation = .sourceOver
         if tucked {
-            Self.label.setFill(); CGRect(x: 4, y: (bounds.height - 18) / 2, width: 2, height: 18).fill()
+            Self.label.setFill()
+            NSBezierPath(roundedRect: CGRect(x: 4, y: (bounds.height-18)/2, width: 3, height: 18), xRadius: 1.5, yRadius: 1.5).fill()
             return
         }
-        let railY = bounds.height - railHeight, centerY = railY + railHeight / 2
+        if detailFrame.height > 0 && (!microphoneWarning || controlsOpen) {
+            Self.surface.setFill()
+            NSBezierPath(roundedRect: detailFrame, xRadius: 8, yRadius: 8).fill()
+        }
+        if controlsOpen {
+            let heading = state == .writing ? "Writing" : microphoneWarning ? "Microphone" : "Recording"
+            (heading as NSString).draw(at: CGPoint(x: 16, y: 13), withAttributes: [.font: Self.font(13, medium: true), .foregroundColor: Self.text])
+        }
         if !shownMessage.isEmpty {
             let paragraph = NSMutableParagraphStyle(); paragraph.lineBreakMode = .byWordWrapping
-            (shownMessage as NSString).draw(in: messageFrame,
-                withAttributes: [.font: Self.font(15), .foregroundColor: Self.body, .paragraphStyle: paragraph])
+            if microphoneWarning && !controlsOpen { paragraph.alignment = .center }
+            let shadow = NSShadow(); shadow.shadowColor = NSColor.black.withAlphaComponent(0.85); shadow.shadowBlurRadius = 3
+            (shownMessage as NSString).draw(in: messageFrame, withAttributes: [.font: Self.font(15),
+                .foregroundColor: Self.body, .paragraphStyle: paragraph, .shadow: shadow])
         }
-        if state == .done {
-            Self.drawIcon("check", in: CGRect(x: bounds.midX - 10, y: centerY - 10, width: 20, height: 20), color: Self.text)
-            return
-        }
-        if state == .writing && !menuOpen {
-            let progress = NSBezierPath(ovalIn: CGRect(x: 12, y: centerY - 5, width: 10, height: 10))
-            progress.lineWidth = 2; Self.label.setStroke(); progress.stroke()
-            Self.red.setFill()
-            let angle = freeze || reducedMotion ? 0 : phase * 3
-            CGRect(x: 15 + 4 * cos(angle), y: centerY - 2 + 4 * sin(angle), width: 3, height: 3).fill()
-            ("Writing" as NSString).draw(at: CGPoint(x: 31, y: centerY - 8), withAttributes: [
-                .font: Self.font(13), .foregroundColor: Self.text])
-            return
-        }
-        let timed = showTimer && !menuOpen && state != .message && state != .needs
-        let markX: CGFloat = menuOpen ? bounds.midX - 11 : timed ? 13 : bounds.midX - 11
-        let ink = state == .resting || (state == .message || state == .needs) && !recordingActive ? Self.label : timed ? Self.text : Self.red
-        ink.setFill()
-        for (i, height) in markHeights.enumerated() {
-            CGRect(x: markX + CGFloat(i) * 9, y: centerY - height / 2, width: 3, height: height).fill()
-        }
-        if timed || (menuOpen && hasRecordingControls) {
-            let clock = "\(seconds / 60):\(String(format: "%02d", seconds % 60))"
-            (clock as NSString).draw(at: CGPoint(x: menuOpen ? bounds.midX + 19 : 43, y: centerY - 7), withAttributes: [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular), .foregroundColor: Self.label])
-            if timed && state != .resting {
-                Self.red.setFill(); CGRect(x: bounds.width - 7, y: centerY - 10, width: 3, height: 20).fill()
+        drawWave()
+    }
+
+    private func drawWave() {
+        let writing = state == .writing
+        let timed = showTimer && !menuOpen && !writing
+        let origin = CGPoint(x: timed ? (bounds.width-164)/2 : (bounds.width-116)/2,
+                             y: bounds.height-40)
+        let count = state == .done ? 1 : indicatorShape == .strokes ? 3 : indicatorShape == .thread ? 2 : 1
+        let level: CGFloat = recordingActive ? smooth : 0
+        let phase = freeze ? 1.2 : self.phase
+        let ink = state == .resting ? indicatorColour.withAlphaComponent(0.65) : indicatorColour
+        let highlight = ink.blended(withFraction: 0.5, of: .white) ?? .white
+        let now = Date.timeIntervalSinceReferenceDate
+        let blend = freeze || reducedMotion ? 1 : 1-exp(-min(0.2, max(0, now-lastPaint))*15)
+        lastPaint = now
+        NSGraphicsContext.saveGraphicsState()
+        let move = NSAffineTransform(); move.translateX(by: origin.x, yBy: origin.y); move.concat()
+        for stroke in 0..<count {
+            let target = VoiceIndicator.points(shape: indicatorShape, stroke: stroke, level: level, phase: phase,
+                                               writing: writing, reducedMotion: reducedMotion, done: state == .done)
+                .map { CGPoint(x: $0.x, y: $0.y-(writing ? 6 : 0)) }
+            let previous = paintedPoints[stroke] ?? target
+            let points = zip(previous, target).map { a, b in CGPoint(x: a.x+(b.x-a.x)*blend, y: a.y+(b.y-a.y)*blend) }
+            paintedPoints[stroke] = points
+            func path(_ points: [CGPoint]) -> NSBezierPath {
+                let p = NSBezierPath(); p.lineCapStyle = .round; p.lineJoinStyle = .round
+                for (i, point) in points.enumerated() { if i == 0 { p.move(to: point) } else { p.line(to: point) } }
+                return p
             }
+            let p = path(points)
+            let width: CGFloat = indicatorShape == .thread ? 1.3 : indicatorShape == .strokes ? 2.7 : 2.8
+            // A tight dark keyline keeps the colour legible on light windows without framing it.
+            NSColor.black.withAlphaComponent(0.3).setStroke(); p.lineWidth = width+1; p.stroke()
+            NSGraphicsContext.saveGraphicsState()
+            let glow = NSShadow(); glow.shadowColor = ink.withAlphaComponent(0.22)
+            glow.shadowBlurRadius = 3; glow.shadowOffset = .zero; glow.set()
+            ink.setStroke(); p.lineWidth = width; p.stroke()
+            NSGraphicsContext.restoreGraphicsState()
+            highlight.withAlphaComponent(0.65).setStroke(); p.lineWidth = 0.7; p.stroke()
+            if writing && !reducedMotion && stroke == 0 {
+                let start = Int((phase*0.55).truncatingRemainder(dividingBy: 1)*41)
+                let spark = path(Array(points[max(0,start)..<min(49,max(0,start)+7)]))
+                highlight.setStroke(); spark.lineWidth = 1.4; spark.stroke()
+            }
+        }
+        if state != .done && !writing && state != .resting {
+            (microphoneWarning ? Self.color(0xE4B365) : ink).setFill()
+            NSBezierPath(ovalIn: CGRect(x: 98, y: 18.5, width: 3, height: 3)).fill()
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        let shadow = NSShadow(); shadow.shadowColor = NSColor.black; shadow.shadowBlurRadius = 3
+        if writing {
+            let title = "Writing…" as NSString
+            let attrs: [NSAttributedString.Key: Any] = [.font: Self.font(12, medium: true), .foregroundColor: Self.text, .shadow: shadow]
+            title.draw(at: CGPoint(x: (bounds.width-title.size(withAttributes: attrs).width)/2, y: bounds.height-15), withAttributes: attrs)
+        } else if timed {
+            let clock = "\(seconds / 60):\(String(format: "%02d", seconds % 60))"
+            (clock as NSString).draw(at: CGPoint(x: origin.x+117, y: bounds.height-27), withAttributes:
+                [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular), .foregroundColor: Self.text, .shadow: shadow])
         }
     }
 

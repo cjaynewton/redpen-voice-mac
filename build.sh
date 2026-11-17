@@ -28,6 +28,7 @@ swift build -c release --product RedpenVoice
 OUT=.build/out/Products/Release
 [[ -d "$OUT" ]] || OUT=.build/release
 APP="build/Redpen Voice.app"
+SOURCE_COMMIT=$(git rev-parse HEAD)
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp "$OUT/RedpenVoice" "$APP/Contents/MacOS/RedpenVoice"
@@ -53,7 +54,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.12.2</string>
-  <key>CFBundleVersion</key><string>14</string>
+  <key>CFBundleVersion</key><string>14.4</string>
+  <key>RedpenSourceCommit</key><string>$SOURCE_COMMIT</string>
   <key>LSMinimumSystemVersion</key><string>26.0</string>
   <key>LSUIElement</key><true/>
   <key>SUFeedURL</key><string>https://github.com/cjaynewton/redpen-voice-mac/releases/latest/download/appcast.xml</string>

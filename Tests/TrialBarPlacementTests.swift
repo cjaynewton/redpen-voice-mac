@@ -87,10 +87,10 @@ final class TrialBarPlacementTests: XCTestCase {
     }
 
     func testTrialSizesAndExpansionKeepsTheSavedCentre() {
-        XCTAssertEqual(TrialBarPlacement.size(timer: false, dragged: false, expanded: false, tucked: false), CGSize(width: 72, height: 28))
-        XCTAssertEqual(TrialBarPlacement.size(timer: false, dragged: true, expanded: false, tucked: false), CGSize(width: 84, height: 28))
-        XCTAssertEqual(TrialBarPlacement.size(timer: true, dragged: true, expanded: false, tucked: false), CGSize(width: 104, height: 30))
-        XCTAssertEqual(TrialBarPlacement.size(timer: true, dragged: false, expanded: true, tucked: false), CGSize(width: 264, height: 48))
+        XCTAssertEqual(TrialBarPlacement.size(timer: false, dragged: false, expanded: false, tucked: false), CGSize(width: 116, height: 40))
+        XCTAssertEqual(TrialBarPlacement.size(timer: false, dragged: true, expanded: false, tucked: false), CGSize(width: 116, height: 40))
+        XCTAssertEqual(TrialBarPlacement.size(timer: true, dragged: true, expanded: false, tucked: false), CGSize(width: 164, height: 40))
+        XCTAssertEqual(TrialBarPlacement.size(timer: true, dragged: false, expanded: true, tucked: false), CGSize(width: 272, height: 40))
         let screen = CGRect(x: 0, y: 0, width: 1200, height: 900)
         var layout = TrialBarPlacement()
         layout.save(center: CGPoint(x: 650, y: 500), on: 10, visible: screen, dock: false)
