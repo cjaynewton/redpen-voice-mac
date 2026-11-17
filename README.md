@@ -8,7 +8,7 @@ Dictation runs on your Mac. Meeting notes can also be written locally. Optional 
 
 **[Download the current public release](https://github.com/cjaynewton/redpen-voice-mac/releases/latest)** (free, macOS 26, Apple silicon)
 
-**Source preview · build 14.5.** The screenshots below show the signed desktop build from [8777647](https://github.com/cjaynewton/redpen-voice-mac/commit/8777647505800f24e37e241b80627b75e0b6ae13). They are native offscreen renders with sample data, not live microphone or delivery tests. The public installer is still build 14 until a new release is published. [Screenshot provenance](docs/build-14.5-screenshots.json).
+**Current release · build 14.5.** The screenshots below show the signed desktop build from [8777647](https://github.com/cjaynewton/redpen-voice-mac/commit/8777647505800f24e37e241b80627b75e0b6ae13). They are native offscreen renders with sample data, not live microphone or delivery tests. [Download build 14.5](https://github.com/cjaynewton/redpen-voice-mac/releases/tag/v0.12.2-build14.5) from the original release page. [Screenshot provenance](docs/build-14.5-screenshots.json).
 
 <p align="center">
   <img src="docs/screenshots/wave-ribbon-red.png" alt="Red Ribbon, a small unframed recording mark" width="232">
