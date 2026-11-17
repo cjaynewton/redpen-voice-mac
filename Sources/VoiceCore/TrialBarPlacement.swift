@@ -43,7 +43,7 @@ public struct TrialBarPlacement {
     public static func size(timer: Bool, dragged: Bool, expanded: Bool, tucked: Bool) -> CGSize {
         if tucked { return CGSize(width: 12, height: 44) }
         if expanded { return CGSize(width: 264, height: 48) }
-        if timer { return CGSize(width: 96, height: 38) }
-        return CGSize(width: dragged ? 64 : 48, height: 48)
+        if timer { return CGSize(width: 104, height: 30) }
+        return CGSize(width: dragged ? 84 : 72, height: 28)
     }
 }

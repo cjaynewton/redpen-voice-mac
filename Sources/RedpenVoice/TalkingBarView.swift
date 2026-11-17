@@ -9,13 +9,14 @@ final class TalkingBarView: NSView {
         NSColor(srgbRed: CGFloat(hex >> 16 & 255) / 255, green: CGFloat(hex >> 8 & 255) / 255,
                 blue: CGFloat(hex & 255) / 255, alpha: 1)
     }
-    static var surface: NSColor { VoiceAppearance.selection == "colour" ? color(0xC83229) : Ink.color(.paper) }
-    static var dock: NSColor { VoiceAppearance.selection == "colour" ? color(0xB62620) : Ink.color(.raised) }
-    static var border: NSColor { VoiceAppearance.selection == "colour" ? color(0xFFB4AA) : Ink.color(.border) }
-    static var text: NSColor { Ink.color(.text) }
-    static var body: NSColor { VoiceAppearance.selection == "colour" ? .white : Ink.color(.mid) }
-    static var label: NSColor { VoiceAppearance.selection == "colour" ? .white : Ink.color(.mid) }
-    static var red: NSColor { VoiceAppearance.selection == "colour" ? .white : Ink.color(.red) }
+    // The overlay stays quiet over other apps, independently of the selected window appearance.
+    static var surface: NSColor { color(0x141518) }
+    static var dock: NSColor { color(0x25272C) }
+    static var border: NSColor { color(0x41454D) }
+    static var text: NSColor { color(0xF5F5F6) }
+    static var body: NSColor { color(0xBDC4CE) }
+    static var label: NSColor { color(0xA6AFBB) }
+    static var red: NSColor { color(0xFF756B) }
     static func font(_ size: CGFloat, medium: Bool = false) -> NSFont {
         NSFont.systemFont(ofSize: size, weight: medium ? .medium : .regular)
     }
@@ -43,8 +44,12 @@ final class TalkingBarView: NSView {
     var hasRecordingControls: Bool { state == .listening || state == .writing || (state == .needs && canKeepBar) }
     var compact: Bool { false }
     var shownMessage: String {
-        // Count-only progress belongs in the small mark. Actual live words and safety notices remain visible.
-        if state == .listening && message.range(of: #"^(\d+ words?|Hands-free · (\d+ words? · )?tap .+ to stop)$"#, options: .regularExpression) != nil { return "" }
+        // Routine listening detail is available on click, not an automatic banner over the user's work.
+        // Actual errors and recovery questions use other states and keep their text and choices visible.
+        if state == .listening {
+            if !menuOpen { return "" }
+            if message.range(of: #"^(\d+ words?|Hands-free · (\d+ words? · )?tap .+ to stop)$"#, options: .regularExpression) != nil { return "" }
+        }
         return message
     }
     var menuOpen = false
@@ -58,11 +63,12 @@ final class TalkingBarView: NSView {
     var history = [CGFloat](repeating: 0, count: 90)
     /// Follow the measured microphone level. Short delays give the two side strokes a natural response.
     var markHeights: [CGFloat] {
-        guard recordingActive, !reducedMotion else { return [8, 20, 8] }
+        let scale = min(1, (railHeight - 10) / 26)
+        guard recordingActive, !reducedMotion else { return [8, 20, 8].map { $0 * scale } }
         func strength(_ value: CGFloat) -> CGFloat { sqrt(min(1, max(0, value.isFinite ? value : 0))) }
         let left = history.count >= 5 ? history[history.count - 5] : smooth
         let right = history.count >= 3 ? history[history.count - 3] : smooth
-        return [4 + 12 * strength(left), 8 + 18 * strength(smooth), 4 + 12 * strength(right)]
+        return [4 + 12 * strength(left), 8 + 18 * strength(smooth), 4 + 12 * strength(right)].map { $0 * scale }
     }
     var reducedMotion = false
     var freeze = false
@@ -87,7 +93,7 @@ final class TalkingBarView: NSView {
     override var isFlipped: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override var acceptsFirstResponder: Bool { true }
-    var railHeight: CGFloat { tucked ? 44 : (showTimer || state == .writing) && !menuOpen ? 38 : 48 }
+    var railHeight: CGFloat { tucked ? 44 : menuOpen && hasRecordingControls ? 48 : (showTimer || state == .writing) ? 30 : 28 }
     private func choiceFrames(width: CGFloat) -> [CGRect] {
         var x: CGFloat = 16, y: CGFloat = 0
         return choices.map { title in
@@ -109,7 +115,7 @@ final class TalkingBarView: NSView {
     }
     func desiredSize(maxWidth: CGFloat) -> CGSize {
         var size = TrialBarPlacement.size(timer: showTimer, dragged: dragged, expanded: menuOpen && hasRecordingControls, tucked: tucked)
-        if state == .writing && !menuOpen { size = CGSize(width: 112, height: 38) }
+        if state == .writing && !menuOpen { size = CGSize(width: 112, height: 30) }
         if state == .message || state == .needs { size.width = max(size.width, 248) }
         if !shownMessage.isEmpty || !choices.isEmpty {
             let messageWidth = min(480, (shownMessage as NSString).size(withAttributes: [.font: Self.font(15)]).width + 32)
@@ -150,7 +156,9 @@ final class TalkingBarView: NSView {
         setAccessibilityElement(true)
         setAccessibilityRole(menuOpen || !choices.isEmpty || state == .message || state == .needs ? .group : .button)
         setAccessibilityLabel(tucked ? "Reveal Voice" : recordingActive ? "Recording. Show Finish and Cancel" : state == .resting ? "Start dictation" : state.rawValue.capitalized)
-        setAccessibilityValue(shownMessage.isEmpty ? (showTimer ? "\(seconds) seconds" : "") : shownMessage)
+        let accessibleMessage = state == .listening ? message : shownMessage
+        setAccessibilityValue(accessibleMessage.isEmpty ? (showTimer ? "\(seconds) seconds" : "") : accessibleMessage)
+        toolTip = state == .listening && !message.isEmpty ? message + " Click for details and recording controls." : nil
         needsDisplay = true
     }
     override func viewDidChangeEffectiveAppearance() {

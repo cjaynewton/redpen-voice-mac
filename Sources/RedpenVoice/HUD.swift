@@ -501,7 +501,7 @@ final class HUD {
         hud.rest(); check("idle hidden by default", !hud.wantsVisible && !hud.panel.isVisible)
         check("panel cannot steal text focus", !hud.panel.canBecomeKey && !hud.panel.canBecomeMain)
         hud.show("", level: true); capture("trial-bottom-listening")
-        check("initial B is 48x48", hud.panel.frame.size == CGSize(width: 48, height: 48))
+        check("compact bar is 72x28", hud.panel.frame.size == CGSize(width: 72, height: 28))
         if let screen = hud.currentScreen {
             check("B above bottom centre", hud.panel.frame.midX == screen.visibleFrame.midX && hud.panel.frame.minY == screen.visibleFrame.minY + TrialBarPlacement.bottomInset)
         }
@@ -540,13 +540,21 @@ final class HUD {
         hud.perform("options"); hud.dismissExtras()
         check("dismiss controls does not cancel", hud.box.state == .listening && cancelled == 1)
         defaults.set(true, forKey: "VoiceTrial.showTimer"); hud.layout(animated: false); capture("trial-timer")
-        check("timer C is 96x38", hud.panel.frame.size == CGSize(width: 96, height: 38))
+        check("timer bar is 104x30", hud.panel.frame.size == CGSize(width: 104, height: 30))
         defaults.set(false, forKey: "VoiceTrial.showTimer")
         hud.caption("These are the actual words shown on the bar."); capture("trial-live-caption")
-        check("live words preserved", hud.box.shownMessage.contains("actual words"))
+        check("live caption does not grow the bar", hud.box.shownMessage.isEmpty && hud.panel.frame.size == CGSize(width: 72, height: 28))
+        hud.perform("options"); capture("trial-live-caption-details")
+        check("live words available on click", hud.box.shownMessage.contains("actual words"))
+        hud.dismissExtras()
         hud.stoppedTyping("Typing stopped (you clicked). 52 words so far, all go in at the end.")
         capture("trial-stopped-typing")
-        check("stopped typing explains recovery", hud.box.shownMessage.contains("you clicked") && hud.listeningActive)
+        check("typing-stop status stays discreet", hud.box.shownMessage.isEmpty && hud.listeningActive && hud.panel.frame.size == CGSize(width: 72, height: 28))
+        check("typing-stop detail stays accessible", (hud.box.accessibilityValue() as? String)?.contains("you clicked") == true && hud.box.toolTip?.contains("you clicked") == true)
+        hud.perform("options"); capture("trial-stopped-typing-details")
+        check("stopped typing explained on click", hud.box.shownMessage.contains("you clicked") && hud.listeningActive)
+        hud.dismissExtras()
+        check("closing details preserves recording", hud.listeningActive && hud.box.message.contains("you clicked") && cancelled == 1)
         hud.writing("All your words go in now"); capture("trial-writing-detail")
         check("writing details preserved", hud.box.shownMessage == "All your words go in now")
         hud.show("No sound from Scarlett", level: false); capture("trial-no-sound")
@@ -583,10 +591,13 @@ final class HUD {
         check("narrow recovery choices stay within surface", narrow.subviews.count == 2 && narrow.subviews.allSatisfy { narrow.bounds.contains($0.frame) })
         check("narrow recovery choices wrap without overlap", !narrow.subviews[0].frame.intersects(narrow.subviews[1].frame))
         check("narrow recovery text clears choices", narrow.subviews.allSatisfy { !narrow.messageFrame.intersects($0.frame) })
-        if VoiceAppearance.selection == "colour" {
-            check("colour warning body text is white", TalkingBarView.body == NSColor.white)
-            check("colour warning label text is white", TalkingBarView.label == NSColor.white)
+        let priorAppearance = VoiceAppearance.selection
+        for appearance in ["light", "dark", "colour"] {
+            VoiceAppearance.apply(appearance)
+            let colour = TalkingBarView.surface.usingColorSpace(.sRGB)!
+            check("overlay stays dark with " + appearance + " windows", max(colour.redComponent, colour.greenComponent, colour.blueComponent) < 0.1)
         }
+        VoiceAppearance.apply(priorAppearance)
         hud.show("", level: true)
         if let screen = hud.currentScreen {
             hud.placements.save(center: CGPoint(x: screen.visibleFrame.minX + 20, y: screen.visibleFrame.midY),
@@ -594,11 +605,11 @@ final class HUD {
             hud.rest(); capture("trial-edge-tab")
             check("docked idle retrievable with keep off", hud.wantsVisible && hud.box.tucked && hud.panel.frame.width == 12)
             hud.perform("reveal"); capture("trial-edge-revealed")
-            check("tab reveal is functional", !hud.box.tucked && hud.panel.frame.width == 64)
+            check("tab reveal is functional", !hud.box.tucked && hud.panel.frame.width == 84)
             hud.show("", level: true); capture("trial-edge-recording")
-            check("recording never tucked", !hud.box.tucked && hud.panel.frame.width == 64)
+            check("recording never tucked", !hud.box.tucked && hud.panel.frame.width == 84)
             hud.perform("centre"); capture("trial-centre-again")
-            check("centre clears only current placement", hud.placements.position(on: hud.displayID(screen)) == nil && hud.panel.frame.width == 48)
+            check("centre clears only current placement", hud.placements.position(on: hud.displayID(screen)) == nil && hud.panel.frame.width == 72)
         }
         hud.keepBarOnScreen = true; hud.rest(); hud.perform("start")
         check("idle click original start", started == 1)
