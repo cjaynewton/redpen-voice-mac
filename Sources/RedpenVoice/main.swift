@@ -3470,9 +3470,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 4.5, execute: work)
     }
 
-    /// Light, dark, or the Mac's own setting, for every window and the menu bar panel. The talking bar stays dark.
+    /// The saved appearance is shared by native windows, the menu and the talking bar.
     static func applyAppearance(_ c: Config) {
-        NSApp.appearance = c.appearance.map { NSAppearance(named: $0 == "dark" ? .darkAqua : .aqua) } ?? nil
+        VoiceAppearance.apply(c.appearance)
     }
 
     private func setUpPanel() {
@@ -4283,7 +4283,21 @@ if let i = CommandLine.arguments.firstIndex(of: "--watchdog"), i + 1 < CommandLi
     Watchdog.run(parent: pid)
 }
 
-if let i = CommandLine.arguments.firstIndex(of: "--talking-bar-shots"), i + 1 < CommandLine.arguments.count {
+if let i = CommandLine.arguments.firstIndex(of: "--desktop-trial-shots") {
+    guard i + 1 < CommandLine.arguments.count, !CommandLine.arguments[i + 1].hasPrefix("--") else {
+        print("--desktop-trial-shots requires an output directory."); exit(1)
+    }
+    MainActor.assumeIsolated {
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.accessory)
+        exit(DesktopTrialShots.run(to: URL(fileURLWithPath: CommandLine.arguments[i + 1], isDirectory: true)))
+    }
+}
+
+if let i = CommandLine.arguments.firstIndex(of: "--talking-bar-shots") {
+    guard i + 1 < CommandLine.arguments.count, !CommandLine.arguments[i + 1].hasPrefix("--") else {
+        print("--talking-bar-shots requires an output directory."); exit(1)
+    }
     MainActor.assumeIsolated {
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.accessory)

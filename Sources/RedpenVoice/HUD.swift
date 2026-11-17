@@ -49,13 +49,28 @@ final class HUD {
     private var listeningActive = false
     private var monitors: [Any] = []
     private var screenWatch: NSObjectProtocol?
-    private var anchor: CGPoint?
+    private var placements = TrialBarPlacement()
+    private var dragging = false
+    private var edgeRevealed = false
+    private var preferenceWatches: [NSObjectProtocol] = []
     private let defaults: UserDefaults
     private let observesEvents: Bool
     private var frozen = false
-    private static let positionKey = "talkingBarPositionR3"
+    private var showTimer: Bool { defaults.bool(forKey: "VoiceTrial.showTimer") }
+    private var tuckAtEdge: Bool { (defaults.object(forKey: "VoiceTrial.tuckAtEdge") as? Bool) ?? true }
+    private func displayID(_ screen: NSScreen) -> UInt32 {
+        (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
+    }
+    private var currentScreen: NSScreen? {
+        let screens = NSScreen.screens
+        return dictationScreen.flatMap { old in screens.first { displayID($0) == displayID(old) } }
+            ?? screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? screens.first
+    }
+    private var docked: Bool {
+        currentScreen.map { placements.position(on: displayID($0))?.edge != nil } ?? false
+    }
 
-    /// Key-down must not wait for Accessibility. Refine this pointer choice when the bounded snapshot returns.
+    /// Key-down must not wait for Accessibility. The initial screen stays fixed until the next dictation.
     func flushInitialDisplay() {
         panel.displayIfNeeded()
         CATransaction.flush()
@@ -74,8 +89,12 @@ final class HUD {
         let choice = BarScreen.choose(screens: screens.map(\.frame), textBox: startBox,
                                      window: window.map { BarScreen.fromAccessibility($0, primaryTop: primary.frame.maxY) },
                                      pointer: NSEvent.mouseLocation)
-        dictationScreen = choice.map { screens[$0.index] }
-        if panel.isVisible { place() }
+        // A late AX result cannot move a visible dictation, writing progress or recovery notice.
+        if !wantsVisible || box.state == .resting {
+            dictationScreen = choice.map { screens[$0.index] }
+            if panel.isVisible { place() }
+        }
+
     }
 
     func captureScreen(textBox: CGRect?) {
@@ -117,16 +136,35 @@ final class HUD {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         box.frame = panel.contentView!.bounds; box.autoresizingMask = [.width, .height]
         panel.contentView = box
-        if let saved = defaults.array(forKey: Self.positionKey) as? [Double], saved.count == 2,
-           saved.allSatisfy({ $0.isFinite }) { anchor = CGPoint(x: saved[0], y: saved[1]) }
         box.onAction = { [weak self] in self?.perform($0) }
+        box.onReveal = { [weak self] reveal in
+            guard let self else { return }
+            self.edgeRevealed = reveal; self.layout(animated: false)
+        }
         box.onDrag = { [weak self] point, ended in
             guard let self else { return }
             self.box.menuOpen = false
-            self.anchor = point
+            let center = CGPoint(x: point.x + self.panel.frame.width / 2, y: point.y + self.panel.frame.height / 2)
+            let screens = NSScreen.screens
+            guard let screen = screens.first(where: { $0.frame.contains(center) }) ?? self.currentScreen else { return }
+            self.dictationScreen = screen
+            self.dragging = !ended; self.edgeRevealed = true
+            self.placements.save(center: center, on: self.displayID(screen), visible: screen.visibleFrame,
+                                 dock: ended)
+            if ended { self.edgeRevealed = false }
             self.layout(animated: false)
-            self.anchor = self.panel.frame.origin
-            if ended { self.persistPosition() }
+        }
+        for name in ["VoiceTrialBarPreferencesChanged", "VoiceAppearanceChanged", "VoiceTrialBarCentreAgain"] {
+            preferenceWatches.append(NotificationCenter.default.addObserver(forName: Notification.Name(name), object: nil, queue: .main) { [weak self] note in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if note.name.rawValue == "VoiceTrialBarCentreAgain", let screen = self.currentScreen {
+                        self.placements.reset(self.displayID(screen)); self.edgeRevealed = false
+                    }
+                    if self.box.state == .resting { self.updateIdleVisibility() }
+                    self.layout(animated: false)
+                }
+            })
         }
         if observesEvents {
             let mask: NSEvent.EventTypeMask = [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]
@@ -146,8 +184,14 @@ final class HUD {
                 object: nil, queue: .main) { [weak self] _ in
                     MainActor.assumeIsolated {
                         guard let self else { return }
+                        let screens = NSScreen.screens
+                        self.placements.retain(displays: Set(screens.map { self.displayID($0) }))
+                        if let screen = self.dictationScreen, !screens.contains(where: { self.displayID($0) == self.displayID(screen) }) {
+                            self.dictationScreen = screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? screens.first
+                            self.edgeRevealed = false
+                        }
                         self.layout(animated: false)
-                        self.anchor = self.panel.frame.origin; self.persistPosition()
+                        if self.box.state == .resting { self.updateIdleVisibility() }
                     }
                 }
         }
@@ -159,13 +203,21 @@ final class HUD {
         listeningActive = false
         typingStopped = false; captionText = ""; wordAction = nil; waitAction = nil; dismissedQuestion = false
         box.message = ""; box.choices = []; box.menuOpen = false; box.success = false
-        if keepBarOnScreen { transition(.resting) }
+        edgeRevealed = false
+        if keepBarOnScreen || (docked && tuckAtEdge) { transition(.resting) }
         else {
             box.state = .resting; box.stateAge = 0
             wantsVisible = false; panel.orderOut(nil)
         }
         stuckSince = nil
         onRested()
+    }
+
+    private func updateIdleVisibility() {
+        guard box.state == .resting else { return }
+        wantsVisible = keepBarOnScreen || (docked && tuckAtEdge)
+        if wantsVisible { layout(animated: false); if observesEvents { panel.orderFrontRegardless() } }
+        else { panel.orderOut(nil) }
     }
 
     /// A notice (kept for paste, didn't land) clears by itself, so it never hangs around. Paste last keeps the words.
@@ -209,7 +261,7 @@ final class HUD {
         listeningActive = false
         wordAction = nil; waitAction = nil; dismissedQuestion = false; box.choices = []
         hideAt?.cancel(); box.menuOpen = false
-        box.message = note == TalkingWords.writingAfterStop ? "" : note; box.success = false
+        box.message = note; box.success = false
         transition(.writing)
     }
     func level(_ v: Float) { latest = v.isFinite ? min(1, max(0, CGFloat(v))) : 0 }
@@ -230,11 +282,11 @@ final class HUD {
     }
     func stoppedTyping(_ line: String) {
         if !typingStopped { listen() }
-        typingStopped = true; captionText = ""
+        typingStopped = true; captionText = line
         if let range = line.range(of: #"\b[0-9]+ words?\b"#, options: .regularExpression),
            let count = Int(line[range].split(separator: " ").first ?? "") { box.words = count }
         guard box.state == .listening else { return }
-        box.message = ""; layout()
+        box.message = line; layout()
     }
 
     /// Resume the existing listening bar without resetting its timer or drawing.
@@ -297,13 +349,21 @@ final class HUD {
         } else if !panel.frame.contains(NSEvent.mouseLocation) { dismissExtras() }
     }
     private func perform(_ action: String) {
+        if action == "reveal" {
+            edgeRevealed = true; layout(animated: false); return
+        }
+        if action == "centre" {
+            if let screen = currentScreen { placements.reset(displayID(screen)) }
+            edgeRevealed = false; layout(); updateIdleVisibility(); return
+        }
         if action == "size" {
             box.menuOpen = false; smallTalkingBar.toggle(); onSmallTalkingBar(smallTalkingBar); return
         }
-        if action == "options" {
+        if ["options", "availability", "finish", "cancel", "paste"].contains(action) {
             let available = menuAvailability()
             box.canFinish = available.finish; box.canCancel = available.cancel; box.canPaste = available.paste
-            box.menuOpen.toggle(); layout(); return
+            if action == "availability" { return }
+            if action == "options" { box.menuOpen.toggle(); layout(); return }
         }
         if action == "dismiss" { dismissExtras(); return }
         if action == "keepBar", listeningActive {
@@ -367,22 +427,18 @@ final class HUD {
         let work = DispatchWorkItem { [weak self] in if let self { action(self) } }
         hideAt = work; DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
     }
-    private func persistPosition() {
-        guard let anchor else { return }
-        defaults.set([Double(anchor.x), Double(anchor.y)], forKey: Self.positionKey)
-    }
     private func layout(animated: Bool = true) {
-        let screens = NSScreen.screens
-        let screen = screens.first(where: { $0.frame.contains(anchor ?? panel.frame.origin) })
-            ?? dictationScreen.flatMap { old in screens.first { $0 == old } } ?? screens.first
-        let maxWidth = max(182, (screen?.visibleFrame.width ?? 800) - 16)
+        guard let screen = currentScreen else { return }
+        let id = displayID(screen)
         box.smallNeedsMessage = !listeningActive
         box.canKeepBar = listeningActive
-        let size = box.desiredSize(maxWidth: maxWidth)
-        let origin = anchor ?? screen.map { BarScreen.origin(visible: $0.visibleFrame, size: size, avoiding: startBox) } ?? .zero
-        let fitted = TalkingBar.fitted(origin: origin, size: size, screens: screens.map(\.visibleFrame))
-        if anchor == nil { anchor = fitted.origin }
-        let animate = animated && panel.isVisible && !box.reducedMotion && !frozen
+        box.showTimer = showTimer
+        box.dragged = placements.position(on: id) != nil || dragging
+        box.tucked = box.state == .resting && docked && tuckAtEdge && !edgeRevealed && !dragging
+        box.setAccessibilityHelp(box.tucked ? "Voice is tucked here. Click or hover to reveal it." : "Drag to move. Click the mark for recording controls. Right-click for more options.")
+        let size = box.desiredSize(maxWidth: max(48, screen.visibleFrame.width - 16))
+        let fitted = placements.frame(on: id, visible: screen.visibleFrame, size: size)
+        let animate = animated && panel.isVisible && !box.reducedMotion && !frozen && !dragging
         panel.setFrame(fitted, display: true, animate: animate)
         box.rebuildControls()
         panel.invalidateShadow()
@@ -412,310 +468,129 @@ final class HUD {
         try? bitmap.representation(using: .png, properties: [:])?.write(to: url)
     }
 
-    /// Isolated native checks and all approved states. No AppDelegate, microphone, typing or installed preferences.
+    /// Offscreen trial rendering. No AppDelegate, capture, insertion, live preferences or window ordering.
     static func captureStates(to directory: URL) -> Int32 {
         do { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true) }
         catch { print("Could not create screenshot directory: \(error)"); return 1 }
-        let suite = "RedpenVoice.TalkingBarTests." + UUID().uuidString
+        let suite = "RedpenVoice.NativeTrial." + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
         let hud = HUD(defaults: defaults, observesEvents: false)
         hud.frozen = true; hud.box.freeze = true
-        var passed = 0, failed = 0
+        var passed = 0, failed = 0, captures: [[String: Any]] = []
         func check(_ name: String, _ condition: Bool) {
             if condition { passed += 1 } else { failed += 1; print("FAIL \(name)") }
         }
-        check("Instrument Sans bundled", NSFont(name: "InstrumentSans-Regular", size: 17) != nil)
-        check("Medium font bundled", NSFont(name: "InstrumentSans-Medium", size: 17) != nil)
-        check("bar accepts first click without focus", hud.box.acceptsFirstMouse(for: nil))
-        check("bar cannot take text focus", !hud.panel.canBecomeKey && !hud.panel.canBecomeMain)
-        hud.onDismissPopup = { true }
-        check("Esc on an external popup is handled", hud.dismissExtras())
-        hud.onDismissPopup = { false }
-        let control = HoldKey()
-        var callbacks: [String] = []
-        control.canBegin = { true }; control.onDown = { callbacks.append("start"); return true }
-        control.onConfirm = { callbacks.append("confirm") }; control.onHandsFree = { callbacks.append("handsFree") }
-        control.startFromBar(); control.startFromBar()
-        check("mouse entry shares callbacks exactly once", callbacks == ["start", "confirm", "handsFree"] && control.handsFree)
-        control.stopFromEnter(); check("Finish clears mouse hands-free", !control.handsFree)
-        let rejected = HoldKey(); rejected.onDown = { false }
-        rejected.onConfirm = { callbacks.append("unexpected confirm") }
-        rejected.startFromBar()
-        check("failed start cannot stay latched", !rejected.handsFree && callbacks.count == 3)
-        let blocked = HoldKey(); blocked.canBegin = { false }; blocked.onDown = { callbacks.append("unexpected start"); return true }
-        blocked.startFromBar(); check("busy app cannot start from rail", !blocked.handsFree && callbacks.count == 3)
-        var records: [[String: Any]] = []
         func capture(_ name: String) {
             hud.layout(animated: false)
-            let path = directory.appendingPathComponent(name + ".png")
-            hud.snapshot(to: path)
-            let size = hud.panel.frame.size
-            let image = NSBitmapImageRep(data: (try? Data(contentsOf: path)) ?? Data())
-            check(name + " PNG size", image?.pixelsWide == Int(size.width * 2) && image?.pixelsHigh == Int(size.height * 2))
+            let url = directory.appendingPathComponent(name + ".png")
+            hud.snapshot(to: url, hidden: !hud.wantsVisible)
             check(name + " controls fit", hud.box.subviews.allSatisfy { hud.box.bounds.contains($0.frame) })
-            if hud.box.menuOpen {
-                let separator = CGRect(x: 16, y: hud.box.menuSeparatorY, width: size.width - 32, height: 1)
-                check(name + " divider clears every menu row", hud.box.subviews.allSatisfy { !$0.frame.intersects(separator) })
+            let controls = hud.box.subviews
+            check(name + " controls do not overlap", controls.enumerated().allSatisfy { index, view in
+                controls.dropFirst(index + 1).allSatisfy { !view.frame.intersects($0.frame) }
+            })
+            if !hud.box.shownMessage.isEmpty {
+                let measured = (hud.box.shownMessage as NSString).boundingRect(with: CGSize(width: hud.box.messageFrame.width, height: 2000),
+                    options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: TalkingBarView.font(15)])
+                check(name + " full warning text fits", ceil(measured.height) <= hud.box.messageFrame.height)
+                check(name + " text clears all controls", controls.allSatisfy { !hud.box.messageFrame.intersects($0.frame) })
             }
-            if let image {
-                let corner = image.colorAt(x: 0, y: image.pixelsHigh - 1)
-                check(name + " square opaque corners", (corner?.alphaComponent ?? 0) > 0.99)
-                // Compare encoded PNG component values. Converting colorAt's calibrated wrapper again
-                // applies a second transfer curve even though this bitmap is already tagged sRGB.
-                let surface = image.colorAt(x: 1, y: 4)
-                check(name + " lighter grey surface", abs((surface?.redComponent ?? 0) - 37.0 / 255) < 0.01
-                    && abs((surface?.greenComponent ?? 0) - 39.0 / 255) < 0.01
-                    && abs((surface?.blueComponent ?? 0) - 43.0 / 255) < 0.01)
-                var outsideRed = false
-                let railTop = image.pixelsHigh - Int(hud.box.railHeight * 2)
-                for y in stride(from: 0, to: image.pixelsHigh, by: 2) {
-                    for x in stride(from: 0, to: image.pixelsWide, by: 2) where x < 80 || x >= image.pixelsWide - (hud.box.compact ? 24 : 100) || y < railTop {
-                        if let color = image.colorAt(x: x, y: y),
-                           color.redComponent > 0.5, color.redComponent > color.greenComponent * 1.5,
-                           color.redComponent > color.blueComponent * 1.5 { outsideRed = true }
-                    }
-                }
-                check(name + " red only in signal area", !outsideRed)
-            }
-            records.append(["file": path.lastPathComponent, "width": size.width, "height": size.height, "scale": 2])
+            captures.append(["file": url.lastPathComponent, "width": hud.panel.frame.width,
+                             "height": hud.panel.frame.height, "visible": hud.wantsVisible])
         }
-        func captureHidden(_ name: String) {
-            hud.layout(animated: false)
-            let path = directory.appendingPathComponent(name + ".png")
-            hud.snapshot(to: path, hidden: !hud.wantsVisible)
-            let image = NSBitmapImageRep(data: (try? Data(contentsOf: path)) ?? Data())
-            check(name + " has no bar", !hud.wantsVisible && !hud.panel.isVisible && hud.tick == nil)
-            check(name + " transparent capture", image?.colorAt(x: 5, y: 5)?.alphaComponent == 0)
-            records.append(["file": path.lastPathComponent, "visible": hud.wantsVisible, "scale": 2])
+        hud.rest(); check("idle hidden by default", !hud.wantsVisible && !hud.panel.isVisible)
+        check("panel cannot steal text focus", !hud.panel.canBecomeKey && !hud.panel.canBecomeMain)
+        hud.show("", level: true); capture("trial-centred-listening")
+        check("initial B is 48x48", hud.panel.frame.size == CGSize(width: 48, height: 48))
+        if let screen = hud.currentScreen {
+            check("B exactly centred", hud.panel.frame.midX == screen.visibleFrame.midX && hud.panel.frame.midY == screen.visibleFrame.midY)
         }
-        hud.rest(); captureHidden("r3-default-idle-hidden")
-        check("idle option defaults off", !hud.keepBarOnScreen && Config().keepBarOnScreen != true)
-        var savedConfig = Config(); savedConfig.keepBarOnScreen = true
-        let savedData = try! JSONEncoder().encode(savedConfig)
-        let configCopy = try! JSONDecoder().decode(Config.self, from: savedData)
-        check("idle option survives config round trip", configCopy.keepBarOnScreen == true)
-        var legacy = try! JSONSerialization.jsonObject(with: savedData) as! [String: Any]
-        legacy.removeValue(forKey: "keepBarOnScreen")
-        let legacyCopy = try! JSONDecoder().decode(Config.self, from: JSONSerialization.data(withJSONObject: legacy))
-        check("old config defaults to hidden", legacyCopy.keepBarOnScreen == nil)
-        hud.keepBarOnScreen = true
-        for style in ["pen", "bars", "tape", "dot", "classic"] {
-            hud.style = style
-            for state in [TalkingBar.State.resting, .listening, .writing, .needs, .done] {
-                hud.rest()
-                hud.box.state = state; hud.box.stateAge = 0.3; hud.box.phase = 1.7
-                hud.box.seconds = 22; hud.box.words = 52; hud.box.smooth = 0.82
-                hud.box.history = (0..<90).map { 0.55 + 0.4 * sin(Double($0) * 0.7) }
-                if state == .needs { hud.box.message = "No sound from Scarlett" }
-                capture("r3-\(style)-\(state.rawValue)")
-                let expected = TalkingBar.size(state, style: style)
-                check("\(style) \(state.rawValue) approved dimensions", hud.panel.frame.size == expected)
-            }
-        }
-        hud.style = "pen"; hud.rest(); hud.perform("options"); capture("r3-menu-resting")
-        check("rest menu 236x177", hud.panel.frame.size == CGSize(width: 236, height: 177))
-        check("rest menu rows", hud.box.subviews.compactMap { ($0 as? NSButton)?.title }.filter { !$0.isEmpty } == ["Dictate", "Paste last", "Meeting notes", "Settings"])
-        hud.show("", level: true); hud.box.seconds = 22; hud.box.smooth = 0.82
-        hud.perform("options"); capture("r3-menu-listening")
-        check("live menu 314x245", hud.panel.frame.size == CGSize(width: 314, height: 245))
-        check("live menu rows", hud.box.subviews.compactMap { ($0 as? NSButton)?.title }.filter { !$0.isEmpty } == ["Finish", "Cancel", "Keep bar on screen", "Paste last", "Meeting notes", "Settings"])
-        var keepChoices: [Bool] = []
-        hud.onKeepBarOnScreen = { keepChoices.append($0) }
-        (hud.box.subviews.first { ($0 as? NSButton)?.title == "Keep bar on screen" } as? NSButton)?.performClick(nil)
-        check("keep row turns off without stopping listening", !hud.keepBarOnScreen && hud.listeningActive && keepChoices == [false])
-        capture("r3-menu-listening-default-off")
-        hud.perform("keepBar")
-        check("keep row turns on", hud.keepBarOnScreen && keepChoices == [false, true])
-        hud.rest(); check("opt-in retains resting tab", hud.wantsVisible && hud.box.state == .resting)
-        hud.show("", level: true); hud.perform("options")
-        hud.perform("keepBar")
-        var finished = 0, started = 0, pasted = 0, notes = 0, settings = 0, cancelled = 0
-        hud.onFinish = { finished += 1 }; hud.onStart = { started += 1 }; hud.onPaste = { pasted += 1 }
-        hud.onNotes = { notes += 1 }; hud.onSettings = { settings += 1 }; hud.onCancel = { cancelled += 1 }
+        let initialFrame = hud.panel.frame
+        hud.refineCapture(textBox: CGRect(x: 5000, y: 0, width: 100, height: 100), window: nil)
+        check("late focus refinement keeps recording steady", hud.panel.frame == initialFrame)
+        var finished = 0, cancelled = 0, started = 0, pasted = 0, notes = 0, settings = 0
+        hud.onFinish = { finished += 1 }; hud.onCancel = { cancelled += 1 }; hud.onStart = { started += 1 }
+        hud.onPaste = { pasted += 1 }; hud.onNotes = { notes += 1 }; hud.onSettings = { settings += 1 }
+        hud.perform("options"); capture("trial-finish-cancel")
+        check("controls expand together", hud.panel.frame.size == CGSize(width: 264, height: 48))
+        check("Finish and Cancel labelled", hud.box.subviews.compactMap { ($0 as? NSButton)?.title } == ["Finish", "Cancel"])
         (hud.box.subviews.first { ($0 as? NSButton)?.title == "Finish" } as? NSButton)?.performClick(nil)
-        check("native Finish callback once", finished == 1 && !hud.box.menuOpen)
-        hud.rest(); hud.perform("options")
-        (hud.box.subviews.first { ($0 as? NSButton)?.title == "Dictate" } as? NSButton)?.performClick(nil)
-        check("native Dictate callback once", started == 1 && !hud.box.menuOpen)
-        for action in ["paste", "notes", "settings", "cancel"] { hud.perform(action) }
-        check("existing action callbacks", pasted == 1 && notes == 1 && settings == 1 && cancelled == 1)
-        hud.show("", level: true); hud.perform("options"); hud.dismissExtras()
-        check("Esc closes menu without cancelling", !hud.box.menuOpen && hud.box.state == .listening && cancelled == 1)
-        let cgEvent = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)!
-        cgEvent.setIntegerValueField(.eventSourceUnixProcessID, value: 0)
-        cgEvent.setIntegerValueField(.eventSourceUserData, value: 0)
-        let event = NSEvent(cgEvent: cgEvent)!
-        hud.perform("options"); hud.outside(event)
-        check("typing closes menu", !hud.box.menuOpen && hud.box.state == .listening)
-        hud.caption("52 words"); hud.writing()
-        check("real caption count retained", hud.box.words == 52 && hud.box.state == .writing)
-        hud.hide(); check("writing completion becomes Done", hud.box.state == .done)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.8))
-        check("Done hides after 750ms", hud.box.state == .resting && !hud.wantsVisible && !hud.panel.isVisible)
-        captureHidden("r3-done-hidden")
-        hud.writing(); hud.hide(); hud.show("New progress", level: false)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.8))
-        check("old completion cannot hide newer progress", hud.box.state == .message && hud.box.message == "New progress")
-        hud.rest(); check("rest does not block suggestions", !hud.isShowing)
-        hud.flash("Saved", for: 0.01)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.03))
-        captureHidden("r3-flash-hidden")
-        hud.show("Press ⌃⌥V to paste your words", level: false)
-        check("paste notice stays until dismissed", hud.wantsVisible && hud.box.state == .message)
-        hud.dismissExtras(); captureHidden("r3-paste-dismissed-hidden")
-        hud.show("Kept it. Press ⌃⌥V to paste", level: false); hud.expireNotice(after: 0.05)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.12))
-        check("paste notice clears by itself", hud.box.state == .resting && !hud.wantsVisible)
-        var rested = 0; hud.onRested = { rested += 1 }
-        hud.show("Kept it. Press ⌃⌥V to paste", level: false)
-        let noticeClick = NSEvent.mouseEvent(with: .leftMouseDown, location: CGPoint(x: 40, y: 20), modifierFlags: [],
-            timestamp: 1, windowNumber: hud.panel.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
-        hud.box.mouseDown(with: noticeClick); hud.box.mouseUp(with: noticeClick)
-        check("click on a notice clears it", hud.box.state == .resting && !hud.wantsVisible && rested == 1)
-        hud.ask("These words are waiting.", yes: "Copy", no: "Throw away") { _ in }; hud.expireNotice(after: 0.05)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.12))
-        check("a question does not time out", hud.box.state == .message && hud.wantsVisible)
-        hud.rest(); hud.onRested = {}
+        check("Finish once through real callback", finished == 1 && !hud.box.menuOpen)
+        hud.perform("cancel"); hud.perform("paste"); hud.perform("notes"); hud.perform("settings")
+        check("existing callbacks preserved", cancelled == 1 && pasted == 1 && notes == 1 && settings == 1)
+        hud.perform("options"); hud.dismissExtras()
+        check("dismiss controls does not cancel", hud.box.state == .listening && cancelled == 1)
+        defaults.set(true, forKey: "VoiceTrial.showTimer"); hud.layout(animated: false); capture("trial-timer")
+        check("timer C is 96x38", hud.panel.frame.size == CGSize(width: 96, height: 38))
+        defaults.set(false, forKey: "VoiceTrial.showTimer")
+        hud.caption("These are the actual words shown on the bar."); capture("trial-live-caption")
+        check("live words preserved", hud.box.shownMessage.contains("actual words"))
+        hud.stoppedTyping("Typing stopped (you clicked). 52 words so far, all go in at the end.")
+        capture("trial-stopped-typing")
+        check("stopped typing explains recovery", hud.box.shownMessage.contains("you clicked") && hud.listeningActive)
+        hud.writing("All your words go in now"); capture("trial-writing-detail")
+        check("writing details preserved", hud.box.shownMessage == "All your words go in now")
+        hud.show("No sound from Scarlett", level: false); capture("trial-no-sound")
+        check("no-sound warning preserved", hud.box.shownMessage == "No sound from Scarlett")
+        check("terminal warning has no unrelated recording buttons", hud.box.subviews.isEmpty)
         hud.show("", level: true)
-        let t0 = Date()
-        check("live bar not hidden while busy", !hud.restIfStuck(idle: false, now: t0) && hud.box.state == .listening)
-        check("idle bar waits before hiding", !hud.restIfStuck(idle: true, now: t0) && !hud.restIfStuck(idle: true, now: t0.addingTimeInterval(2)))
-        check("idle live bar hidden after 3 s", hud.restIfStuck(idle: true, now: t0.addingTimeInterval(3.1)) && !hud.wantsVisible)
-        hud.show("", level: true); hud.restIfStuck(idle: true, now: t0)
-        hud.restIfStuck(idle: false, now: t0.addingTimeInterval(1))
-        check("busy again resets the idle clock", !hud.restIfStuck(idle: true, now: t0.addingTimeInterval(3.5)))
-        hud.rest()
-        hud.show("Transcribing… 42%", level: false)
-        check("messages are not hidden by the idle guard", !hud.restIfStuck(idle: true, now: t0) && !hud.restIfStuck(idle: true, now: t0.addingTimeInterval(10)))
-        hud.rest()
+        hud.box.state = .needs; hud.box.message = "No sound from Scarlett. Check the microphone connection."
+        hud.perform("options"); capture("trial-live-no-sound-controls")
+        check("live warning exposes labelled controls", hud.box.subviews.compactMap { ($0 as? NSButton)?.title } == ["Finish", "Cancel"])
+        (hud.box.subviews.first { ($0 as? NSButton)?.title == "Finish" } as? NSButton)?.performClick(nil)
+        check("live warning Finish retains real callback", finished == 2 && hud.listeningActive)
+        hud.perform("options")
+        (hud.box.subviews.first { ($0 as? NSButton)?.title == "Cancel" } as? NSButton)?.performClick(nil)
+        check("live warning Cancel retains real callback", cancelled == 2)
+        let warningDismissed = hud.dismissExtras()
+        check("live warning dismissal cannot cancel recording", !warningDismissed && hud.box.state == .needs && cancelled == 2)
         var answer: Bool?
-        hud.ask("These words are waiting. Copy them or throw them away?", yes: "Copy", no: "Throw away") { answer = $0 }
-        capture("r3-recovery-question")
-        hud.dismissExtras()
-        check("dismiss never answers or reopens recovery", answer == nil && hud.dismissedQuestion && hud.isShowing)
-        hud.stopAsking(); check("stopped recovery clears dismissal", !hud.isShowing)
-        hud.ask("These words are waiting.", yes: "Copy", no: "Throw away") { answer = $0 }
-        hud.perform("choice0"); check("recovery button preserves callback", answer == true)
-        check("suggestion offered at rest", hud.suggest("Scarlett") { answer = $0 })
-        capture("r3-word-suggestion"); hud.perform("choice1"); check("suggestion Not now callback", answer == false)
-        let warning = "Didn't confirm all the words. Press ⌃⌥V to paste the checked text"
-        hud.flash(warning, for: 30); capture("r3-warning")
-        check("flash keeps full message", hud.box.message == warning)
-        hud.outside(event); check("typing dismisses flash", hud.box.state == .resting)
-        hud.show("Transcribing… 42%", level: false); capture("r3-progress")
-        check("progress kept", hud.box.message == "Transcribing… 42%")
-        hud.show("", level: true); hud.caption("Here are the actual words that were dictated into this test.")
-        capture("r3-caption")
-        check("raw caption counted before tail", hud.box.words == 11)
-        let reason = "Typing stopped (you clicked). 52 words so far, all go in at the end."
-        hud.stoppedTyping(reason); hud.caption("must not replace the reason"); capture("r3-stopped-typing")
-        check("typing-stop has count but no sentence", hud.box.message.isEmpty && hud.box.words == 52 && hud.isTypingStopped && hud.box.detailHeight == 0)
-        hud.writing("All your words go in now"); capture("r3-writing-note")
-        check("writing after stop has no sentence", hud.box.message.isEmpty && hud.box.words == 52)
-        hud.show("No sound from Scarlett", level: false); hud.frozen = false; hud.frame(); hud.frozen = true
-        check("no-sound flash stays a message", hud.box.state == .needs && !hud.listeningActive)
-        hud.show("", level: true); hud.micName = "Scarlett"; hud.silentFor = 2
-        hud.frozen = false; hud.frame(); hud.frozen = true
-        check("silence produces Needs you", hud.box.state == .needs && hud.box.message == "No sound from Scarlett")
-        hud.level(0.5); hud.frozen = false; hud.frame(); hud.frozen = true
-        check("audio recovers listening", hud.box.state == .listening)
-        hud.show("No sound from " + String(repeating: "Long named audio interface ", count: 15), level: false)
-        capture("r3-long-mic-name")
-        check("long mic name wraps above rail", hud.box.needsOverflow && hud.box.detailHeight > 40)
-        hud.writing(); hud.box.words = 52; hud.box.freeze = false; hud.box.reducedMotion = true; hud.box.stateAge = 0
-        capture("r3-reduced-motion-writing")
-        hud.box.freeze = true; hud.box.reducedMotion = false
-        let beforeClick = started
-        hud.keepBarOnScreen = true; hud.rest()
-        let click = NSEvent.mouseEvent(with: .leftMouseDown, location: CGPoint(x: 80, y: 20), modifierFlags: [],
-            timestamp: 1, windowNumber: hud.panel.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
-        hud.box.mouseDown(with: click); hud.box.mouseUp(with: click)
-        check("resting rail click starts once", started == beforeClick + 1)
-        hud.perform("options")
-        let arrow = hud.box.subviews.first { ($0 as? NSButton)?.title == "" } as? NSButton
-        check("arrow owns its hit target", hud.box.hitTest(hud.box.convert(CGPoint(x: hud.box.bounds.width - 20, y: hud.box.bounds.height - 20), to: hud.box.superview)) === arrow)
-        arrow?.performClick(nil)
-        check("arrow closes menu without starting", !hud.box.menuOpen && started == beforeClick + 1)
-        hud.rest(); hud.menuAvailability = { (false, false, false) }; hud.perform("options")
-        let pasteButton = hud.box.subviews.first { ($0 as? NSButton)?.title == "Paste last" } as? NSButton
-        check("unavailable paste is disabled", pasteButton?.isEnabled == false)
-        hud.perform("paste"); check("unavailable paste does not run", pasted == 1)
-        hud.menuAvailability = { (true, true, true) }
-        hud.rest(); let restingOrigin = hud.panel.frame.origin
-        hud.perform("options")
-        check("menu bottom stays fixed", hud.panel.frame.minY == restingOrigin.y)
-        hud.box.onDrag(CGPoint(x: restingOrigin.x + 35, y: restingOrigin.y + 25), true)
-        check("drag closes menu", !hud.box.menuOpen)
-        let saved = hud.panel.frame.origin
-        hud.keepBarOnScreen = false; hud.rest()
-        check("hiding preserves saved position", hud.anchor == saved && !hud.wantsVisible)
-        hud.show("", level: true)
-        check("hidden bar returns immediately listening at saved position", hud.wantsVisible && hud.box.state == .listening && hud.panel.frame.origin == saved)
-        let reopened = HUD(defaults: defaults, observesEvents: false); reopened.frozen = true; reopened.rest()
-        check("new instance starts hidden", !reopened.wantsVisible && !reopened.panel.isVisible)
-        reopened.show("", level: true)
-        check("position restored across instances", reopened.panel.frame.origin == saved)
-        // Exercise real orderOut with a review-only panel; no AppDelegate or capture services run.
-        reopened.panel.orderFrontRegardless()
-        check("test panel is ordered", reopened.panel.isVisible)
-        reopened.rest()
-        check("default idle actually orders panel out", !reopened.panel.isVisible)
-        reopened.keepBarOnScreen = true; reopened.writing(); reopened.hide()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.8))
-        check("opt-in Done returns to resting tab", reopened.wantsVisible && reopened.box.state == .resting)
-        // Small mode persists through the real config codec, without touching installed preferences.
-        var smallConfig = Config(); smallConfig.smallTalkingBar = true
-        let smallData = try! JSONEncoder().encode(smallConfig)
-        let smallCopy = try! JSONDecoder().decode(Config.self, from: smallData)
-        check("small config round trip", smallCopy.smallTalkingBar == true)
-        check("legacy config full size", legacyCopy.smallTalkingBar == nil)
-        var toggles: [Bool] = []
-        hud.onSmallTalkingBar = { toggles.append($0) }
-        hud.show("", level: true)
-        let sizeOrigin = hud.panel.frame.origin
-        hud.box.beginPointer(at: .zero, local: CGPoint(x: 18, y: hud.box.bounds.height - 13))
-        hud.box.movePointer(to: CGPoint(x: 1, y: 1)); hud.box.endPointer()
-        check("grip click with jitter toggles once", hud.smallTalkingBar && toggles == [true])
-        check("size toggle keeps anchor", hud.panel.frame.origin == sizeOrigin)
-        check("small rail dimensions", hud.panel.frame.size == CGSize(width: 157, height: 26))
-        hud.box.beginPointer(at: .zero, local: CGPoint(x: 18, y: 13))
-        hud.box.movePointer(to: CGPoint(x: 20, y: 10)); hud.box.movePointer(to: .zero); hud.box.endPointer()
-        check("drag returning to start never toggles", hud.smallTalkingBar && toggles == [true])
-        hud.box.beginPointer(at: .zero, local: CGPoint(x: 18, y: 13)); hud.box.endPointer()
-        check("second grip click restores full size", !hud.smallTalkingBar && toggles == [true, false] && hud.panel.frame.width == 314)
-        hud.smallTalkingBar = smallCopy.smallTalkingBar ?? false
-        reopened.smallTalkingBar = smallCopy.smallTalkingBar ?? false
-        reopened.show("", level: true)
-        check("config restored on new instance", reopened.panel.frame.size == CGSize(width: 157, height: 26))
-        for style in ["pen", "bars", "tape", "dot", "classic"] {
-            hud.style = style
-            for state in [TalkingBar.State.resting, .listening, .writing, .needs, .done] {
-                hud.show("", level: true)
-                hud.box.state = state; hud.box.stateAge = 0.3; hud.box.phase = 1.7
-                hud.box.smooth = 0.82; hud.box.words = 52; hud.box.seconds = 22
-                hud.box.message = state == .needs ? "No sound from Scarlett" : "52 words"
-                capture("small-\(style)-\(state.rawValue)")
-                check("small \(style) \(state) rail only", hud.box.shownMessage.isEmpty && hud.box.subviews.isEmpty && hud.panel.frame.size == CGSize(width: 157, height: 26))
-            }
+        hud.ask("Your words are kept. Copy them?", yes: "Copy", no: "Throw away") { answer = $0 }
+        capture("trial-recovery")
+        check("recovery buttons fit", hud.box.choices == ["Copy", "Throw away"] && hud.box.subviews.count >= 2)
+        hud.dismissExtras(); check("dismiss never answers recovery", answer == nil && hud.dismissedQuestion)
+        hud.ask("Copy words?", yes: "Copy", no: "Keep") { answer = $0 }
+        (hud.box.subviews.first { ($0 as? NSButton)?.title == "Copy" } as? NSButton)?.performClick(nil)
+        check("native Copy invokes original recovery callback", answer == true)
+        hud.ask("Your words are kept.", yes: "Copy", no: "Throw away") { answer = $0 }
+        (hud.box.subviews.first { ($0 as? NSButton)?.title == "Throw away" } as? NSButton)?.performClick(nil)
+        check("native Throw away invokes original recovery callback", answer == false)
+        let narrow = TalkingBarView(frame: .zero)
+        narrow.state = .message
+        narrow.message = String(repeating: "Your words are kept. ", count: 8)
+        narrow.choices = ["Copy all of my words", "Keep the words for later"]
+        let narrowSize = narrow.desiredSize(maxWidth: 248)
+        narrow.frame = CGRect(origin: .zero, size: narrowSize); narrow.rebuildControls()
+        check("narrow recovery choices stay within surface", narrow.subviews.count == 2 && narrow.subviews.allSatisfy { narrow.bounds.contains($0.frame) })
+        check("narrow recovery choices wrap without overlap", !narrow.subviews[0].frame.intersects(narrow.subviews[1].frame))
+        check("narrow recovery text clears choices", narrow.subviews.allSatisfy { !narrow.messageFrame.intersects($0.frame) })
+        if VoiceAppearance.selection == "colour" {
+            check("colour warning body text is white", TalkingBarView.body == NSColor.white)
+            check("colour warning label text is white", TalkingBarView.label == NSColor.white)
         }
-        hud.style = "pen"
-        hud.show("Paste last with ⌃⌥V", level: false); capture("small-paste-last")
-        check("small keeps Paste last words", hud.box.shownMessage == "Paste last with ⌃⌥V" && hud.box.detailHeight > 0)
-        hud.show("No sound from Scarlett", level: false); capture("small-no-sound-message")
-        check("small keeps terminal no-sound words", hud.box.shownMessage == "No sound from Scarlett" && hud.box.detailHeight > 0)
-        hud.ask("Keep these words?", yes: "Paste", no: "Keep", action: { _ in }); capture("small-question")
-        check("small keeps recovery buttons", hud.box.choices == ["Paste", "Keep"] && !hud.box.compact)
-        for small in [false, true] {
-            let fitted = TalkingBar.fitted(origin: CGPoint(x: 3000, y: 500), size: TalkingBar.size(.listening, style: "pen", small: small), screens: [CGRect(x: 0, y: 0, width: 1200, height: 800)])
-            check("display removal fits both sizes \(small)", CGRect(x: 8, y: 8, width: 1184, height: 784).contains(fitted))
+        hud.show("", level: true)
+        if let screen = hud.currentScreen {
+            hud.placements.save(center: CGPoint(x: screen.visibleFrame.minX + 20, y: screen.visibleFrame.midY),
+                                on: hud.displayID(screen), visible: screen.visibleFrame, dock: true)
+            hud.rest(); capture("trial-edge-tab")
+            check("docked idle retrievable with keep off", hud.wantsVisible && hud.box.tucked && hud.panel.frame.width == 12)
+            hud.perform("reveal"); capture("trial-edge-revealed")
+            check("tab reveal is functional", !hud.box.tucked && hud.panel.frame.width == 64)
+            hud.show("", level: true); capture("trial-edge-recording")
+            check("recording never tucked", !hud.box.tucked && hud.panel.frame.width == 64)
+            hud.perform("centre"); capture("trial-centre-again")
+            check("centre clears only current placement", hud.placements.position(on: hud.displayID(screen)) == nil && hud.panel.frame.width == 48)
         }
-        reopened.shutdown(); hud.shutdown(); defaults.removePersistentDomain(forName: suite)
-        let result: [String: Any] = ["passed": passed, "failed": failed, "captures": records,
-            "scope": "Native offscreen rendering and synthetic interactions. No recording, insertion, media or installation."]
+        hud.keepBarOnScreen = true; hud.rest(); hud.perform("start")
+        check("idle click original start", started == 1)
+        hud.writing(); hud.hide(); check("completion preserved", hud.box.state == .done)
+        hud.rest(); hud.shutdown(); defaults.removePersistentDomain(forName: suite)
+        let result: [String: Any] = ["passed": passed, "failed": failed, "captures": captures,
+            "scope": "Offscreen native trial. No physical multi-display, recording, insertion, media or installation proof."]
         if let data = try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: directory.appendingPathComponent("verification.json"))
         }
-        print("Talking bar native checks: \(passed) passed, \(failed) failed")
+        print("Native trial HUD checks: \(passed) passed, \(failed) failed")
         return failed == 0 ? 0 : 1
     }
 
@@ -723,6 +598,7 @@ final class HUD {
         hideAt?.cancel(); tick?.invalidate(); tick = nil; wantsVisible = false; panel.orderOut(nil)
         monitors.forEach(NSEvent.removeMonitor); monitors.removeAll()
         if let screenWatch { NotificationCenter.default.removeObserver(screenWatch) }; screenWatch = nil
+        preferenceWatches.forEach(NotificationCenter.default.removeObserver); preferenceWatches.removeAll()
     }
 }
 

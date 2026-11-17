@@ -62,18 +62,26 @@ struct HistoryView: View {
     @ObservedObject var model: HistoryModel
     /// Draw every row now (for a picture of the window); the window itself draws rows as they scroll into view.
     var eager = false
+    @State private var confirmClear = false
+    @State private var appearanceRevision = 0
+
+    init(model: HistoryModel, eager: Bool = false) {
+        self.model = model
+        self.eager = eager
+    }
 
     var body: some View {
+        let _ = appearanceRevision
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
-                Text("History").font(Ink.serif(26)).foregroundStyle(Ink.text)
+                Text("Your words").font(.system(size: 25, weight: .semibold)).foregroundStyle(Ink.text)
                 Spacer()
                 Text("Keep").font(.system(size: 13)).foregroundStyle(Ink.mid)
-                Picker("", selection: Binding(get: { model.keep }, set: { model.setKeep($0) })) {
+                Picker("Keep dictations", selection: Binding(get: { model.keep }, set: { chooseRetention($0) })) {
                     Text("The last 2,000").tag("all")
                     Text("The last week").tag("week")
-                    Text("Nothing (clears the list)").tag("none")
-                }.labelsHidden().frame(width: 200)
+                    Text("Nothing").tag("none")
+                }.labelsHidden().frame(width: 180).help("How long to keep dictations")
             }
             Text(model.keep == "none"
                  ? "Nothing is kept. Paste last still has your last dictation until Voice quits."
@@ -82,11 +90,12 @@ struct HistoryView: View {
 
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").foregroundStyle(Ink.dim)
-                TextField("Search", text: $model.query).textFieldStyle(.plain).font(.system(size: 14))
+                TextField("Search your dictations", text: $model.query).textFieldStyle(.plain).font(.system(size: 14))
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
-            .overlay(RoundedRectangle(cornerRadius: 3).stroke(Ink.line))
-            .padding(.top, 16).padding(.bottom, 6)
+            .background(Ink.subtle, in: RoundedRectangle(cornerRadius: 3))
+            .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(Ink.border.opacity(0.6)))
+            .padding(.top, 20).padding(.bottom, 8)
 
             ScrollView {
                 if eager { VStack(alignment: .leading, spacing: 0) { rows } } else { LazyVStack(alignment: .leading, spacing: 0) { rows } }
@@ -95,12 +104,24 @@ struct HistoryView: View {
         .padding(28)
         .frame(minWidth: 460, minHeight: 360)
         .background(Ink.paper)
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("VoiceAppearanceChanged"))) { _ in appearanceRevision += 1 }
+        .alert("Clear dictation history?", isPresented: $confirmClear) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear history", role: .destructive) { model.setKeep("none") }
+        } message: {
+            Text("Choosing Nothing clears the saved list and stops keeping future dictations. This cannot be undone. Your stats stay.")
+        }
+    }
+
+    private func chooseRetention(_ keep: String) {
+        guard keep != model.keep else { return }
+        if keep == "none" { confirmClear = true }
+        else { model.setKeep(keep) }
     }
 
     @ViewBuilder private var rows: some View {
         ForEach(Array(model.shown.enumerated()), id: \.offset) { _, e in
             row(e)
-            Divider().overlay(Ink.line)
         }
         if model.shown.isEmpty {
             Text(model.query.isEmpty ? "Nothing here yet. Your dictations will show up here." : "No dictation has those words.")
@@ -115,14 +136,21 @@ struct HistoryView: View {
                 Text("·").foregroundStyle(Ink.dim)
                 Text(e.app).foregroundStyle(Ink.dim)
                 Spacer()
-                Button(model.copied == e.date ? "Copied" : "Copy") { model.copy(e) }.buttonStyle(.plain).foregroundStyle(Ink.red)
                 Button("Delete") { model.delete(e) }.buttonStyle(.plain).foregroundStyle(Ink.dim)
             }
             .font(.system(size: 12.5))
-            Text(e.text).font(Ink.body(16)).foregroundStyle(Ink.text).textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
+            Text(e.text).font(.system(size: 14)).foregroundStyle(Ink.text).textSelection(.enabled)
+                .lineSpacing(4).fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 5).padding(.bottom, 8)
+            Button { model.copy(e) } label: {
+                Label(model.copied == e.date ? "Copied" : "Copy", systemImage: model.copied == e.date ? "checkmark" : "doc.on.doc")
+                    .font(.system(size: 12, weight: .medium)).foregroundStyle(Ink.text)
+                    .padding(.horizontal, 11).padding(.vertical, 7)
+                    .background(Ink.raised, in: RoundedRectangle(cornerRadius: 3))
+                    .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(Ink.border.opacity(0.6)))
+            }.buttonStyle(.plain)
         }
-        .padding(.vertical, 12)
+        .padding(.vertical, 16).frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// "Today 3:41 pm", "Yesterday 9:02 am", or the date for anything older.

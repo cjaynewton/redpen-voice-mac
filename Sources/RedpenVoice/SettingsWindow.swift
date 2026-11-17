@@ -1,6 +1,5 @@
 import AppKit
 import Carbon.HIToolbox
-import CoreText
 import SwiftUI
 import ServiceManagement
 import VoiceCore
@@ -159,10 +158,10 @@ final class SettingsWindow {
     func show() {
         if window == nil {
             Ink.registerFonts()
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 720), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 880, height: 720), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
             w.title = "Redpen Voice"
             w.contentView = NSHostingView(rootView: SettingsView(model: model).buttonBorderShape(.roundedRectangle(radius: 4)))
-            w.contentMinSize = NSSize(width: 540, height: 420)
+            w.contentMinSize = NSSize(width: 820, height: 500)
             w.center(); w.isReleasedWhenClosed = false
             window = w
             model.close = { [weak w] in w?.close() }
@@ -172,84 +171,144 @@ final class SettingsWindow {
     }
 }
 
-/// The settings page's paper, ink and red pen, matched to Redpen's fix card. Each colour has a dark twin.
-enum Ink {
-    static let paper = pair(light: 0xFBFAF7, dark: 0x1D1C1A)
-    static let text = pair(light: 0x1C1B19, dark: 0xF3F1EC)
-    static let mid = pair(light: 0x5F5C56, dark: 0xB5B1A9)
-    static let dim = pair(light: 0x8D8A83, dark: 0x86827A)
-    static let red = pair(light: 0xC8281E, dark: 0xFF5A4A)
-    static let line = Color.primary.opacity(0.12)
-    static let ok = pair(light: 0x2E9D4F, dark: 0x4CC46D)
-
-    static func serif(_ size: CGFloat, italic: Bool = false) -> Font {
-        .custom(italic ? "Newsreader16pt-Italic" : "Newsreader16pt-SemiBold", size: size)
-    }
-    static func body(_ size: CGFloat) -> Font { .custom("Newsreader16pt-Regular", size: size) }
-
-    private static func pair(light: UInt32, dark: UInt32) -> Color {
-        Color(nsColor: NSColor(name: nil) { a in
-            let v = a.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
-            return NSColor(srgbRed: CGFloat(v >> 16 & 0xFF) / 255, green: CGFloat(v >> 8 & 0xFF) / 255, blue: CGFloat(v & 0xFF) / 255, alpha: 1)
-        })
-    }
-
-    private static var registered = false
-    /// Newsreader ships in the app's Resources/Fonts and is registered for this process only.
-    static func registerFonts() {
-        guard !registered, let dir = Bundle.main.resourceURL?.appendingPathComponent("Fonts"),
-              let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { return }
-        registered = true
-        for f in files where f.pathExtension == "ttf" { CTFontManagerRegisterFontsForURL(f as CFURL, .process, nil) }
-    }
-}
-
 struct SettingsView: View {
     @ObservedObject var model: SettingsModel
     /// The on-this-Mac writer's download (D-1010), which carries on when the window closes.
     @ObservedObject private var writers = WriterDownloads.shared
     @State private var showTest = false
 
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                Button { model.close(); model.back() } label: {
-                    Text("‹ Back").font(.system(size: 13))
-                }.buttonStyle(.plain).foregroundStyle(Ink.red).keyboardShortcut(.cancelAction).padding(.bottom, 6)
-                HStack(alignment: .firstTextBaseline) {
-                    Text("Settings").font(Ink.serif(28)).foregroundStyle(Ink.text)
-                    Spacer()
-                    status
-                }
-                heading("Engine")
-                engineSection
-                heading("What you get")
-                outputChoice
-                heading("Talking")
-                talking
-                heading("Words it gets wrong")
-                wordsRow
-                row("Suggest words to add", "A recurring name, at most once a day after you finish talking.") {
-                    Toggle("", isOn: Binding(get: { model.config.suggestWords ?? true }, set: { model.config.suggestWords = $0 }))
-                        .labelsHidden().toggleStyle(.switch).tint(Ink.red)
-                }.padding(.top, 12)
-                heading("Meeting notes")
-                meetingRows
-                heading("Time saved")
-                typingRow
-                footer
+    private enum Section: String, CaseIterable {
+        case general = "General", talking = "Talking", bar = "Floating bar"
+        case names = "Names & words", meetings = "Meetings", advanced = "Advanced"
+        var detail: String {
+            switch self {
+            case .general: return "How Voice fits into your day."
+            case .talking: return "Start, speak and finish."
+            case .bar: return "A small Voice mark, wherever it suits you."
+            case .names: return "Help Voice recognize the words you use."
+            case .meetings: return "Capture the discussion and keep useful notes."
+            case .advanced: return "Speech engine and experimental options."
             }
-            .padding(.horizontal, 36).padding(.top, 14).padding(.bottom, 26)
+        }
+    }
+    @State private var section = Section.general
+    @State private var appearanceRevision = 0
+    @AppStorage("VoiceTrial.showTimer") private var showTimer = false
+    @AppStorage("VoiceTrial.tuckAtEdge") private var tuckAtEdge = true
+
+    init(model: SettingsModel, initialSection: String = "General") {
+        self.model = model
+        _section = State(initialValue: Section(rawValue: initialSection) ?? .general)
+    }
+
+    var body: some View {
+        let _ = appearanceRevision
+        HStack(alignment: .top, spacing: 0) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 9) {
+                    VoiceMark().frame(width: 22, height: 22)
+                    Text("Voice").font(.system(size: 16, weight: .semibold))
+                }.foregroundStyle(Ink.text).padding(.bottom, 24)
+                ForEach(Section.allCases, id: \.self) { item in
+                    Button { section = item } label: {
+                        Text(item.rawValue).font(.system(size: 13, weight: section == item ? .medium : .regular))
+                            .foregroundStyle(section == item ? Ink.text : Ink.mid)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 10).padding(.vertical, 9)
+                            .background(section == item ? Ink.raised : .clear, in: RoundedRectangle(cornerRadius: 4))
+                    }.buttonStyle(.plain)
+                }
+                Spacer()
+                Button { model.close(); model.back() } label: { Label("Back to menu", systemImage: "chevron.left") }
+                    .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Ink.mid)
+                    .keyboardShortcut(.cancelAction)
+            }.padding(18).frame(width: 176).frame(maxHeight: .infinity).background(Ink.subtle)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(section.rawValue).font(.system(size: 25, weight: .semibold)).foregroundStyle(Ink.text)
+                        Spacer()
+                        status
+                    }
+                    Text(section.detail).font(.system(size: 13)).foregroundStyle(Ink.mid).padding(.top, 6).padding(.bottom, 22)
+                    sectionContent
+                }.padding(.horizontal, 28).padding(.top, 28).padding(.bottom, 30)
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(Ink.paper)
-        .frame(minWidth: 540, minHeight: 420)
+        .frame(minWidth: 820, minHeight: 500)
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("VoiceAppearanceChanged"))) { _ in appearanceRevision += 1 }
+        .onChange(of: showTimer) { _, _ in barPreferencesChanged() }
+        .onChange(of: tuckAtEdge) { _, _ in barPreferencesChanged() }
+        .onChange(of: section) { previous, current in
+            if previous == .talking, current != .talking { model.stopListening() }
+        }
+        .onDisappear { model.stopListening() }
+    }
+
+    @ViewBuilder private var sectionContent: some View {
+        switch section {
+        case .general:
+            appearanceRow
+            row("Open at login") { Toggle("", isOn: $model.openAtLogin).labelsHidden().toggleStyle(.switch).tint(Ink.red) }
+            row("Click at start and stop") { Toggle("", isOn: $model.config.sounds).labelsHidden().toggleStyle(.switch).tint(Ink.red) }
+            heading("Your history")
+            row("Keep dictations", model.config.historyKeep == "none" ? "Nothing is kept." : model.config.historyKeep == "week" ? "The last week, up to 2,000 dictations." : "The last 2,000 dictations, on this Mac.") {
+                Button("History settings…") { model.showHistory() }
+            }
+            typingRow
+            footer
+        case .talking:
+            talking
+        case .bar:
+            Text("Starts small in the middle of the screen. Drag it to make a little more room.")
+                .font(.system(size: 13)).foregroundStyle(Ink.mid).padding(.bottom, 14)
+            row("Show timer", "Adds elapsed time beside the mark.") {
+                Toggle("", isOn: $showTimer).labelsHidden().toggleStyle(.switch).tint(Ink.red)
+            }
+            row("Keep visible when idle", "Leave the small mark on screen between dictations.") {
+                Toggle("", isOn: Binding(get: { model.config.keepBarOnScreen ?? false }, set: { model.config.keepBarOnScreen = $0 }))
+                    .labelsHidden().toggleStyle(.switch).tint(Ink.red)
+            }
+            row("Tuck at the screen edge", "Drag to the left or right edge. It tucks while idle and returns when you speak.") {
+                Toggle("", isOn: $tuckAtEdge).labelsHidden().toggleStyle(.switch).tint(Ink.red)
+            }
+            Text("Drag to place it. Each screen remembers its position until Voice quits. Click the mark for Finish and Cancel.")
+                .font(.system(size: 13)).foregroundStyle(Ink.mid).fixedSize(horizontal: false, vertical: true).padding(.vertical, 16)
+            Button("Centre again") { NotificationCenter.default.post(name: Notification.Name("VoiceTrialBarCentreAgain"), object: nil) }
+        case .names:
+            wordsRow
+            row("Suggest words to add", "A recurring name, at most once a day after you finish talking.") {
+                Toggle("", isOn: Binding(get: { model.config.suggestWords ?? true }, set: { model.config.suggestWords = $0 }))
+                    .labelsHidden().toggleStyle(.switch).tint(Ink.red)
+            }
+            heading("Your wording")
+            outputChoice
+        case .meetings:
+            meetingRows
+        case .advanced:
+            engineSection
+        }
+    }
+
+    private func barPreferencesChanged() {
+        NotificationCenter.default.post(name: Notification.Name("VoiceTrialBarPreferencesChanged"), object: nil)
+    }
+
+    private var appearanceRow: some View {
+        row("Appearance") {
+            Picker("", selection: Binding(get: { model.config.appearance ?? "system" }, set: { model.config.appearance = $0 == "system" ? nil : $0 })) {
+                Text("Dark").tag("dark")
+                Text("Light").tag("light")
+                Text("Colour · blue + red").tag("colour")
+                Text("Match the Mac").tag("system")
+            }.labelsHidden().frame(width: 220, alignment: .trailing)
+        }
     }
 
     private func heading(_ s: String) -> some View {
-        Text(s).font(Ink.serif(18)).foregroundStyle(Ink.text)
-            .padding(.bottom, 3)
-            .overlay(alignment: .bottom) { Rectangle().fill(Ink.red).frame(height: 2) }
-            .padding(.top, 28).padding(.bottom, 6)
+        Text(s).font(.system(size: 16, weight: .semibold)).foregroundStyle(Ink.text)
+            .padding(.top, 24).padding(.bottom, 8)
     }
 
     private var status: some View {
@@ -462,25 +521,6 @@ struct SettingsView: View {
                 Toggle("", isOn: Binding(get: { model.config.resumeMedia ?? true }, set: { model.config.resumeMedia = $0 }))
                     .labelsHidden().toggleStyle(.switch).tint(Ink.red).disabled(!model.config.pauseMedia)
             }
-            Divider().overlay(Ink.line)
-            row("Level bar") {
-                // The bar always shows now, so there is no Off. A config saved with it off still loads, and is
-                // shown and drawn as the red pen line until another look is picked.
-                Picker("", selection: Binding(get: { model.config.levelLook == "off" ? "pen" : model.config.levelLook },
-                                              set: { v in model.config.showLevel = true; model.config.levelStyle = v })) {
-                    Text("Red pen line").tag("pen"); Text("Bars from the middle").tag("bars"); Text("Rolling tape").tag("tape")
-                    Text("Breathing dot").tag("dot"); Text("Classic bars").tag("classic")
-                }.labelsHidden().frame(width: 220, alignment: .trailing)
-            }
-            Divider().overlay(Ink.line)
-            row("Light or dark") {
-                Picker("", selection: Binding(get: { model.config.appearance ?? "auto" },
-                                              set: { model.config.appearance = $0 == "auto" ? nil : $0 })) {
-                    Text("Match the Mac").tag("auto"); Text("Light").tag("light"); Text("Dark").tag("dark")
-                }.labelsHidden().frame(width: 220, alignment: .trailing)
-            }
-            Divider().overlay(Ink.line)
-            row("Click at start and stop") { Toggle("", isOn: $model.config.sounds).labelsHidden().toggleStyle(.switch).tint(Ink.red) }
         }
     }
 
@@ -693,8 +733,6 @@ struct SettingsView: View {
                 Text("\(model.dictationCount) dictations: their text is kept on this Mac (the last 2,000), never the sound.").foregroundStyle(Ink.dim)
                 Button("Show") { model.showHistory() }.buttonStyle(.plain).foregroundStyle(Ink.red)
                 Spacer()
-                Text("Open at login").foregroundStyle(Ink.dim)
-                Toggle("", isOn: $model.openAtLogin).labelsHidden().toggleStyle(.switch).tint(Ink.red)
             }
             Text("The microphone stays on while Voice is open (the orange dot) so your first word isn't cut. It holds only the last 0.6 s in memory, and keeps nothing until you press the key.")
                 .foregroundStyle(Ink.dim).fixedSize(horizontal: false, vertical: true)

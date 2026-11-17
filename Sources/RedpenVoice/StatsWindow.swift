@@ -14,10 +14,10 @@ final class StatsWindow {
         model.reload()
         if window == nil {
             Ink.registerFonts()
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: StatsView.width, height: 760), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: StatsView.width, height: 650), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
             w.title = "Redpen Voice Stats"
             w.contentView = NSHostingView(rootView: StatsView(model: model).buttonBorderShape(.roundedRectangle(radius: 4)))
-            w.contentMinSize = NSSize(width: StatsView.width, height: 420)
+            w.contentMinSize = NSSize(width: StatsView.width, height: 460)
             w.center(); w.isReleasedWhenClosed = false
             window = w
         }
@@ -109,41 +109,68 @@ final class StatsModel: ObservableObject {
 }
 
 struct StatsView: View {
-    static let width: CGFloat = 600
+    static let width: CGFloat = 640
     @ObservedObject var model: StatsModel
     @State private var confirmReset = false
+    @State private var section = "activity"
+    @State private var period = "7 days"
+    @State private var metric = "Words"
+    @State private var showCounting = false
+    @State private var appearanceRevision = 0
 
-    private var typing: Int { Int(model.typing) }
+    init(model: StatsModel, initialSection: String = "activity") {
+        self.model = model
+        _section = State(initialValue: initialSection)
+    }
+
+    private var total: Score { Stats.score(model.days, typing: model.typing) }
+    private var score: Score {
+        switch period {
+        case "This week": return Stats.thisWeek(model.days, now: model.now(), typing: model.typing)
+        case "30 days": return Stats.lastDays(30, model.days, now: model.now(), typing: model.typing)
+        case "All time": return total
+        default: return Stats.lastDays(7, model.days, now: model.now(), typing: model.typing)
+        }
+    }
+    private var points: [(date: Date, score: Score)] {
+        let n: Int
+        switch period {
+        case "This week":
+            let start = Calendar.current.dateInterval(of: .weekOfYear, for: model.now())?.start ?? model.now()
+            n = max(1, (Calendar.current.dateComponents([.day], from: start, to: model.now()).day ?? 0) + 1)
+        case "30 days": n = 30
+        case "All time": n = 30
+        default: n = 7
+        }
+        return Stats.daily(model.days, n: n, now: model.now())
+    }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Stats").font(Ink.serif(26)).foregroundStyle(Ink.text)
-                HStack(spacing: 4) {
-                    Text("Time saved is compared with typing at \(typing) words a minute.").foregroundStyle(Ink.dim)
-                    Button("Change") { model.openSettings() }.buttonStyle(.plain).foregroundStyle(Ink.red)
-                }.font(.system(size: 12.5)).padding(.top, 2)
-
-                if model.days.isEmpty {
-                    Text("Nothing counted yet. Your numbers show up here after your first dictation.")
-                        .font(.system(size: 13)).foregroundStyle(Ink.dim).padding(.top, 28)
-                } else {
-                    totals.padding(.top, 26)
+        let _ = appearanceRevision
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                VoiceMark().foregroundStyle(Ink.red)
+                Text(section == "fun" ? "Fun facts" : section == "delivery" ? "Words landed" : "Your words")
+                    .font(.system(size: 23, weight: .semibold))
+                Spacer()
+                if section != "activity" {
+                    Button("Back to Stats") { section = "activity" }.buttonStyle(.plain).foregroundStyle(Ink.mid)
                 }
-                if let r = model.landed { landedSection(r) }
-                if !model.days.isEmpty {
-                    heading("Words a day", "The last 30 days.")
-                    WordsChart(points: Stats.daily(model.days, now: model.now()))
-                        .frame(height: 132)
-                    speedSection
-                    funFacts
-                }
-                footer
+            }.foregroundStyle(Ink.text).padding(.horizontal, 28).padding(.top, 24).padding(.bottom, 18)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    if section == "fun" { funFacts }
+                    else if section == "delivery" {
+                        if let r = model.landed { landedSection(r) }
+                        else { Text("Nothing in the log yet.").foregroundStyle(Ink.mid) }
+                    } else { activity }
+                    footer
+                }.padding(.horizontal, 28).padding(.bottom, 24)
             }
-            .padding(.horizontal, 32).padding(.top, 22).padding(.bottom, 22)
         }
-        .frame(minWidth: Self.width, minHeight: 420)
+        .frame(minWidth: Self.width, minHeight: 460)
         .background(Ink.paper)
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("VoiceAppearanceChanged"))) { _ in appearanceRevision += 1 }
         .alert("Reset your stats?", isPresented: $confirmReset) {
             Button("Reset", role: .destructive) { model.reset() }
             Button("Cancel", role: .cancel) {}
@@ -152,40 +179,123 @@ struct StatsView: View {
         }
     }
 
-    // MARK: Totals
-
-    private var totals: some View {
-        let now = model.now(), t = model.typing
-        return HStack(alignment: .top, spacing: 0) {
-            column("This week", Stats.thisWeek(model.days, now: now, typing: t))
-            column("Last 30 days", Stats.lastDays(30, model.days, now: now, typing: t))
-            column("All time", Stats.score(model.days, typing: t))
+    private var activity: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            HStack {
+                Text("\(score.count.formatted()) dictations").font(.system(size: 13)).foregroundStyle(Ink.mid)
+                Spacer()
+                Picker("Time range", selection: $period) {
+                    ForEach(["7 days", "This week", "30 days", "All time"], id: \.self) { Text($0).tag($0) }
+                }.pickerStyle(.segmented).labelsHidden().frame(width: 306)
+            }
+            HStack(alignment: .top, spacing: 30) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(score.words.formatted()).font(.system(size: 49, weight: .medium, design: .rounded)).monospacedDigit()
+                    Text("words spoken").font(.system(size: 14)).foregroundStyle(Ink.mid)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(Score.savedText(score.minutesSaved)).font(.system(size: 27, weight: .medium)).monospacedDigit()
+                    Text("of typing saved").font(.system(size: 13)).foregroundStyle(Ink.mid)
+                    Text(score.seconds >= Stats.minSecondsForSpeed ? "\(score.wordsPerMinute) words a minute" : "Pace appears after 20 seconds")
+                        .font(.system(size: 12)).foregroundStyle(Ink.mid).padding(.top, 7)
+                }.padding(.top, 10)
+            }.foregroundStyle(Ink.text)
+            if model.days.isEmpty {
+                Text("Your first dictation starts the count.").font(.system(size: 14)).foregroundStyle(Ink.mid).padding(.vertical, 24)
+            } else {
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack {
+                        Text(metric == "Words" ? (period == "All time" ? "Words a day · last 30 days" : "Words a day") : "Speaking pace")
+                            .font(.system(size: 13, weight: .medium)).foregroundStyle(Ink.text)
+                        Spacer()
+                        Picker("Chart", selection: $metric) {
+                            Text("Words").tag("Words")
+                            Text("Pace").tag("Pace")
+                        }.pickerStyle(.segmented).labelsHidden().frame(width: 134)
+                    }
+                    if metric == "Words" {
+                        WordsChart(points: points).frame(height: 160)
+                        if let today = points.last {
+                            Text("\(shortDate(today.date)) · \(today.score.words.formatted()) words").font(.system(size: 12)).foregroundStyle(Ink.red)
+                        }
+                    } else { speedSection }
+                }
+                Button { section = "fun" } label: {
+                    HStack(spacing: 16) {
+                        Image(systemName: "book.closed").font(.system(size: 24)).foregroundStyle(Ink.red)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Your words add up").font(.system(size: 14, weight: .medium)).foregroundStyle(Ink.text)
+                            Text(StatsFunFacts.bookLines(words: total.words).first ?? "See your all-time totals in a different way.")
+                                .font(.system(size: 12)).foregroundStyle(Ink.mid).fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer()
+                        Image(systemName: "arrow.up.right").foregroundStyle(Ink.mid)
+                    }.padding(16).contentShape(Rectangle())
+                }.buttonStyle(.plain).background(Ink.raised, in: RoundedRectangle(cornerRadius: 3))
+            }
         }
     }
 
-    private func column(_ title: String, _ s: Score) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(title.uppercased()).font(.system(size: 11, weight: .semibold)).kerning(0.6).foregroundStyle(Ink.dim)
-            Text(s.words.formatted()).font(Ink.serif(30)).foregroundStyle(Ink.text).monospacedDigit().padding(.top, 6)
-            Text(s.words == 1 ? "word" : "words").font(.system(size: 12.5)).foregroundStyle(Ink.dim)
-            VStack(alignment: .leading, spacing: 4) {
-                line(Score.savedText(s.minutesSaved), "saved")
-                line(s.wordsPerMinute > 0 ? "\(s.wordsPerMinute)" : "–", "words a minute")
-                line(s.count.formatted(), s.count == 1 ? "dictation" : "dictations")
-            }.padding(.top, 12)
+    private var speedSection: some View {
+        let sp = period == "All time" ? Stats.speed(model.days, now: model.now()) :
+            (weekly: false, points: points.map { (date: $0.date, wpm: $0.score.seconds >= Stats.minSecondsForSpeed ? $0.score.wordsPerMinute : nil) })
+        return VStack(alignment: .leading, spacing: 14) {
+            if sp.points.contains(where: { $0.wpm != nil }) {
+                SpeedChart(points: sp.points, weekly: sp.weekly).frame(height: 160)
+            } else {
+                Text("Talk for 20 seconds in a day to see its pace.").font(.system(size: 13)).foregroundStyle(Ink.mid).frame(height: 160)
+            }
+            Text("\(sp.weekly ? "Weeks" : "Days") under 20 seconds are skipped. \(period == "All time" ? "Up to 26 weeks shown." : "")")
+                .font(.system(size: 12)).foregroundStyle(Ink.mid)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func line(_ figure: String, _ label: String) -> some View {
-        (Text(figure).foregroundStyle(Ink.text).fontWeight(.medium) + Text(" " + label).foregroundStyle(Ink.mid))
-            .font(.system(size: 13)).monospacedDigit()
+    private var funFacts: some View {
+        let book = StatsFunFacts.books.last(where: { $0.words <= total.words }) ?? StatsFunFacts.books[0]
+        let ratio = Double(total.words) / Double(book.words)
+        let amount = ratio < 0.01 ? "<1%" : ratio < 1 ? "\(Int((ratio * 100).rounded()))%" : "\((ratio * 10).rounded() / 10)×"
+        return VStack(alignment: .leading, spacing: 26) {
+            Text("From \(total.words.formatted()) words, all time.").font(.system(size: 13)).foregroundStyle(Ink.mid)
+            HStack(alignment: .center, spacing: 32) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("REDPEN\nREADING ROOM").font(.system(size: 10, weight: .bold)).tracking(1)
+                    Spacer()
+                    Text(book.title).font(.system(size: 22, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+                    Rectangle().frame(height: 2)
+                    Text("A book's worth of words").font(.system(size: 11))
+                }.foregroundStyle(Ink.text).padding(20).frame(width: 172, height: 226)
+                    .background(Ink.subtle).overlay(alignment: .leading) { Rectangle().fill(Ink.red).frame(width: 6) }
+                    .overlay(Rectangle().strokeBorder(Ink.border.opacity(0.5)))
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(total.words == 0 ? "0" : amount).font(.system(size: 56, weight: .medium)).monospacedDigit().foregroundStyle(Ink.text)
+                    Text(ratio < 1 ? "of \(book.title)'s word count" : "the word count of \(book.title)").font(.system(size: 17, weight: .medium)).foregroundStyle(Ink.text)
+                    Text("An approximate comparison. \(total.words.formatted()) spoken words against this edition's \(book.words.formatted()).")
+                        .font(.system(size: 13)).foregroundStyle(Ink.mid).fixedSize(horizontal: false, vertical: true)
+                }
+            }.padding(.vertical, 6)
+            HStack(alignment: .top, spacing: 28) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(Score.savedText(total.minutesSaved)).font(.system(size: 25, weight: .medium)).foregroundStyle(Ink.text)
+                    Text("of typing saved, all time").font(.system(size: 13)).foregroundStyle(Ink.mid)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(total.count.formatted()).font(.system(size: 25, weight: .medium)).foregroundStyle(Ink.text)
+                    Text("dictations, all time").font(.system(size: 13)).foregroundStyle(Ink.mid)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            ForEach(Array(StatsFunFacts.lines(model.days).dropFirst(StatsFunFacts.bookLines(words: total.words).count)), id: \.self) { fact in
+                Text(fact).font(.system(size: 13)).foregroundStyle(Ink.mid).fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
-    // MARK: Words landed
+    private func heading(_ title: String, _ detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.system(size: 17, weight: .semibold)).foregroundStyle(Ink.text)
+            Text(detail).font(.system(size: 13)).foregroundStyle(Ink.mid).fixedSize(horizontal: false, vertical: true)
+        }.padding(.bottom, 16)
+    }
 
-    /// One plain line a day for the last 7 days (D-1034), today first, then this build's rate and why words were
-    /// kept or lost. From the log, so it reaches back only as far as the log does.
     private func landedSection(_ r: WordsLanded.Read) -> some View {
         let now = model.now(), cal = Calendar.current
         let week = cal.date(byAdding: .day, value: -6, to: cal.startOfDay(for: now)) ?? now
@@ -207,55 +317,24 @@ struct StatsView: View {
         }
     }
 
-    // MARK: Speed
-
-    private var speedSection: some View {
-        let sp = Stats.speed(model.days, now: model.now())
-        let drawn = sp.points.contains { $0.wpm != nil }
-        return VStack(alignment: .leading, spacing: 0) {
-            heading("Speed", "Words a minute while talking, by \(sp.weekly ? "week" : "day"). \(sp.weekly ? "Weeks" : "Days") under \(Int(Stats.minSecondsForSpeed)) seconds of talking are skipped.")
-            if drawn {
-                SpeedChart(points: sp.points, weekly: sp.weekly).frame(height: 112)
-            } else {
-                Text("Not enough talking yet to draw your speed.").font(.system(size: 13)).foregroundStyle(Ink.dim).padding(.top, 4)
-            }
-        }
-    }
-
-    private var funFacts: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            heading("Fun facts", "From your all-time totals.")
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(StatsFunFacts.lines(model.days), id: \.self) { fact in
-                    Text(fact).font(.system(size: 13)).foregroundStyle(Ink.mid)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
-    }
-
-    private func heading(_ s: String, _ sub: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(s).font(Ink.serif(18)).foregroundStyle(Ink.text)
-                .padding(.bottom, 3)
-                .overlay(alignment: .bottom) { Rectangle().fill(Ink.red).frame(height: 2) }
-            Text(sub).font(.system(size: 12.5)).foregroundStyle(Ink.dim).fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(.top, 30).padding(.bottom, 12)
-    }
 
     private var footer: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text("Numbers only, never your words, in stats.json on this Mac. Deleting history doesn't change them.")
-                .foregroundStyle(Ink.dim).fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 12)
-            Button("Reset stats…") { confirmReset = true }.buttonStyle(.plain).foregroundStyle(Ink.red)
-                .disabled(model.days.isEmpty)
+        VStack(alignment: .leading, spacing: 13) {
+            Divider().overlay(Ink.line)
+            HStack {
+                Button("How we count") { showCounting.toggle() }
+                Spacer()
+                if section != "delivery" { Button("Words landed") { section = "delivery" } }
+            }.buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Ink.mid)
+            if showCounting {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Time saved compares typing at \(Int(model.typing)) words a minute with the time you spent talking. It is an estimate.")
+                    Button("Change typing speed…") { model.openSettings() }.buttonStyle(.plain).foregroundStyle(Ink.text)
+                    Text("Counts stay on this Mac. Deleting history does not change them. Book comparisons use approximate word counts from Standard Ebooks editions.")
+                    Button("Reset stats…") { confirmReset = true }.buttonStyle(.plain).foregroundStyle(Ink.text).disabled(model.days.isEmpty)
+                }.font(.system(size: 13)).foregroundStyle(Ink.mid).fixedSize(horizontal: false, vertical: true)
+            }
         }
-        .font(.system(size: 12.5))
-        .padding(.top, 14)
-        .overlay(alignment: .top) { Divider().overlay(Ink.line) }
-        .padding(.top, 30)
     }
 }
 
@@ -292,7 +371,7 @@ private struct WordsChart: View {
                 Rectangle().fill(Ink.mid.opacity(0.5)).frame(width: plotW, height: 1).offset(x: axis, y: plotH)
                 ForEach(Array(points.enumerated()), id: \.offset) { i, p in
                     let h = top > 0 ? max(0, CGFloat(Double(p.score.words) / top) * plotH) : 0
-                    Rectangle().fill(Ink.red)
+                    Rectangle().fill(i == points.count - 1 ? Ink.red : Ink.mid.opacity(0.48))
                         .frame(width: max(1, step - 3), height: p.score.words > 0 ? max(2, h) : 0)
                         .offset(x: axis + CGFloat(i) * step + 1.5, y: plotH - (p.score.words > 0 ? max(2, h) : 0))
                     Rectangle().fill(Color.clear).contentShape(Rectangle())
@@ -310,8 +389,7 @@ private struct WordsChart: View {
     }
 }
 
-/// Speed as a 2 px line through dots, scaled to the range you actually talk in (a speed chart from zero is a flat
-/// line). Hover a dot for its day or week.
+/// Speaking pace starts at zero so changes are not exaggerated. Hover a dot for its day or week.
 private struct SpeedChart: View {
     let points: [(date: Date, wpm: Int?)]
     let weekly: Bool
@@ -319,7 +397,7 @@ private struct SpeedChart: View {
 
     var body: some View {
         let vals = points.compactMap(\.wpm)
-        let lo = Double(((vals.min() ?? 0) - 5) / 10 * 10), hi = Double(((vals.max() ?? 0) + 14) / 10 * 10)
+        let lo = 0.0, hi = niceCeil(Double(vals.max() ?? 0))
         GeometryReader { g in
             let plotW = g.size.width - axis, plotH = g.size.height - under
             let step = plotW / CGFloat(max(points.count, 1))

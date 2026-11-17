@@ -131,7 +131,7 @@ struct Config: Codable {
     /// Keep the resting talking bar visible between dictations. Off in older files and new installs.
     var smallTalkingBar: Bool?
     var keepBarOnScreen: Bool?
-    /// "light", "dark", or nil to match the Mac. Applies to every Redpen Voice window and the menu bar panel.
+    /// "light", "dark", "colour", or nil to match the Mac. Shared by native Voice windows and the bar.
     var appearance: String?
     var levelLook: String { showLevel ? (levelStyle ?? "pen") : "off" }
 
