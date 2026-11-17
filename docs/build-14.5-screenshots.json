@@ -96,6 +96,26 @@
       "file": "docs/screenshots/wave-ribbon-writing.png",
       "sha256": "ce2649e8055f280fe0ff2a03dbf5c4c46e138d74cce45c368148f5f2fee0c135",
       "fixture": "dark-bar/wave-ribbon-writing.png"
+    },
+    {
+      "file": "docs/screenshots/settings-talking-dark.png",
+      "sha256": "1ade43294952ca066e918f22470b9cd6924b1c54b35e0eff80396903ec2eedfa",
+      "fixture": "dark-settings-talking.png"
+    },
+    {
+      "file": "docs/screenshots/settings-names-words-dark.png",
+      "sha256": "fd58cbb0eabff26024c28cd52c4d9e5e0c6fa5b03144de815a82ceb3d8334fa7",
+      "fixture": "dark-settings-names-&-words.png"
+    },
+    {
+      "file": "docs/screenshots/settings-talking-light.png",
+      "sha256": "075efe810c3f52388ff94ede709292f9e2c6358a86c8c4d22f2face9ffa14407",
+      "fixture": "light-settings-talking.png"
+    },
+    {
+      "file": "docs/screenshots/settings-names-words-light.png",
+      "sha256": "05795a7029d302f905acaf47f92059a8c47ce9e8f4f3b2a7863a76111898dbe5",
+      "fixture": "light-settings-names-&-words.png"
     }
   ]
 }
