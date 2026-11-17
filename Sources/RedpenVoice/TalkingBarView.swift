@@ -56,6 +56,14 @@ final class TalkingBarView: NSView {
     var stateAge = 1.0
     var smooth: CGFloat = 0
     var history = [CGFloat](repeating: 0, count: 90)
+    /// Follow the measured microphone level. Short delays give the two side strokes a natural response.
+    var markHeights: [CGFloat] {
+        guard recordingActive, !reducedMotion else { return [8, 20, 8] }
+        func strength(_ value: CGFloat) -> CGFloat { sqrt(min(1, max(0, value.isFinite ? value : 0))) }
+        let left = history.count >= 5 ? history[history.count - 5] : smooth
+        let right = history.count >= 3 ? history[history.count - 3] : smooth
+        return [4 + 12 * strength(left), 8 + 18 * strength(smooth), 4 + 12 * strength(right)]
+    }
     var reducedMotion = false
     var freeze = false
     var choices: [String] = []
@@ -183,7 +191,7 @@ final class TalkingBarView: NSView {
             rows += [("Finish", "finish", canFinish), ("Cancel", "cancel", canCancel)]
         }
         rows += [("Paste last", "paste", canPaste), ("Meeting notes", "notes", true),
-                 ("Settings", "settings", true), ("Centre again", "centre", true)]
+                 ("Settings", "settings", true), ("Move to bottom centre", "centre", true)]
         for row in rows {
             let item = NSMenuItem(title: row.0, action: #selector(contextAction(_:)), keyEquivalent: "")
             item.target = self; item.representedObject = row.1; item.isEnabled = row.2; menu.addItem(item)
@@ -278,10 +286,7 @@ final class TalkingBarView: NSView {
         let markX: CGFloat = menuOpen ? bounds.midX - 11 : timed ? 13 : bounds.midX - 11
         let ink = state == .resting || (state == .message || state == .needs) && !recordingActive ? Self.label : timed ? Self.text : Self.red
         ink.setFill()
-        for i in 0..<3 {
-            let base: CGFloat = i == 1 ? 20 : 8
-            let motion = recordingActive && !freeze && !reducedMotion ? 0.8 + 0.32 * abs(sin(phase * 2 + Double(i))) : 1
-            let height = base * motion
+        for (i, height) in markHeights.enumerated() {
             CGRect(x: markX + CGFloat(i) * 9, y: centerY - height / 2, width: 3, height: height).fill()
         }
         if timed || (menuOpen && hasRecordingControls) {

@@ -3,7 +3,7 @@ import CoreGraphics
 import VoiceCore
 
 final class TrialBarPlacementTests: XCTestCase {
-    func testThreePhysicalDisplaysStartAtTheirOwnExactCentre() {
+    func testThreeDisplayLayoutsStartAboveTheirOwnBottomEdge() {
         let layout = TrialBarPlacement()
         let frames = [CGRect(x: -1920, y: 80, width: 1920, height: 1080),
                       CGRect(x: 0, y: 0, width: 1728, height: 1080),
@@ -11,7 +11,7 @@ final class TrialBarPlacementTests: XCTestCase {
         for (index, visible) in frames.enumerated() {
             let frame = layout.frame(on: UInt32(index + 1), visible: visible, size: CGSize(width: 48, height: 48))
             XCTAssertEqual(frame.midX, visible.midX)
-            XCTAssertEqual(frame.midY, visible.midY)
+            XCTAssertEqual(frame.minY, visible.minY + TrialBarPlacement.bottomInset)
         }
     }
 
@@ -55,7 +55,23 @@ final class TrialBarPlacementTests: XCTestCase {
         XCTAssertNil(layout.position(on: 11))
         let fallback = layout.frame(on: 22, visible: smaller, size: CGSize(width: 48, height: 48))
         XCTAssertEqual(fallback.midX, smaller.midX)
-        XCTAssertEqual(fallback.midY, smaller.midY)
+        XCTAssertEqual(fallback.minY, smaller.minY + TrialBarPlacement.bottomInset)
+    }
+
+    func testDefaultExpansionGrowsUpAndFitsShortVisibleArea() {
+        let layout = TrialBarPlacement()
+        for visible in [CGRect(x: 0, y: 86, width: 1728, height: 970),
+                        CGRect(x: -1600, y: -600, width: 1600, height: 900)] {
+            for size in [CGSize(width: 48, height: 48), CGSize(width: 96, height: 38),
+                         CGSize(width: 264, height: 48), CGSize(width: 480, height: 200)] {
+                let frame = layout.frame(on: 1, visible: visible, size: size)
+                XCTAssertEqual(frame.midX, visible.midX)
+                XCTAssertEqual(frame.minY, visible.minY + TrialBarPlacement.bottomInset)
+                XCTAssertTrue(visible.contains(frame))
+            }
+        }
+        let short = CGRect(x: 0, y: 50, width: 300, height: 40)
+        XCTAssertEqual(layout.frame(on: 2, visible: short, size: CGSize(width: 480, height: 200)), short)
     }
 
     func testDraggingDoesNotDockUntilReleaseAndInvalidInputDoesNotPoisonPlacement() {

@@ -500,11 +500,30 @@ final class HUD {
         }
         hud.rest(); check("idle hidden by default", !hud.wantsVisible && !hud.panel.isVisible)
         check("panel cannot steal text focus", !hud.panel.canBecomeKey && !hud.panel.canBecomeMain)
-        hud.show("", level: true); capture("trial-centred-listening")
+        hud.show("", level: true); capture("trial-bottom-listening")
         check("initial B is 48x48", hud.panel.frame.size == CGSize(width: 48, height: 48))
         if let screen = hud.currentScreen {
-            check("B exactly centred", hud.panel.frame.midX == screen.visibleFrame.midX && hud.panel.frame.midY == screen.visibleFrame.midY)
+            check("B above bottom centre", hud.panel.frame.midX == screen.visibleFrame.midX && hud.panel.frame.minY == screen.visibleFrame.minY + TrialBarPlacement.bottomInset)
         }
+        hud.box.reducedMotion = false
+        hud.box.smooth = 0; hud.box.history = .init(repeating: 0, count: 90)
+        let quietMark = hud.box.markHeights
+        capture("trial-voice-quiet")
+        hud.box.smooth = 0.75; hud.box.history = .init(repeating: 0.6, count: 90)
+        let speakingMark = hud.box.markHeights
+        check("mark follows microphone level", zip(quietMark, speakingMark).allSatisfy { $0 < $1 })
+        check("mark remains inside compact bar", speakingMark.allSatisfy { $0.isFinite && $0 > 0 && $0 <= 26 })
+        capture("trial-voice-speaking")
+        hud.box.phase += 10
+        check("mark does not fake a timer pulse", hud.box.markHeights == speakingMark)
+        hud.box.reducedMotion = true
+        let reducedMark = hud.box.markHeights
+        hud.box.smooth = 0; hud.box.history = .init(repeating: 0, count: 90)
+        check("reduce motion keeps mark steady", hud.box.markHeights == reducedMark)
+        hud.box.reducedMotion = false
+        hud.box.smooth = .nan; hud.box.history = .init(repeating: .infinity, count: 90)
+        check("invalid audio cannot corrupt mark geometry", hud.box.markHeights == quietMark)
+        hud.box.smooth = 0; hud.box.history = .init(repeating: 0, count: 90)
         let initialFrame = hud.panel.frame
         hud.refineCapture(textBox: CGRect(x: 5000, y: 0, width: 100, height: 100), window: nil)
         check("late focus refinement keeps recording steady", hud.panel.frame == initialFrame)

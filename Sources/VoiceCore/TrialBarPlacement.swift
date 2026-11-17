@@ -23,16 +23,20 @@ public struct TrialBarPlacement {
                                                      y: min(1, max(0, (center.y - visible.minY) / visible.height))), edge: edge)
     }
 
-    /// The untouched bar is exactly centred. Saved centres survive resolution changes and content expansion.
+    /// Keep the default bar above the Dock, growing upwards when controls or recovery text appear.
+    /// Saved centres still survive resolution changes and content expansion.
+    public static let bottomInset: CGFloat = 16
     public func frame(on display: UInt32, visible: CGRect, size: CGSize) -> CGRect {
         let saved = positions[display]
-        let center = saved?.center ?? CGPoint(x: 0.5, y: 0.5)
         let width = min(max(0, size.width), visible.width), height = min(max(0, size.height), visible.height)
+        let center = saved?.center ?? CGPoint(x: 0.5, y: 0)
         var x = visible.minX + center.x * visible.width - width / 2
+        let y = saved == nil ? visible.minY + Self.bottomInset
+            : visible.minY + center.y * visible.height - height / 2
         if saved?.edge == .left { x = visible.minX }
         if saved?.edge == .right { x = visible.maxX - width }
         return CGRect(x: min(max(visible.minX, x), visible.maxX - width),
-                      y: min(max(visible.minY, visible.minY + center.y * visible.height - height / 2), visible.maxY - height),
+                      y: min(max(visible.minY, y), visible.maxY - height),
                       width: width, height: height)
     }
 

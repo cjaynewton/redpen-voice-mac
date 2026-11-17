@@ -261,7 +261,7 @@ struct SettingsView: View {
         case .talking:
             talking
         case .bar:
-            Text("Starts small in the middle of the screen. Drag it to make a little more room.")
+            Text("Starts small at the bottom of the screen, above the Dock. The mark responds to your voice.")
                 .font(.system(size: 13)).foregroundStyle(Ink.mid).padding(.bottom, 14)
             row("Show timer", "Adds elapsed time beside the mark.") {
                 Toggle("", isOn: $showTimer).labelsHidden().toggleStyle(.switch).tint(Ink.red)
@@ -275,7 +275,7 @@ struct SettingsView: View {
             }
             Text("Drag to place it. Each screen remembers its position until Voice quits. Click the mark for Finish and Cancel.")
                 .font(.system(size: 13)).foregroundStyle(Ink.mid).fixedSize(horizontal: false, vertical: true).padding(.vertical, 16)
-            Button("Centre again") { NotificationCenter.default.post(name: Notification.Name("VoiceTrialBarCentreAgain"), object: nil) }
+            Button("Move to bottom centre") { NotificationCenter.default.post(name: Notification.Name("VoiceTrialBarCentreAgain"), object: nil) }
         case .names:
             wordsRow
             row("Suggest words to add", "A recurring name, at most once a day after you finish talking.") {
